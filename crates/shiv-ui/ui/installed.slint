@@ -58,6 +58,8 @@ export global InstalledState {
     callback dismiss-banner();
     // Show the Repair screen.
     callback open-repair();
+    // Replace a local or hand-added mod's files with a newer file.
+    callback update-file(string);
     // Open the mod's catalog detail page (managed mods only).
     callback open-detail(string);
     // Rename or annotate a managed mod, or adopt one Shiv did not install.
@@ -218,7 +220,7 @@ component InstalledRowView inherits Rectangle {
         }
 
         VerticalLayout {
-            width: 200px;
+            width: 300px;
             alignment: center;
             spacing: Theme.s1;
 
@@ -259,6 +261,11 @@ component InstalledRowView inherits Rectangle {
                     primary: true;
                     disabled: root.frozen;
                     clicked => { InstalledState.update(root.item.id); }
+                }
+                if root.item.local || !root.item.managed: TextButton {
+                    text: "Update from file";
+                    disabled: root.frozen;
+                    clicked => { InstalledState.update-file(root.item.id); }
                 }
                 TextButton {
                     text: root.item.managed ? "Edit" : "Adopt";
@@ -719,6 +726,114 @@ export component LocalInstallDialog inherits DialogCard {
             primary: true;
             disabled: LocalInstallState.busy || LocalInstallState.path == "";
             clicked => { LocalInstallState.install(); }
+        }
+    }
+}
+
+// A file is being dragged over the window.
+export global DropState {
+    in property <bool> hover;
+}
+
+export component DropOverlay inherits Rectangle {
+    background: #000000b0;
+    Rectangle {
+        width: min(parent.width - 64px, 520px);
+        height: 160px;
+        border-radius: 12px;
+        border-width: 2px;
+        border-color: Theme.accent;
+        background: Theme.raised;
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.s1;
+            padding: Theme.s2;
+            Text {
+                text: "Drop to install or update";
+                color: Theme.text;
+                font-size: Theme.text-lg;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "A .vpk, zip, rar or 7z. A newer copy of an installed mod replaces it in place.";
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// Replacing a local or hand-added mod's files with a newer file (from the
+// row's Update from file, or a dropped file that matches the mod).
+export global UpdateFileState {
+    in-out property <bool> open;
+    in property <string> target-name;
+    in-out property <string> path;
+    // Why a dropped file was matched to the mod; "" from the row button.
+    in property <string> reason-text;
+    // Opened by a drop: offer installing it as a new mod instead.
+    in property <bool> dropped;
+    in property <string> error-text;
+    in property <bool> busy;
+
+    callback browse();
+    callback replace();
+    callback install-new();
+    callback cancel();
+}
+
+export component UpdateFileDialog inherits DialogCard {
+    title: "Replace " + UpdateFileState.target-name + "?";
+    Text {
+        text: (UpdateFileState.reason-text != "" ? UpdateFileState.reason-text + " " : "") + "The new file takes the same pak slot, so the load order, name and notes stay. The old file is kept in addons/.shiv/backup.";
+        color: Theme.text-muted;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: Theme.s1;
+        Field {
+            horizontal-stretch: 1;
+            label: "New file";
+            placeholder: "/path/to/mod.vpk";
+            text <=> UpdateFileState.path;
+        }
+        VerticalLayout {
+            alignment: end;
+            Button {
+                text: "Browse";
+                disabled: UpdateFileState.busy;
+                clicked => { UpdateFileState.browse(); }
+            }
+        }
+    }
+    if UpdateFileState.error-text != "": Text {
+        text: UpdateFileState.error-text;
+        color: Theme.danger;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: Theme.s1;
+        alignment: end;
+        TextButton {
+            text: "Cancel";
+            disabled: UpdateFileState.busy;
+            clicked => { UpdateFileState.cancel(); }
+        }
+        if UpdateFileState.dropped: TextButton {
+            text: "Install as new mod";
+            disabled: UpdateFileState.busy;
+            clicked => { UpdateFileState.install-new(); }
+        }
+        Button {
+            text: UpdateFileState.busy ? "Replacing" : "Replace";
+            primary: true;
+            disabled: UpdateFileState.busy || UpdateFileState.path == "";
+            clicked => { UpdateFileState.replace(); }
         }
     }
 }

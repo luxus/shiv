@@ -2,7 +2,7 @@
 
 import { Theme } from "theme.slint";
 import { BrowsePage, BrowseState, ModRow, LoadState, InstallState, DownloadPicker, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow } from "browse.slint";
-import { InstalledPage, InstalledState, InstalledRow, ConflictDialog, ConflictState, ModEditDialog, ModEditState, LocalInstallDialog, LocalInstallState } from "installed.slint";
+import { InstalledPage, InstalledState, InstalledRow, ConflictDialog, ConflictState, ModEditDialog, ModEditState, LocalInstallDialog, LocalInstallState, UpdateFileDialog, UpdateFileState, DropState, DropOverlay } from "installed.slint";
 import { LaunchPanel, LaunchDialog, LaunchState, FindingRow } from "launch.slint";
 import { RepairPage, RepairDialog, RepairState, RepairRow, RepairTone } from "repair.slint";
 import { CrosshairPage, CrosshairState, CrosshairValues, CrosshairField } from "crosshair.slint";
@@ -11,7 +11,7 @@ import { ProfilesPage, ProfilesState, ProfileRow } from "profiles.slint";
 import { Dropdown } from "widgets.slint";
 import { PerformancePage, PerfState, PerfTier, PerfRow, PerfControl, PerfEditor, PerfChange } from "performance.slint";
 
-export { BrowseState, ModRow, LoadState, InstallState, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow, InstalledState, InstalledRow, ConflictState, ModEditState, LocalInstallState, LaunchState, FindingRow, RepairState, RepairRow, RepairTone, CrosshairState, CrosshairValues, CrosshairField, PerfState, PerfTier, PerfRow, PerfControl, PerfEditor, PerfChange, ProfilesState, ProfileRow, DownloadsState, DownloadPhase, TransferRow }
+export { BrowseState, ModRow, LoadState, InstallState, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow, InstalledState, InstalledRow, ConflictState, ModEditState, LocalInstallState, UpdateFileState, DropState, LaunchState, FindingRow, RepairState, RepairRow, RepairTone, CrosshairState, CrosshairValues, CrosshairField, PerfState, PerfTier, PerfRow, PerfControl, PerfEditor, PerfChange, ProfilesState, ProfileRow, DownloadsState, DownloadPhase, TransferRow }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -238,7 +238,21 @@ export component App inherits Window {
         height: root.height;
     }
 
+    if UpdateFileState.open: UpdateFileDialog {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+    }
+
     if LaunchState.dialog-open: LaunchDialog {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+    }
+
+    if DropState.hover: DropOverlay {
         x: 0px;
         y: 0px;
         width: root.width;
