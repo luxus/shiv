@@ -56,6 +56,10 @@ pub enum InstallError {
     Addons(#[from] AddonsError),
     #[error(transparent)]
     Sidecar(#[from] SidecarError),
+    #[error("only mods installed from a file or adopted can be updated from a file")]
+    NotLocal,
+    #[error("the new file has {new} VPK(s) but the mod has {old}; install it as a new mod instead")]
+    VpkCountMismatch { old: usize, new: usize },
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> InstallError + '_ {
@@ -175,6 +179,7 @@ pub fn install_with_limits(
         hero: meta.hero,
         category: meta.category,
         notes: None,
+        source: None,
     };
     if let Err(e) = sidecar::write(addons_dir, &new_sidecar) {
         rollback(&moved);
@@ -225,7 +230,14 @@ pub fn install_local_with(
         hero: None,
         category: None,
     };
-    install_with(file, meta, paths, game_running)
+    let mut sc = install_with(file, meta, paths, game_running)?;
+    // Recorded so a newer copy of the same file is recognised as an update.
+    if let Some(source) = source_name(file) {
+        sc.source = Some(source);
+        // Best effort: the mod is installed; only update matching gets weaker.
+        let _ = sidecar::write(&paths.addons, &sc);
+    }
+    Ok(sc)
 }
 
 /// Remove all of a mod's VPK files (including disabled forms and chunk files when it
@@ -865,4 +877,382 @@ fn ensure_no_symlink_chain(root: &Path, dir: &Path) -> Result<(), InstallError> 
         }
     }
     Ok(())
+}
+
+// ---- updating a local mod from a file ----
+
+/// What a local file would install, read before anything in `addons` changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inspected {
+    /// The file name (`cool_mod_v2.zip`).
+    pub source: String,
+    /// The file stem, the default name for a new mod.
+    pub name: String,
+    /// Number of dir VPKs it holds.
+    pub vpk_count: usize,
+    /// Inner paths of all its VPKs (empty when they cannot be parsed).
+    pub paths: BTreeSet<String>,
+}
+
+/// Why a file was taken for a newer version of an installed mod.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchReason {
+    /// Same file name as the mod was installed or last updated from.
+    SameSource,
+    /// The file name matches the mod's name.
+    SameName,
+    /// The VPKs replace mostly the same game files.
+    SameFiles,
+}
+
+/// An installed mod a dropped file most likely updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateMatch {
+    /// Index into the `mods` slice given to [`find_update_target`].
+    pub index: usize,
+    pub reason: MatchReason,
+}
+
+/// Share of inner paths two VPK sets must have in common (Jaccard index)
+/// to count as the same mod.
+pub const OVERLAP_THRESHOLD: f64 = 0.5;
+
+/// Extract `file` into a scratch dir and read what it holds. Nothing in
+/// `addons` changes (the scratch dir is removed again).
+pub fn inspect(file: &Path, paths: &GamePaths) -> Result<Inspected, InstallError> {
+    let addons_dir = paths.addons.as_path();
+    clean_stale_staging(addons_dir);
+    let format = detect_format(file)?;
+    let staging = Staging::create(addons_dir)?;
+    extract(format, file, staging.path(), Limits::default())?;
+    let staged = collect_vpks(staging.path())?;
+    if staged.is_empty() {
+        return Err(InstallError::NoVpk);
+    }
+    let mut inner = BTreeSet::new();
+    for vpk in &staged {
+        inner.extend(vpk_paths(&vpk.file));
+    }
+    Ok(Inspected {
+        source: source_name(file).unwrap_or_default(),
+        name: file_stem(file),
+        vpk_count: staged.len(),
+        paths: inner,
+    })
+}
+
+/// The installed mod `new` most likely is a newer version of, if any. Only
+/// local mods (installed from a file or adopted) and hand-added paks are
+/// candidates; catalog mods update through the catalog. Hand-added paks
+/// match only by content. Checks, in order: same source file name, file name
+/// equal to the mod name, then the largest inner-path overlap of at least
+/// [`OVERLAP_THRESHOLD`]. A mod with a different VPK count never matches.
+pub fn find_update_target(mods: &[InstalledMod], new: &Inspected) -> Option<UpdateMatch> {
+    let candidates: Vec<(usize, &InstalledMod)> = mods
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.vpks.len() == new.vpk_count
+                && m.sidecar
+                    .as_ref()
+                    .is_none_or(|s| sidecar::is_local(&s.mod_id))
+        })
+        .collect();
+    let source = name_key(&new.source);
+    let stem = name_key(&new.name);
+    let by_key = |reason: MatchReason, key: &dyn Fn(&Sidecar) -> Option<String>, want: &str| {
+        if want.is_empty() {
+            return None;
+        }
+        candidates.iter().find_map(|(i, m)| {
+            let sc = m.sidecar.as_ref()?;
+            (key(sc).map(|k| name_key(&k)).as_deref() == Some(want))
+                .then_some(UpdateMatch { index: *i, reason })
+        })
+    };
+    if let Some(m) = by_key(MatchReason::SameSource, &|s| s.source.clone(), &source) {
+        return Some(m);
+    }
+    if let Some(m) = by_key(MatchReason::SameName, &|s| Some(s.name.clone()), &stem) {
+        return Some(m);
+    }
+    if new.paths.is_empty() {
+        return None;
+    }
+    candidates
+        .iter()
+        .filter_map(|(i, m)| {
+            let old: BTreeSet<String> = m.vpks.iter().flat_map(|v| vpk_paths(&v.file)).collect();
+            let score = overlap(&old, &new.paths);
+            (score >= OVERLAP_THRESHOLD).then_some((*i, score))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(index, _)| UpdateMatch {
+            index,
+            reason: MatchReason::SameFiles,
+        })
+}
+
+/// Jaccard index of two path sets (0 when both are empty).
+pub fn overlap(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    a.intersection(b).count() as f64 / union as f64
+}
+
+/// A file or mod name reduced for comparison: extension dropped, lowercase
+/// letters and digits only, and trailing version digits (with a `v` before
+/// them) removed. `Cool Mod v1.2.zip` and `cool_mod_v13.7z` both give
+/// `coolmod`. Returns "" when less than three characters are left.
+pub fn name_key(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let stem = [".vpk", ".zip", ".rar", ".7z"]
+        .iter()
+        .find_map(|ext| lower.strip_suffix(ext))
+        .unwrap_or(&lower);
+    let mut key: String = stem.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    // Trailing version: digits, optionally preceded by a `v`.
+    let digits = key.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    if digits < key.len() {
+        key.truncate(digits);
+        if key.ends_with('v') {
+            key.pop();
+        }
+    }
+    if key.len() < 3 { String::new() } else { key }
+}
+
+/// The result of [`replace_local`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replaced {
+    pub sidecar: Sidecar,
+    /// Where the old files were moved, inside `<addons>/.shiv/backup`.
+    pub backup: PathBuf,
+}
+
+/// Replace the files of the local or hand-added mod `target` with the VPKs
+/// in `file`, in place: each new VPK takes the pak name (and enabled state)
+/// of the old one it replaces, so the load order does not change. The name
+/// and notes stay; a hand-added pak gets a sidecar named after the file. The
+/// old files are moved to `<addons>/.shiv/backup/<stamp>-<id>/`, not deleted.
+pub fn replace_local(
+    file: &Path,
+    target: &InstalledMod,
+    paths: &GamePaths,
+) -> Result<Replaced, InstallError> {
+    replace_local_with(file, target, paths, game::is_running)
+}
+
+/// [`replace_local`] with an injectable running-game check.
+pub fn replace_local_with(
+    file: &Path,
+    target: &InstalledMod,
+    paths: &GamePaths,
+    game_running: impl Fn() -> bool,
+) -> Result<Replaced, InstallError> {
+    if game_running() {
+        return Err(InstallError::GameRunning);
+    }
+    if target.vpks.is_empty()
+        || target
+            .sidecar
+            .as_ref()
+            .is_some_and(|s| !sidecar::is_local(&s.mod_id))
+    {
+        return Err(InstallError::NotLocal);
+    }
+    let addons_dir = paths.addons.as_path();
+    clean_stale_staging(addons_dir);
+    let format = detect_format(file)?;
+    let staging = Staging::create(addons_dir)?;
+    extract(format, file, staging.path(), Limits::default())?;
+    let staged = collect_vpks(staging.path())?;
+    if staged.is_empty() {
+        return Err(InstallError::NoVpk);
+    }
+    let mut old: Vec<&addons::InstalledVpk> = target.vpks.iter().collect();
+    old.sort_by(|a, b| {
+        (a.pak.unwrap_or(u32::MAX), &a.file).cmp(&(b.pak.unwrap_or(u32::MAX), &b.file))
+    });
+    if old.len() != staged.len() {
+        return Err(InstallError::VpkCountMismatch {
+            old: old.len(),
+            new: staged.len(),
+        });
+    }
+
+    // Plan everything before the first move.
+    let mut place: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut retire: Vec<PathBuf> = Vec::new();
+    let mut dir_names: Vec<String> = Vec::new();
+    for (new, old) in staged.iter().zip(&old) {
+        let dir = old.file.parent().ok_or(InstallError::NotLocal)?;
+        let name = old
+            .file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or(InstallError::NotLocal)?;
+        let enabled_name = name.strip_suffix(DISABLED_EXT).unwrap_or(name);
+        if !is_plain_vpk_name(enabled_name) {
+            return Err(InstallError::NotLocal);
+        }
+        let suffix = if old.enabled { "" } else { DISABLED_EXT };
+        place.push((
+            new.file.clone(),
+            dir.join(format!("{enabled_name}{suffix}")),
+        ));
+        if !new.chunks.is_empty() {
+            // Chunk files are named after the pak number.
+            let Some(number) = old.pak else {
+                return Err(InstallError::UnsafePath(format!(
+                    "{enabled_name} has no pak number for the new chunk files"
+                )));
+            };
+            for (digits, chunk) in &new.chunks {
+                place.push((
+                    chunk.clone(),
+                    dir.join(format!("pak{number:02}_{digits}.vpk{suffix}")),
+                ));
+            }
+        }
+        dir_names.push(enabled_name.to_owned());
+        retire.push(old.file.clone());
+        retire.extend(old.chunks.iter().cloned());
+    }
+
+    let id = match &target.sidecar {
+        Some(sc) => sc.mod_id.clone(),
+        None => file_stem(&old[0].file),
+    };
+    let backup = backup_dir(addons_dir, &id)?;
+
+    // Old files out, then new files in; any failure puts the old ones back.
+    let mut retired: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut placed: Vec<PathBuf> = Vec::new();
+    let undo = |retired: &[(PathBuf, PathBuf)], placed: &[PathBuf]| {
+        for p in placed {
+            let _ = fs::remove_file(p);
+        }
+        for (from, to) in retired {
+            let _ = fs::rename(to, from);
+        }
+        let _ = fs::remove_dir(&backup);
+    };
+    for from in &retire {
+        let Some(name) = from.file_name() else {
+            continue;
+        };
+        let to = backup.join(name);
+        if let Err(e) = fs::rename(from, &to) {
+            undo(&retired, &placed);
+            return Err(io_err(from)(e));
+        }
+        retired.push((from.clone(), to));
+    }
+    for (from, to) in &place {
+        if let Err(e) = move_into_place(from, to) {
+            undo(&retired, &placed);
+            return Err(e);
+        }
+        placed.push(to.clone());
+    }
+
+    let source = source_name(file);
+    let sc = match target.sidecar.clone() {
+        Some(mut sc) => {
+            sc.source = source;
+            sc
+        }
+        None => {
+            let mut vpks = dir_names;
+            vpks.sort();
+            Sidecar {
+                mod_id: sidecar::new_local_id(addons_dir),
+                name: file_stem(file),
+                version: None,
+                thumbnail_url: None,
+                vpks,
+                nsfw: Some(false),
+                hero: None,
+                category: None,
+                notes: None,
+                source,
+            }
+        }
+    };
+    if let Err(e) = sidecar::write(addons_dir, &sc) {
+        undo(&retired, &placed);
+        return Err(e.into());
+    }
+    Ok(Replaced {
+        sidecar: sc,
+        backup,
+    })
+}
+
+/// A fresh `<addons>/.shiv/backup/<unix secs>-<id>[-n]` directory.
+fn backup_dir(addons_dir: &Path, id: &str) -> Result<PathBuf, InstallError> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let root = addons_dir.join(SHIV_DIR).join(BACKUP_DIR);
+    fs::create_dir_all(&root).map_err(io_err(&root))?;
+    for n in 0u32.. {
+        let name = if n == 0 {
+            format!("{secs}-{safe}")
+        } else {
+            format!("{secs}-{safe}-{n}")
+        };
+        let dir = root.join(name);
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_err(&dir)(e)),
+        }
+    }
+    unreachable!("an unused backup dir")
+}
+
+/// Directory under `<addons>/.shiv` that keeps the files an update replaced.
+pub const BACKUP_DIR: &str = "backup";
+
+fn source_name(file: &Path) -> Option<String> {
+    file.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+fn file_stem(file: &Path) -> String {
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = name.strip_suffix(DISABLED_EXT).unwrap_or(&name).to_owned();
+    Path::new(&name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or(name)
+}
+
+/// Inner file paths of one dir VPK; empty when it cannot be parsed.
+fn vpk_paths(file: &Path) -> BTreeSet<String> {
+    vpk_parser::VpkParser::parse_directory_from_file(file)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|e| e.full_path.to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default()
 }

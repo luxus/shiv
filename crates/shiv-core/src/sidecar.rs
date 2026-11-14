@@ -59,6 +59,10 @@ pub struct Sidecar {
     /// Free text the user wrote about the mod. Not written when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// File name of the local file the mod was last installed or updated
+    /// from; used to recognise a newer copy of the same file. Not written when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Prefix of the ids Shiv gives mods that do not come from the catalog: a VPK
@@ -254,6 +258,7 @@ pub fn adopt(
         hero: None,
         category: None,
         notes: notes.filter(|n| !n.trim().is_empty()),
+        source: None,
     };
     write(addons, &sidecar)?;
     Ok(sidecar)

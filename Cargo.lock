@@ -4459,6 +4459,7 @@ dependencies = [
  "thiserror 2.0.21",
  "unrar",
  "vpk-parser",
+ "vpkmanager",
  "zip",
 ]
 
@@ -4614,6 +4615,7 @@ dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
