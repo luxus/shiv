@@ -9,6 +9,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -21,7 +22,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::browse::{game_error_text, install_error_text, to_slint};
 use crate::thumbs;
-use crate::{App, InstalledRow, InstalledState, LoadState};
+use crate::{App, InstalledRow, InstalledState, LoadState, LocalInstallState, ModEditState};
 
 pub(crate) type Locate = Arc<dyn Fn() -> Result<GamePaths, GameError> + Send + Sync>;
 pub(crate) type Running = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -80,6 +81,14 @@ pub(crate) struct Entry {
     pub position: u32,
     pub can_up: bool,
     pub can_down: bool,
+    /// Installed from a local file or adopted (`sidecar::LOCAL_PREFIX` id).
+    pub local: bool,
+    /// The user's notes from the sidecar.
+    pub notes: Option<String>,
+    /// The sidecar's own name, without the id fallback (for the edit dialog).
+    pub raw_name: String,
+    /// Enabled-form file names, for the edit and adopt dialogs.
+    pub files: Vec<String>,
 }
 
 /// Whether the catalog's file version is newer than the installed one. Both
@@ -124,8 +133,14 @@ fn key(m: &InstalledMod) -> String {
 fn entry(m: &InstalledMod) -> Entry {
     let enabled = !m.vpks.is_empty() && m.vpks.iter().all(|v| v.enabled);
     let any_enabled = m.vpks.iter().any(|v| v.enabled);
+    let mut files: Vec<String> = m.vpks.iter().map(enabled_file_name).collect();
+    files.sort();
     let Some(s) = &m.sidecar else {
         return Entry {
+            local: false,
+            notes: None,
+            raw_name: String::new(),
+            files,
             id: key(m),
             name: key(m),
             detail: String::new(),
@@ -160,6 +175,10 @@ fn entry(m: &InstalledMod) -> Entry {
         parts.push("Partly enabled".into());
     }
     Entry {
+        local: sidecar::is_local(&s.mod_id),
+        notes: s.notes.clone().filter(|n| !n.is_empty()),
+        raw_name: s.name.clone(),
+        files,
         id: s.mod_id.clone(),
         name: if s.name.is_empty() {
             s.mod_id.clone()
@@ -310,6 +329,8 @@ struct Installed {
     /// A toggle or uninstall is running. Separate from `refreshing`: a
     /// Refresh finishing mid-action must not let a second action start.
     acting: Cell<bool>,
+    /// The mod the edit/adopt dialog is for: its id and whether it is adopted.
+    editing: RefCell<Option<(String, bool)>>,
 }
 
 /// Wire the Installed screen to `app` using the real game location.
@@ -329,6 +350,7 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         generation: Cell::new(0),
         refreshing: Cell::new(false),
         acting: Cell::new(false),
+        editing: RefCell::new(None),
     });
     INSTALLED.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<InstalledState>();
@@ -371,6 +393,42 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
     state.on_dismiss_banner(|| {
         with_installed(|i| i.with_state(|s| s.set_banner_text("".into())));
     });
+    state.on_edit(|id| with_installed(|i| i.open_edit(id.as_str())));
+    state.on_install_file(|| with_installed(|i| i.open_local_install()));
+    let edit = app.global::<ModEditState>();
+    edit.on_save(|| with_installed(|i| i.save_edit()));
+    edit.on_cancel(|| with_installed(|i| i.close_edit()));
+    let local = app.global::<LocalInstallState>();
+    local.on_browse(|| with_installed(|i| i.browse_file()));
+    local.on_install(|| with_installed(|i| i.install_file()));
+    local.on_cancel(|| {
+        with_installed(|i| {
+            i.with_app(|app| {
+                let s = app.global::<LocalInstallState>();
+                if !s.get_busy() {
+                    s.set_open(false);
+                }
+            });
+        });
+    });
+}
+
+/// A path typed or pasted into the install dialog: `~/` is the home folder,
+/// a `file://` URI its path, surrounding quotes and spaces are dropped.
+pub(crate) fn typed_path(text: &str, home: Option<&Path>) -> PathBuf {
+    let t = text.trim().trim_matches(|c| c == '"' || c == '\'');
+    let t = t.strip_prefix("file://").unwrap_or(t);
+    match (t.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(t),
+    }
+}
+
+/// The name a file installs under by default: its name without extension.
+fn default_name(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Switch the installed mod `id` on (after the conflict dialog allowed it).
@@ -425,12 +483,13 @@ impl Installed {
             id: e.id.as_str().into(),
             name: e.name.as_str().into(),
             detail: e.detail.as_str().into(),
-            tag: if e.managed {
-                ""
-            } else {
-                "Not installed by Shiv"
-            }
-            .into(),
+            tag: match (e.managed, &e.notes) {
+                (false, _) => "Not installed by Shiv. Adopt it to give it a name.".into(),
+                (true, Some(notes)) => notes.as_str().into(),
+                (true, None) if e.local => "Installed from a file".into(),
+                (true, None) => SharedString::new(),
+            },
+            local: e.local,
             enabled: e.enabled,
             managed: e.managed,
             position: e.position as i32,
@@ -448,6 +507,7 @@ impl Installed {
             };
         }
         if e.managed
+            && !e.local
             && update_available(
                 e.version.as_deref(),
                 crate::browse::catalog_version(&e.id).as_deref(),
@@ -614,6 +674,223 @@ impl Installed {
         self.act(id, Action::Toggle { enable });
     }
 
+    fn with_app(&self, f: impl FnOnce(&App)) {
+        if let Some(app) = self.weak.upgrade() {
+            f(&app);
+        }
+    }
+
+    /// Whether a row action or dialog may start now.
+    fn idle(&self) -> bool {
+        !self.refreshing.get() && !self.acting.get()
+    }
+
+    fn open_edit(&self, id: &str) {
+        if !self.idle() {
+            return;
+        }
+        let Some(e) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else {
+            return;
+        };
+        let adopt = !e.managed;
+        *self.editing.borrow_mut() = Some((e.id.clone(), adopt));
+        self.with_app(|app| {
+            let s = app.global::<ModEditState>();
+            s.set_adopt(adopt);
+            s.set_files(e.files.join(", ").into());
+            s.set_name(if adopt { "" } else { e.raw_name.as_str() }.into());
+            s.set_notes(e.notes.as_deref().unwrap_or("").into());
+            s.set_error_text("".into());
+            s.set_busy(false);
+            s.set_open(true);
+        });
+    }
+
+    fn close_edit(&self) {
+        *self.editing.borrow_mut() = None;
+        self.with_app(|app| app.global::<ModEditState>().set_open(false));
+    }
+
+    fn save_edit(&self) {
+        let Some((id, adopt)) = self.editing.borrow().clone() else {
+            return;
+        };
+        if self.acting.get() {
+            return;
+        }
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let s = app.global::<ModEditState>();
+        let name = s.get_name().to_string();
+        let notes = Some(s.get_notes().to_string());
+        if adopt && name.trim().is_empty() {
+            s.set_error_text("Give the mod a name.".into());
+            return;
+        }
+        let mod_ = self.mods.borrow().iter().find(|m| key(m) == id).cloned();
+        let Some(mod_) = mod_ else {
+            s.set_error_text("The mod is gone. Press Refresh.".into());
+            return;
+        };
+        s.set_busy(true);
+        s.set_error_text("".into());
+        self.set_flags(None, Some(true));
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-installed-edit",
+            move || -> Result<(), String> {
+                let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                let done = if adopt {
+                    sidecar::adopt(&paths.addons, &mod_, &name, notes)
+                } else {
+                    sidecar::edit(&paths.addons, &id, &name, notes)
+                };
+                done.map(|_| ()).map_err(|e| e.to_string())
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.edited(result));
+                });
+            },
+        );
+        if !started {
+            self.edited(Err("Could not start a background thread.".into()));
+        }
+    }
+
+    fn edited(&self, result: Result<(), String>) {
+        self.with_app(|app| {
+            let s = app.global::<ModEditState>();
+            s.set_busy(false);
+            match &result {
+                Ok(()) => s.set_open(false),
+                Err(text) => s.set_error_text(text.as_str().into()),
+            }
+        });
+        if result.is_ok() {
+            *self.editing.borrow_mut() = None;
+            self.acted(Ok(()));
+        } else {
+            self.set_flags(None, Some(false));
+        }
+    }
+
+    fn open_local_install(&self) {
+        if !self.idle() {
+            return;
+        }
+        self.with_app(|app| {
+            let s = app.global::<LocalInstallState>();
+            s.set_path("".into());
+            s.set_name("".into());
+            s.set_error_text("".into());
+            s.set_busy(false);
+            s.set_open(true);
+        });
+    }
+
+    /// The system file dialog blocks, so it runs on a worker.
+    fn browse_file(&self) {
+        let weak = self.weak.clone();
+        crate::spawn_worker(
+            "shiv-pick-file",
+            || {
+                rfd::FileDialog::new()
+                    .set_title("Install a mod from a file")
+                    .add_filter("Mods", &["vpk", "zip", "rar", "7z"])
+                    .add_filter("All files", &["*"])
+                    .pick_file()
+            },
+            move |picked| {
+                let picked = picked.ok().flatten();
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    let s = app.global::<LocalInstallState>();
+                    match picked {
+                        Some(path) => {
+                            if s.get_name().is_empty() {
+                                s.set_name(default_name(&path).into());
+                            }
+                            s.set_path(path.to_string_lossy().as_ref().into());
+                            s.set_error_text("".into());
+                        }
+                        None => {
+                            if s.get_path().is_empty() {
+                                s.set_error_text(
+                                    "No file picked. You can also type or paste its path.".into(),
+                                );
+                            }
+                        }
+                    }
+                });
+            },
+        );
+    }
+
+    fn install_file(&self) {
+        if !self.idle() {
+            return;
+        }
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let s = app.global::<LocalInstallState>();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let path = typed_path(&s.get_path(), home.as_deref());
+        if !path.is_file() {
+            s.set_error_text(format!("{} is not a file.", path.display()).into());
+            return;
+        }
+        let name = match s.get_name().trim() {
+            "" => default_name(&path),
+            n => n.to_owned(),
+        };
+        s.set_busy(true);
+        s.set_error_text("".into());
+        self.set_flags(None, Some(true));
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-install-file",
+            move || -> Result<String, String> {
+                let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                let running = deps.running.clone();
+                let sc = install::install_local_with(&path, &name, &paths, move || running())
+                    .map_err(|e| install_error_text(&e))?;
+                Ok(format!("Installed {} as {}.", sc.name, sc.vpks.join(", ")))
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.installed_file(result));
+                });
+            },
+        );
+        if !started {
+            self.installed_file(Err("Could not start a background thread.".into()));
+        }
+    }
+
+    fn installed_file(&self, result: Result<String, String>) {
+        self.with_app(|app| {
+            let s = app.global::<LocalInstallState>();
+            s.set_busy(false);
+            match &result {
+                Ok(_) => s.set_open(false),
+                Err(text) => s.set_error_text(text.as_str().into()),
+            }
+        });
+        match result {
+            Ok(text) => {
+                self.with_state(|s| s.set_banner_text(text.into()));
+                self.acted(Ok(()));
+            }
+            Err(_) => self.set_flags(None, Some(false)),
+        }
+    }
+
     fn act(&self, id: &str, action: Action) {
         if self.weak.upgrade().is_none() || self.refreshing.get() || self.acting.get() {
             return;
@@ -694,6 +971,7 @@ mod tests {
             nsfw: None,
             hero: None,
             category: None,
+            notes: None,
         }
     }
 
@@ -795,5 +1073,44 @@ mod tests {
             .map(|e| (e.position, e.can_up, e.can_down))
             .collect();
         assert_eq!(got, [(1, false, true), (2, true, false), (0, false, false)]);
+    }
+
+    #[test]
+    fn typed_paths_expand_home_uris_and_quotes() {
+        let home = Path::new("/home/kai");
+        assert_eq!(
+            typed_path("~/mods/a.vpk", Some(home)),
+            home.join("mods/a.vpk")
+        );
+        assert_eq!(
+            typed_path(" 'file:///tmp/b.zip' ", Some(home)),
+            PathBuf::from("/tmp/b.zip")
+        );
+        assert_eq!(typed_path("\"/x/c.vpk\"", None), PathBuf::from("/x/c.vpk"));
+        assert_eq!(typed_path("~/d.vpk", None), PathBuf::from("~/d.vpk"));
+    }
+
+    #[test]
+    fn local_mods_show_notes_and_files() {
+        let mut sc = sidecar("local-1-0", "Outlines");
+        sc.notes = Some("HoppCX".into());
+        sc.version = None;
+        let m = InstalledMod {
+            sidecar: Some(sc),
+            vpks: vec![vpk("pak56_dir.vpk", Some(56), true)],
+        };
+        let e = &entries(&[m])[0];
+        assert!(e.managed && e.local);
+        assert_eq!(e.notes.as_deref(), Some("HoppCX"));
+        assert_eq!(e.files, ["pak56_dir.vpk"]);
+        assert_eq!(e.raw_name, "Outlines");
+
+        let hand = InstalledMod {
+            sidecar: None,
+            vpks: vec![vpk("pak55_dir.vpk.disabled", Some(55), false)],
+        };
+        let e = &entries(&[hand])[0];
+        assert!(!e.managed && !e.local);
+        assert_eq!(e.files, ["pak55_dir.vpk"]);
     }
 }

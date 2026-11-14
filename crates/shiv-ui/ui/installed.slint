@@ -2,7 +2,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Button, TextButton, Switch, ProgressBar } from "widgets.slint";
+import { Button, TextButton, Switch, ProgressBar, SearchField } from "widgets.slint";
 import { LoadState, CenteredMessage } from "browse.slint";
 
 export struct InstalledRow {
@@ -27,6 +27,8 @@ export struct InstalledRow {
     position: int,
     can-up: bool,
     can-down: bool,
+    // Installed from a local file or adopted: no catalog page or updates.
+    local: bool,
 }
 
 export global InstalledState {
@@ -58,6 +60,10 @@ export global InstalledState {
     callback open-repair();
     // Open the mod's catalog detail page (managed mods only).
     callback open-detail(string);
+    // Rename or annotate a managed mod, or adopt one Shiv did not install.
+    callback edit(string);
+    // Install a .vpk or archive from disk.
+    callback install-file();
 }
 
 // A small triangle button for moving a mod up or down.
@@ -107,9 +113,9 @@ component InstalledRowView inherits Rectangle {
     background: hover-area.has-hover ? Theme.raised : transparent;
 
     hover-area := TouchArea {
-        mouse-cursor: root.item.managed ? pointer : default;
+        mouse-cursor: root.item.managed && !root.item.local ? pointer : default;
         clicked => {
-            if (root.item.managed) {
+            if (root.item.managed && !root.item.local) {
                 InstalledState.open-detail(root.item.id);
             }
         }
@@ -255,6 +261,11 @@ component InstalledRowView inherits Rectangle {
                     clicked => { InstalledState.update(root.item.id); }
                 }
                 TextButton {
+                    text: root.item.managed ? "Edit" : "Adopt";
+                    disabled: root.frozen;
+                    clicked => { InstalledState.edit(root.item.id); }
+                }
+                TextButton {
                     text: "Uninstall";
                     disabled: root.frozen;
                     clicked => { InstalledState.confirm-id = root.item.id; }
@@ -317,6 +328,11 @@ export component InstalledPage inherits Rectangle {
                 color: Theme.text-muted;
                 font-size: Theme.text-md;
                 vertical-alignment: center;
+            }
+            Button {
+                text: "Install from file";
+                disabled: InstalledState.game-running || InstalledState.busy;
+                clicked => { InstalledState.install-file(); }
             }
             TextButton {
                 text: "Refresh";
@@ -421,7 +437,7 @@ export component InstalledPage inherits Rectangle {
 
             if InstalledState.load-state == LoadState.ready && InstalledState.rows.length == 0: CenteredMessage {
                 title: "No mods installed";
-                detail: "Mods you install from Browse appear here.";
+                detail: "Mods you install from Browse or from a file appear here.";
             }
 
             ListView {
@@ -528,6 +544,181 @@ export component ConflictDialog inherits Rectangle {
                     clicked => { ConflictState.swap(); }
                 }
             }
+        }
+    }
+}
+
+// One labelled single-line text field for the dialogs below.
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> text <=> input.text;
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-muted;
+        font-size: Theme.text-sm;
+    }
+    input := SearchField {
+        placeholder: root.placeholder;
+    }
+}
+
+// Modal frame shared by the edit and install-from-file dialogs.
+component DialogCard inherits Rectangle {
+    in property <string> title;
+    background: Theme.bg-sunken.with-alpha(0.75);
+
+    // Swallow clicks on the scrim.
+    TouchArea { }
+
+    card := Rectangle {
+        width: min(520px, root.width - 2 * Theme.s4);
+        height: min(body.preferred-height, root.height - 2 * Theme.s4);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.raised;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        TouchArea { }
+
+        body := VerticalLayout {
+            padding: Theme.s3;
+            spacing: Theme.s2;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.text-xl;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            @children
+        }
+    }
+}
+
+export global ModEditState {
+    in-out property <bool> open;
+    // Adopting a mod Shiv did not install (otherwise editing a managed one).
+    in property <bool> adopt;
+    // The files the mod consists of, for orientation.
+    in property <string> files;
+    in-out property <string> name;
+    in-out property <string> notes;
+    in property <string> error-text;
+    in property <bool> busy;
+
+    callback save();
+    callback cancel();
+}
+
+export component ModEditDialog inherits DialogCard {
+    title: ModEditState.adopt ? "Adopt mod" : "Edit mod";
+    Text {
+        text: ModEditState.adopt
+            ? "Shiv records " + ModEditState.files + " as a mod it manages. The files stay where they are and are not changed."
+            : ModEditState.files;
+        color: Theme.text-muted;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    Field {
+        label: "Name";
+        placeholder: "Display name";
+        text <=> ModEditState.name;
+    }
+    Field {
+        label: "Notes";
+        placeholder: "Optional, e.g. where the mod came from";
+        text <=> ModEditState.notes;
+    }
+    if ModEditState.error-text != "": Text {
+        text: ModEditState.error-text;
+        color: Theme.danger;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: Theme.s1;
+        alignment: end;
+        TextButton {
+            text: "Cancel";
+            disabled: ModEditState.busy;
+            clicked => { ModEditState.cancel(); }
+        }
+        Button {
+            text: ModEditState.adopt ? "Adopt" : "Save";
+            primary: true;
+            disabled: ModEditState.busy;
+            clicked => { ModEditState.save(); }
+        }
+    }
+}
+
+export global LocalInstallState {
+    in-out property <bool> open;
+    in-out property <string> path;
+    in-out property <string> name;
+    in property <string> error-text;
+    in property <bool> busy;
+
+    // Pick the file with the system file dialog.
+    callback browse();
+    callback install();
+    callback cancel();
+}
+
+export component LocalInstallDialog inherits DialogCard {
+    title: "Install from file";
+    Text {
+        text: "A .vpk file, or a zip, rar or 7z archive with VPKs inside. Shiv copies it into a free pak slot; the original file stays where it is.";
+        color: Theme.text-muted;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: Theme.s1;
+        Field {
+            horizontal-stretch: 1;
+            label: "File";
+            placeholder: "/path/to/mod.vpk";
+            text <=> LocalInstallState.path;
+        }
+        VerticalLayout {
+            alignment: end;
+            Button {
+                text: "Browse";
+                disabled: LocalInstallState.busy;
+                clicked => { LocalInstallState.browse(); }
+            }
+        }
+    }
+    Field {
+        label: "Name";
+        placeholder: "Defaults to the file name";
+        text <=> LocalInstallState.name;
+    }
+    if LocalInstallState.error-text != "": Text {
+        text: LocalInstallState.error-text;
+        color: Theme.danger;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: Theme.s1;
+        alignment: end;
+        TextButton {
+            text: "Cancel";
+            disabled: LocalInstallState.busy;
+            clicked => { LocalInstallState.cancel(); }
+        }
+        Button {
+            text: LocalInstallState.busy ? "Installing" : "Install";
+            primary: true;
+            disabled: LocalInstallState.busy || LocalInstallState.path == "";
+            clicked => { LocalInstallState.install(); }
         }
     }
 }

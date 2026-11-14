@@ -332,6 +332,7 @@ mod tests {
                 nsfw: None,
                 hero: None,
                 category: None,
+                notes: None,
             },
         )
         .unwrap();
@@ -1396,6 +1397,7 @@ mod tests {
                 nsfw: None,
                 hero: None,
                 category: None,
+                notes: None,
             },
         )
         .expect("sidecar");
@@ -1453,7 +1455,7 @@ mod tests {
             ("Test Mod", true, true)
         );
         assert_eq!((r1.name.as_str(), r1.managed), ("custom.vpk", false));
-        assert_eq!(r1.tag.as_str(), "Not installed by Shiv");
+        assert!(r1.tag.starts_with("Not installed by Shiv"), "{}", r1.tag);
         assert!(!state.get_game_running());
 
         // Toggle off: dir and chunk gain `.disabled`, the pak number is untouched.
@@ -1601,6 +1603,78 @@ mod tests {
         assert!(!exists("custom.vpk"));
         assert_eq!(state.get_load_state(), LoadState::Ready);
         assert_eq!(state.get_banner_text(), "");
+
+        // Adopt a hand-added pak: only a sidecar is written, the file stays.
+        std::fs::write(addons.join("pak55_dir.vpk"), b"hits").expect("vpk");
+        state.invoke_refresh();
+        let rows_are = |n: usize| {
+            move |a: &App| {
+                let s = a.global::<InstalledState>();
+                s.get_rows().row_count() == n && !s.get_busy()
+            }
+        };
+        assert!(run_until(&app, Duration::from_secs(20), rows_are(1)));
+        state.invoke_edit("pak55_dir.vpk".into());
+        let edit = app.global::<crate::ModEditState>();
+        assert!(edit.get_open() && edit.get_adopt());
+        edit.set_name("Hitsound".into());
+        edit.set_notes("jcStani".into());
+        edit.invoke_save();
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy()
+                && s.get_rows()
+                    .row_data(0)
+                    .is_some_and(|r| r.managed && r.local && r.name == "Hitsound")
+        }));
+        assert!(!edit.get_open());
+        let r = state.get_rows().row_data(0).expect("row");
+        assert_eq!(r.tag.as_str(), "jcStani");
+        assert_eq!(
+            std::fs::read(addons.join("pak55_dir.vpk")).expect("read"),
+            b"hits"
+        );
+
+        // Install a bare VPK from a file outside the game folder.
+        let src = root.path().join("outline.vpk");
+        std::fs::write(&src, b"\x34\x12\xaa\x55\x02\x00\x00\x00x").expect("src");
+        state.invoke_install_file();
+        let local = app.global::<crate::LocalInstallState>();
+        assert!(local.get_open());
+        local.set_path(src.to_string_lossy().as_ref().into());
+        local.invoke_install();
+        assert!(run_until(&app, Duration::from_secs(20), rows_are(2)));
+        assert!(!local.get_open(), "{}", local.get_error_text());
+        assert!(
+            state.get_banner_text().contains("pak01_dir.vpk"),
+            "{}",
+            state.get_banner_text()
+        );
+        assert!(src.exists() && exists("pak01_dir.vpk"));
+
+        // Rename it.
+        let id = state.get_rows().row_data(0).expect("row").id;
+        assert_eq!(state.get_rows().row_data(0).expect("row").name, "outline");
+        state.invoke_edit(id.clone());
+        assert!(edit.get_open() && !edit.get_adopt());
+        assert_eq!(edit.get_name(), "outline");
+        edit.set_name("Outlines".into());
+        edit.invoke_save();
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy()
+                && s.get_rows()
+                    .row_data(0)
+                    .is_some_and(|r| r.name == "Outlines")
+        }));
+
+        // Clean up for the error-state checks below.
+        state.invoke_uninstall(id);
+        assert!(run_until(&app, Duration::from_secs(20), rows_are(1)));
+        let hit = state.get_rows().row_data(0).expect("row").id;
+        state.invoke_uninstall(hit);
+        assert!(run_until(&app, Duration::from_secs(20), rows_are(0)));
+        state.set_banner_text("".into());
 
         // Error states: game not found, addons folder unreadable; Retry recovers.
         let broken = Arc::new(AtomicBool::new(true));
@@ -2186,6 +2260,7 @@ mod tests {
                     nsfw,
                     hero: None,
                     category: None,
+                    notes: None,
                 },
             )
             .expect("sidecar");
