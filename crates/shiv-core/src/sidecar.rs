@@ -33,6 +33,8 @@ pub enum SidecarError {
     },
     #[error(transparent)]
     Addons(#[from] AddonsError),
+    #[error("no such mod, or it is already managed by Shiv")]
+    NotAdoptable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +56,32 @@ pub struct Sidecar {
     pub hero: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Free text the user wrote about the mod. Not written when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Prefix of the ids Shiv gives mods that do not come from the catalog: a VPK
+/// or archive installed from a local file, or a hand-added pak adopted in place.
+pub const LOCAL_PREFIX: &str = "local-";
+
+/// Whether `mod_id` names a local mod (see [`LOCAL_PREFIX`]), which has no
+/// catalog entry, detail page or updates.
+pub fn is_local(mod_id: &str) -> bool {
+    mod_id.starts_with(LOCAL_PREFIX)
+}
+
+/// A fresh local mod id (`local-<unix seconds>-<n>`) no sidecar in `addons` uses.
+pub fn new_local_id(addons: &Path) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = addons.join(DIR);
+    (0u32..)
+        .map(|n| format!("{LOCAL_PREFIX}{secs}-{n}"))
+        .find(|id| !dir.join(format!("{id}.json")).exists())
+        .expect("an unused local id")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +227,51 @@ pub fn write(addons: &Path, sidecar: &Sidecar) -> Result<(), SidecarError> {
         let _ = fs::remove_file(&tmp);
         io_err(&final_path, e)
     })
+}
+
+/// Record a mod Shiv did not install (no sidecar) as a local mod named
+/// `name`, so it can be named, noted and kept together. Only a sidecar is
+/// written: the mod's files are not moved, renamed or changed.
+pub fn adopt(
+    addons: &Path,
+    m: &InstalledMod,
+    name: &str,
+    notes: Option<String>,
+) -> Result<Sidecar, SidecarError> {
+    let mut vpks: Vec<String> = m.vpks.iter().filter_map(enabled_name).collect();
+    vpks.sort();
+    vpks.dedup();
+    if m.sidecar.is_some() || vpks.is_empty() {
+        return Err(SidecarError::NotAdoptable);
+    }
+    let sidecar = Sidecar {
+        mod_id: new_local_id(addons),
+        name: name.trim().to_owned(),
+        version: None,
+        thumbnail_url: None,
+        vpks,
+        nsfw: Some(false),
+        hero: None,
+        category: None,
+        notes: notes.filter(|n| !n.trim().is_empty()),
+    };
+    write(addons, &sidecar)?;
+    Ok(sidecar)
+}
+
+/// Change the display name and notes of the mod `mod_id`. Only its sidecar
+/// is rewritten; an empty name falls back to the id on screen.
+pub fn edit(
+    addons: &Path,
+    mod_id: &str,
+    name: &str,
+    notes: Option<String>,
+) -> Result<Sidecar, SidecarError> {
+    let mut sidecar = read(addons, mod_id)?.ok_or(SidecarError::NotAdoptable)?;
+    sidecar.name = name.trim().to_owned();
+    sidecar.notes = notes.filter(|n| !n.trim().is_empty());
+    write(addons, &sidecar)?;
+    Ok(sidecar)
 }
 
 fn enabled_name(vpk: &InstalledVpk) -> Option<String> {

@@ -30,7 +30,7 @@ pub const MAX_ENTRIES: usize = 100_000;
 pub enum InstallError {
     #[error("Deadlock is running; close the game before changing mods")]
     GameRunning,
-    #[error("unsupported archive format (expected zip, rar or 7z)")]
+    #[error("unsupported file (expected a .vpk, or a zip, rar or 7z archive)")]
     UnsupportedArchive,
     #[error("the archive contains no .vpk file")]
     NoVpk,
@@ -174,6 +174,7 @@ pub fn install_with_limits(
         nsfw: Some(meta.nsfw),
         hero: meta.hero,
         category: meta.category,
+        notes: None,
     };
     if let Err(e) = sidecar::write(addons_dir, &new_sidecar) {
         rollback(&moved);
@@ -190,6 +191,41 @@ pub fn install_with_limits(
         }
     }
     Ok(new_sidecar)
+}
+
+/// Install a local `.vpk` file, or a zip, rar or 7z archive holding VPKs, as
+/// a local mod named `name` (see [`sidecar::LOCAL_PREFIX`]). The source file
+/// is copied or extracted, never moved or changed; it gets free pak slots
+/// exactly like a catalog download.
+pub fn install_local(file: &Path, name: &str, paths: &GamePaths) -> Result<Sidecar, InstallError> {
+    install_local_with(file, name, paths, game::is_running)
+}
+
+/// [`install_local`] with an injectable running-game check.
+pub fn install_local_with(
+    file: &Path,
+    name: &str,
+    paths: &GamePaths,
+    game_running: impl Fn() -> bool,
+) -> Result<Sidecar, InstallError> {
+    let fallback = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = match name.trim() {
+        "" => fallback,
+        n => n.to_owned(),
+    };
+    let meta = ModMeta {
+        mod_id: sidecar::new_local_id(&paths.addons),
+        name,
+        version: None,
+        thumbnail_url: None,
+        nsfw: false,
+        hero: None,
+        category: None,
+    };
+    install_with(file, meta, paths, game_running)
 }
 
 /// Remove all of a mod's VPK files (including disabled forms and chunk files when it
@@ -407,7 +443,12 @@ enum Format {
     Zip,
     Rar,
     SevenZ,
+    /// A bare VPK file, not an archive.
+    Vpk,
 }
+
+/// Valve's VPK header signature, 0x55aa1234 little-endian.
+const VPK_SIGNATURE: [u8; 4] = [0x34, 0x12, 0xaa, 0x55];
 
 fn detect_format(archive: &Path) -> Result<Format, InstallError> {
     let mut magic = [0u8; 6];
@@ -428,6 +469,8 @@ fn detect_format(archive: &Path) -> Result<Format, InstallError> {
         Ok(Format::Rar)
     } else if head.starts_with(b"7z\xbc\xaf\x27\x1c") {
         Ok(Format::SevenZ)
+    } else if head.starts_with(&VPK_SIGNATURE) {
+        Ok(Format::Vpk)
     } else {
         Err(InstallError::UnsupportedArchive)
     }
@@ -538,7 +581,37 @@ fn extract(
         Format::Zip => extract_zip(archive, dest, limits, &mut budget),
         Format::Rar => extract_rar(archive, dest, limits, &mut budget),
         Format::SevenZ => extract_7z(archive, dest, limits, &mut budget),
+        Format::Vpk => copy_vpk(archive, dest, &mut budget),
     }
+}
+
+/// Stage a bare VPK by copying it (the source stays untouched). A
+/// `pakNN_dir.vpk` brings its `pakNN_<digits>.vpk` chunk files along.
+fn copy_vpk(file: &Path, dest: &Path, budget: &mut Budget) -> Result<(), InstallError> {
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| is_vpk_name(n))
+        .unwrap_or("mod.vpk")
+        .to_owned();
+    let mut sources = vec![(file.to_path_buf(), name.clone())];
+    if let (Some((number, PakKind::Dir)), Some(dir)) = (parse_pak(&name), file.parent()) {
+        for entry in fs::read_dir(dir).map_err(io_err(dir))?.flatten() {
+            let Some(n) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if matches!(parse_pak(&n), Some((c, PakKind::Chunk(_))) if c == number) {
+                sources.push((entry.path(), n));
+            }
+        }
+    }
+    for (from, n) in sources {
+        let len = fs::metadata(&from).map_err(io_err(&from))?.len();
+        budget.charge(len)?;
+        let to = dest.join(&n);
+        fs::copy(&from, &to).map_err(io_err(&to))?;
+    }
+    Ok(())
 }
 
 /// Counts listed entries against the cap.

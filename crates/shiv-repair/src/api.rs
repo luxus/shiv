@@ -1260,6 +1260,7 @@ mod tests {
                 nsfw: None,
                 hero: None,
                 category: None,
+                notes: None,
             },
         )
         .unwrap();

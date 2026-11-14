@@ -12,6 +12,7 @@ fn sc(id: &str, vpks: &[&str]) -> Sidecar {
         nsfw: None,
         hero: None,
         category: None,
+        notes: None,
     }
 }
 
