@@ -15,14 +15,17 @@ use std::sync::Arc;
 
 use shiv_core::addons::{self, AddonsError};
 use shiv_core::game::{self, GameError, GamePaths};
-use shiv_core::install::{self, InstallError};
+use shiv_core::install::{self, InstallError, MatchReason};
 use shiv_core::sidecar::{self, InstalledMod, Move};
 use shiv_repair::OverlayState;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::browse::{game_error_text, install_error_text, to_slint};
 use crate::thumbs;
-use crate::{App, InstalledRow, InstalledState, LoadState, LocalInstallState, ModEditState};
+use crate::{
+    App, DropState, InstalledRow, InstalledState, LoadState, LocalInstallState, ModEditState,
+    UpdateFileState,
+};
 
 pub(crate) type Locate = Arc<dyn Fn() -> Result<GamePaths, GameError> + Send + Sync>;
 pub(crate) type Running = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -331,6 +334,8 @@ struct Installed {
     acting: Cell<bool>,
     /// The mod the edit/adopt dialog is for: its id and whether it is adopted.
     editing: RefCell<Option<(String, bool)>>,
+    /// Key of the mod the Update from file dialog replaces.
+    updating: RefCell<Option<String>>,
 }
 
 /// Wire the Installed screen to `app` using the real game location.
@@ -351,6 +356,7 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         refreshing: Cell::new(false),
         acting: Cell::new(false),
         editing: RefCell::new(None),
+        updating: RefCell::new(None),
     });
     INSTALLED.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<InstalledState>();
@@ -398,6 +404,22 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
     let edit = app.global::<ModEditState>();
     edit.on_save(|| with_installed(|i| i.save_edit()));
     edit.on_cancel(|| with_installed(|i| i.close_edit()));
+    state.on_update_file(|id| with_installed(|i| i.open_update(id.as_str())));
+    let update = app.global::<UpdateFileState>();
+    update.on_browse(|| with_installed(|i| i.browse_update_file()));
+    update.on_replace(|| with_installed(|i| i.replace_file()));
+    update.on_install_new(|| with_installed(|i| i.update_as_new()));
+    update.on_cancel(|| {
+        with_installed(|i| {
+            i.with_app(|app| {
+                let s = app.global::<UpdateFileState>();
+                if !s.get_busy() {
+                    s.set_open(false);
+                }
+            });
+            *i.updating.borrow_mut() = None;
+        });
+    });
     let local = app.global::<LocalInstallState>();
     local.on_browse(|| with_installed(|i| i.browse_file()));
     local.on_install(|| with_installed(|i| i.install_file()));
@@ -449,6 +471,26 @@ pub(crate) fn transfer_changed(id: &str) {
 
 /// Re-read the list after something outside the screen changed the addons
 /// folder (an update or a swap finished).
+/// Why the dialog thinks a dropped file updates the mod.
+pub(crate) fn reason_text(reason: MatchReason) -> &'static str {
+    match reason {
+        MatchReason::SameSource => "It has the same file name the mod was installed from.",
+        MatchReason::SameName => "Its file name matches the mod's name.",
+        MatchReason::SameFiles => "It changes mostly the same game files.",
+    }
+}
+
+/// A file is dragged over the window (`true`) or the drag left or ended.
+pub(crate) fn drop_hover(on: bool) {
+    with_installed(|i| i.with_app(|app| app.global::<DropState>().set_hover(on)));
+}
+
+/// A file was dropped on the window: install it, or offer to replace the
+/// local mod it is a newer version of.
+pub(crate) fn file_dropped(path: PathBuf) {
+    with_installed(|i| i.dropped(path));
+}
+
 pub(crate) fn reload() {
     with_installed(|i| i.refresh(false));
 }
@@ -891,6 +933,236 @@ impl Installed {
         }
     }
 
+    /// Whether any of the Installed dialogs is open.
+    fn dialog_open(&self, app: &App) -> bool {
+        app.global::<ModEditState>().get_open()
+            || app.global::<LocalInstallState>().get_open()
+            || app.global::<UpdateFileState>().get_open()
+    }
+
+    fn open_update(&self, id: &str) {
+        if !self.idle() {
+            return;
+        }
+        let Some(e) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else {
+            return;
+        };
+        self.show_update(&e.id, &e.name, "", "", false);
+    }
+
+    fn show_update(&self, id: &str, name: &str, path: &str, reason: &str, dropped: bool) {
+        *self.updating.borrow_mut() = Some(id.to_owned());
+        self.with_app(|app| {
+            let s = app.global::<UpdateFileState>();
+            s.set_target_name(name.into());
+            s.set_path(path.into());
+            s.set_reason_text(reason.into());
+            s.set_dropped(dropped);
+            s.set_error_text("".into());
+            s.set_busy(false);
+            s.set_open(true);
+        });
+    }
+
+    fn browse_update_file(&self) {
+        let weak = self.weak.clone();
+        crate::spawn_worker(
+            "shiv-pick-update",
+            || {
+                rfd::FileDialog::new()
+                    .set_title("Update a mod from a file")
+                    .add_filter("Mods", &["vpk", "zip", "rar", "7z"])
+                    .add_filter("All files", &["*"])
+                    .pick_file()
+            },
+            move |picked| {
+                if let Some(path) = picked.ok().flatten() {
+                    let _ = weak.upgrade_in_event_loop(move |app| {
+                        let s = app.global::<UpdateFileState>();
+                        s.set_path(path.to_string_lossy().as_ref().into());
+                        s.set_error_text("".into());
+                    });
+                }
+            },
+        );
+    }
+
+    /// Hand the dropped file over to the plain install dialog.
+    fn update_as_new(&self) {
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let s = app.global::<UpdateFileState>();
+        if s.get_busy() {
+            return;
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let path = typed_path(&s.get_path(), home.as_deref());
+        s.set_open(false);
+        *self.updating.borrow_mut() = None;
+        self.show_local_install(&path);
+    }
+
+    fn show_local_install(&self, path: &Path) {
+        self.with_app(|app| {
+            let s = app.global::<LocalInstallState>();
+            s.set_path(path.to_string_lossy().as_ref().into());
+            s.set_name(default_name(path).into());
+            s.set_error_text("".into());
+            s.set_busy(false);
+            s.set_open(true);
+        });
+    }
+
+    fn replace_file(&self) {
+        let Some(id) = self.updating.borrow().clone() else {
+            return;
+        };
+        if !self.idle() {
+            return;
+        }
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let s = app.global::<UpdateFileState>();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let path = typed_path(&s.get_path(), home.as_deref());
+        if !path.is_file() {
+            s.set_error_text(format!("{} is not a file.", path.display()).into());
+            return;
+        }
+        let target = self.mods.borrow().iter().find(|m| key(m) == id).cloned();
+        let Some(target) = target else {
+            s.set_error_text("The mod is gone. Press Refresh.".into());
+            return;
+        };
+        let name = s.get_target_name().to_string();
+        s.set_busy(true);
+        s.set_error_text("".into());
+        self.set_flags(None, Some(true));
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-replace-file",
+            move || -> Result<String, String> {
+                let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                let running = deps.running.clone();
+                let r = install::replace_local_with(&path, &target, &paths, move || running())
+                    .map_err(|e| install_error_text(&e))?;
+                let backup = r
+                    .backup
+                    .strip_prefix(&paths.addons)
+                    .unwrap_or(&r.backup)
+                    .display()
+                    .to_string();
+                Ok(format!(
+                    "Updated {name} in {}. The old file is in addons/{backup}.",
+                    r.sidecar.vpks.join(", ")
+                ))
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.replaced(result));
+                });
+            },
+        );
+        if !started {
+            self.replaced(Err("Could not start a background thread.".into()));
+        }
+    }
+
+    fn replaced(&self, result: Result<String, String>) {
+        self.with_app(|app| {
+            let s = app.global::<UpdateFileState>();
+            s.set_busy(false);
+            match &result {
+                Ok(_) => s.set_open(false),
+                Err(text) => s.set_error_text(text.as_str().into()),
+            }
+        });
+        match result {
+            Ok(text) => {
+                *self.updating.borrow_mut() = None;
+                self.with_state(|s| s.set_banner_text(text.into()));
+                self.acted(Ok(()));
+            }
+            Err(_) => self.set_flags(None, Some(false)),
+        }
+    }
+
+    /// Look inside the dropped file on a worker, then open the replace
+    /// dialog for the mod it matches or the install dialog prefilled.
+    fn dropped(&self, path: PathBuf) {
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        app.global::<DropState>().set_hover(false);
+        if app.get_screen() != 1 {
+            app.set_screen(1);
+        }
+        if self.dialog_open(&app) || !self.idle() {
+            self.with_state(|s| {
+                s.set_banner_text(
+                    "Finish or cancel the open dialog first, then drop the file again.".into(),
+                );
+            });
+            return;
+        }
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.with_state(|s| s.set_banner_text(format!("Checking {file}\u{2026}").into()));
+        self.set_flags(None, Some(true));
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let path_for_result = path.clone();
+        let started = crate::spawn_worker(
+            "shiv-inspect-drop",
+            move || -> Result<Option<(String, String, MatchReason)>, String> {
+                let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                let ins = install::inspect(&path, &paths).map_err(|e| install_error_text(&e))?;
+                let mods = sidecar::group(&paths.addons);
+                Ok(install::find_update_target(&mods, &ins).map(|m| {
+                    let target = &mods[m.index];
+                    let e = entry(target);
+                    (key(target), e.name, m.reason)
+                }))
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.inspected(path_for_result, result));
+                });
+            },
+        );
+        if !started {
+            self.set_flags(None, Some(false));
+        }
+    }
+
+    fn inspected(
+        &self,
+        path: PathBuf,
+        result: Result<Option<(String, String, MatchReason)>, String>,
+    ) {
+        self.set_flags(None, Some(false));
+        match result {
+            Err(text) => self.with_state(|s| s.set_banner_text(text.into())),
+            Ok(found) => {
+                self.with_state(|s| s.set_banner_text("".into()));
+                let shown = path.to_string_lossy().into_owned();
+                match found {
+                    Some((id, name, reason)) => {
+                        self.show_update(&id, &name, &shown, reason_text(reason), true)
+                    }
+                    None => self.show_local_install(&path),
+                }
+            }
+        }
+    }
+
     fn act(&self, id: &str, action: Action) {
         if self.weak.upgrade().is_none() || self.refreshing.get() || self.acting.get() {
             return;
@@ -972,6 +1244,7 @@ mod tests {
             hero: None,
             category: None,
             notes: None,
+            source: None,
         }
     }
 

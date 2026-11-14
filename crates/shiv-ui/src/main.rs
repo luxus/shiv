@@ -12,6 +12,7 @@ mod conflict;
 mod crosshair;
 mod describe;
 mod detail_tabs;
+mod dnd;
 mod downloads;
 mod installed;
 mod launch;
@@ -112,6 +113,12 @@ fn main() -> Result<(), slint::PlatformError> {
 
 fn run() -> Result<(), slint::PlatformError> {
     tune_allocator();
+    if let Err(e) = dnd::select_backend() {
+        // Slint falls back to its default backend; only file drops are lost.
+        log::line(format_args!(
+            "X11 backend unavailable, dropping files is off: {e}"
+        ));
+    }
     let app = App::new()?;
     // Override for testing (e.g. an unreachable URL to see the Retry state).
     let api_url = std::env::var("SHIV_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_owned());
@@ -124,6 +131,7 @@ fn run() -> Result<(), slint::PlatformError> {
     performance::attach(&app, &api_url);
     profiles::attach(&app);
     downloads::attach(&app);
+    dnd::attach(&app);
     // Debug builds only: open on another screen (e.g. for screenshots); 0 is Browse.
     #[cfg(debug_assertions)]
     if let Some(n) = std::env::var("SHIV_SCREEN")
@@ -333,6 +341,7 @@ mod tests {
                 hero: None,
                 category: None,
                 notes: None,
+                source: None,
             },
         )
         .unwrap();
@@ -1398,6 +1407,7 @@ mod tests {
                 hero: None,
                 category: None,
                 notes: None,
+                source: None,
             },
         )
         .expect("sidecar");
@@ -1667,6 +1677,86 @@ mod tests {
                     .row_data(0)
                     .is_some_and(|r| r.name == "Outlines")
         }));
+
+        // Update from file on the row: same slot and name, old file backed up.
+        let old_bytes = std::fs::read(addons.join("pak01_dir.vpk")).expect("read");
+        let v2 = root.path().join("outline_v2.vpk");
+        std::fs::write(&v2, b"\x34\x12\xaa\x55\x02\x00\x00\x00v2").expect("v2");
+        state.invoke_update_file(id.clone());
+        let update = app.global::<crate::UpdateFileState>();
+        assert!(update.get_open() && !update.get_dropped());
+        assert_eq!(update.get_target_name(), "Outlines");
+        update.set_path(v2.to_string_lossy().as_ref().into());
+        update.invoke_replace();
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy() && s.get_banner_text().contains("Updated Outlines")
+        }));
+        assert!(!update.get_open(), "{}", update.get_error_text());
+        assert_eq!(
+            std::fs::read(addons.join("pak01_dir.vpk")).expect("read"),
+            std::fs::read(&v2).expect("read")
+        );
+        let backups: Vec<_> = std::fs::read_dir(addons.join(".shiv/backup"))
+            .expect("backup dir")
+            .flatten()
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read(backups[0].path().join("pak01_dir.vpk")).expect("backup"),
+            old_bytes
+        );
+        let r = state.get_rows().row_data(0).expect("row");
+        assert_eq!((r.name.as_str(), r.id.as_str()), ("Outlines", id.as_str()));
+
+        // Dragging over the window shows the overlay; dropping hides it.
+        installed::drop_hover(true);
+        assert!(app.global::<crate::DropState>().get_hover());
+        installed::drop_hover(false);
+        assert!(!app.global::<crate::DropState>().get_hover());
+
+        // Dropping a newer copy of the same file offers to replace the mod.
+        let newer_dir = root.path().join("Downloads");
+        std::fs::create_dir_all(&newer_dir).expect("dir");
+        let v3 = newer_dir.join("outline_v2.vpk");
+        std::fs::write(&v3, b"\x34\x12\xaa\x55\x02\x00\x00\x00v3").expect("v3");
+        app.set_screen(0);
+        installed::file_dropped(v3.clone());
+        assert_eq!(app.get_screen(), 1, "a drop shows the Installed screen");
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            a.global::<crate::UpdateFileState>().get_open()
+        }));
+        assert!(update.get_dropped());
+        assert_eq!(update.get_target_name(), "Outlines");
+        assert!(update.get_reason_text().contains("same file name"));
+        assert_eq!(update.get_path().as_str(), v3.to_string_lossy());
+        // "Install as new mod" hands it to the install dialog instead.
+        update.invoke_install_new();
+        assert!(!update.get_open() && local.get_open());
+        assert_eq!(local.get_path().as_str(), v3.to_string_lossy());
+        assert_eq!(local.get_name(), "outline_v2");
+        local.invoke_cancel();
+        assert!(!local.get_open());
+
+        // A file matching nothing goes straight to the install dialog.
+        let other = newer_dir.join("Totally Different.vpk");
+        std::fs::write(&other, b"\x34\x12\xaa\x55\x02\x00\x00\x00zz").expect("other");
+        installed::file_dropped(other.clone());
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            a.global::<crate::LocalInstallState>().get_open()
+                && !a.global::<InstalledState>().get_busy()
+        }));
+        assert!(!update.get_open());
+        assert_eq!(local.get_name(), "Totally Different");
+        // A second drop while a dialog is open is refused with a hint.
+        installed::file_dropped(other.clone());
+        assert!(state.get_banner_text().contains("Finish or cancel"));
+        local.invoke_cancel();
+        assert_eq!(
+            std::fs::read(addons.join("pak01_dir.vpk")).expect("read"),
+            std::fs::read(&v2).expect("read"),
+            "nothing replaced without confirming"
+        );
 
         // Clean up for the error-state checks below.
         state.invoke_uninstall(id);
@@ -2261,6 +2351,7 @@ mod tests {
                     hero: None,
                     category: None,
                     notes: None,
+                    source: None,
                 },
             )
             .expect("sidecar");
