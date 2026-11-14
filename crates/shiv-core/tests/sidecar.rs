@@ -13,6 +13,7 @@ fn sc(id: &str, vpks: &[&str]) -> Sidecar {
         hero: None,
         category: None,
         notes: None,
+        source: None,
     }
 }
 

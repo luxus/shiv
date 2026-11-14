@@ -1261,6 +1261,7 @@ mod tests {
                 hero: None,
                 category: None,
                 notes: None,
+                source: None,
             },
         )
         .unwrap();

@@ -590,6 +590,7 @@ fn sidecar_with_traversal_vpk_name_deletes_nothing_outside_addons() {
         hero: None,
         category: None,
         notes: None,
+        source: None,
     };
     fs::write(e.paths.addons.join("pak01_dir.vpk"), b"x").unwrap();
     sidecar::write(&e.paths.addons, &evil).unwrap();
