@@ -50,6 +50,10 @@ impl Deps {
 const GAME_RUNNING_TEXT: &str =
     "Deadlock is running. Close it to enable, disable or uninstall mods.";
 const SUFFIX: &str = ".disabled";
+/// Shown when the file dialog returns nothing: cancelled, or no file dialog
+/// service (xdg-desktop-portal) is reachable.
+const NO_FILE_PICKED: &str =
+    "No file picked. You can also type or paste its path, or drop the file on the window.";
 
 thread_local! {
     static INSTALLED: RefCell<Option<Rc<Installed>>> = const { RefCell::new(None) };
@@ -860,9 +864,7 @@ impl Installed {
                         }
                         None => {
                             if s.get_path().is_empty() {
-                                s.set_error_text(
-                                    "No file picked. You can also type or paste its path.".into(),
-                                );
+                                s.set_error_text(NO_FILE_PICKED.into());
                             }
                         }
                     }
@@ -976,13 +978,18 @@ impl Installed {
                     .pick_file()
             },
             move |picked| {
-                if let Some(path) = picked.ok().flatten() {
-                    let _ = weak.upgrade_in_event_loop(move |app| {
-                        let s = app.global::<UpdateFileState>();
-                        s.set_path(path.to_string_lossy().as_ref().into());
-                        s.set_error_text("".into());
-                    });
-                }
+                let picked = picked.ok().flatten();
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    let s = app.global::<UpdateFileState>();
+                    match picked {
+                        Some(path) => {
+                            s.set_path(path.to_string_lossy().as_ref().into());
+                            s.set_error_text("".into());
+                        }
+                        None if s.get_path().is_empty() => s.set_error_text(NO_FILE_PICKED.into()),
+                        None => {}
+                    }
+                });
             },
         );
     }

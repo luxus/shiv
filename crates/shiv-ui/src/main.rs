@@ -115,9 +115,7 @@ fn run() -> Result<(), slint::PlatformError> {
     tune_allocator();
     if let Err(e) = dnd::select_backend() {
         // Slint falls back to its default backend; only file drops are lost.
-        log::line(format_args!(
-            "X11 backend unavailable, dropping files is off: {e}"
-        ));
+        log::line(format_args!("X11 backend unavailable (SHIV_X11): {e}"));
     }
     let app = App::new()?;
     // Override for testing (e.g. an unreachable URL to see the Retry state).
