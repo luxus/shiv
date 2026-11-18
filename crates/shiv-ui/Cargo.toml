@@ -38,6 +38,13 @@ rfd = "0.18"
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2.191"
 
+# Native Wayland file drops (src/dnd/wayland.rs): winit 0.30 has none, so
+# Shiv binds its own wl_data_device on winit's connection. Same versions as winit.
+[target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
+wayland-client = "0.31.10"
+wayland-backend = { version = "0.3.10", features = ["client_system"] }
+raw-window-handle = "0.6"
+
 [build-dependencies]
 slint-build = "1.18.1"
 

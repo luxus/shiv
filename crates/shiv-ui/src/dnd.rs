@@ -1,11 +1,13 @@
 //! Dropping a mod file on the window installs it, or replaces the local mod
 //! it is a newer version of (see `installed::file_dropped`).
 //!
-//! winit 0.30 reports file drops on X11, Windows and macOS, but its Wayland
-//! backend has no drag and drop. On Linux Shiv therefore runs through X11
-//! (XWayland on a Wayland desktop) when an X display is available. Set
-//! `SHIV_WAYLAND=1` to keep native Wayland; dropping files then does nothing
-//! and Install from file / Update from file still work.
+//! winit 0.30 reports file drops on X11, Windows and macOS but not on
+//! Wayland, so under Wayland Shiv listens itself (`wayland.rs`). Shiv runs
+//! natively under Wayland when `WAYLAND_DISPLAY` is set; `SHIV_X11=1` forces
+//! X11 (XWayland) instead, where winit's own drop events are used.
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+mod wayland;
 
 use std::ffi::OsStr;
 
@@ -14,22 +16,16 @@ use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
 use crate::{App, installed};
 
-/// Whether to ask winit for X11: an X display exists and native Wayland was
-/// not requested.
-pub(crate) fn prefer_x11(display: Option<&OsStr>, shiv_wayland: Option<&OsStr>) -> bool {
-    let display = display.is_some_and(|d| !d.is_empty());
-    let wayland = shiv_wayland.is_some_and(|v| !v.is_empty() && v != "0");
-    display && !wayland
+/// Whether to ask winit for X11: only when requested with `SHIV_X11`.
+pub(crate) fn force_x11(shiv_x11: Option<&OsStr>) -> bool {
+    shiv_x11.is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Select the winit backend, on X11 when [`prefer_x11`] says so. Must run
+/// Select the winit backend, on X11 when [`force_x11`] says so. Must run
 /// before the first window is created.
 pub fn select_backend() -> Result<(), slint::PlatformError> {
     #[cfg(all(unix, not(target_vendor = "apple")))]
-    if prefer_x11(
-        std::env::var_os("DISPLAY").as_deref(),
-        std::env::var_os("SHIV_WAYLAND").as_deref(),
-    ) {
+    if force_x11(std::env::var_os("SHIV_X11").as_deref()) {
         use winit::platform::x11::EventLoopBuilderExtX11;
         let mut builder = winit::event_loop::EventLoop::with_user_event();
         builder.with_x11();
@@ -41,12 +37,51 @@ pub fn select_backend() -> Result<(), slint::PlatformError> {
     Ok(())
 }
 
-/// Route file drag and drop events of the main window to the Installed screen.
+/// Route file drag and drop of the main window to the Installed screen:
+/// winit's events (X11, Windows, macOS) and, under Wayland, Shiv's own
+/// data device once the window exists.
 pub fn attach(app: &App) {
     app.window().on_winit_window_event(|_, event| {
         handle(event);
         EventResult::Propagate
     });
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    {
+        let weak = app.as_weak();
+        let _ = slint::spawn_local(async move {
+            let Some(app) = weak.upgrade() else { return };
+            let Ok(window) = app.window().winit_window().await else {
+                return;
+            };
+            if let Err(e) = start_wayland(&window) {
+                crate::log::line(format_args!("dropping files is off: {e}"));
+            }
+        });
+    }
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn start_wayland(window: &winit::window::Window) -> Result<(), String> {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    let handle = window.display_handle().map_err(|e| e.to_string())?;
+    let RawDisplayHandle::Wayland(wl) = handle.as_raw() else {
+        // X11: winit's own drop events apply.
+        return Ok(());
+    };
+    // SAFETY: winit's wl_display lives as long as its event loop, which
+    // runs until the process exits.
+    unsafe {
+        wayland::start(wl.display, |event| {
+            let _ = slint::invoke_from_event_loop(move || match event {
+                wayland::DropEvent::Hover(on) => installed::drop_hover(on),
+                wayland::DropEvent::Files(files) => {
+                    if let Some(first) = files.into_iter().next() {
+                        installed::file_dropped(first);
+                    }
+                }
+            });
+        })
+    }
 }
 
 fn handle(event: &winit::event::WindowEvent) {
@@ -64,12 +99,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn x11_only_with_a_display_and_without_the_opt_out() {
-        let d = Some(OsStr::new(":0"));
-        assert!(prefer_x11(d, None));
-        assert!(prefer_x11(d, Some(OsStr::new("0"))));
-        assert!(!prefer_x11(d, Some(OsStr::new("1"))));
-        assert!(!prefer_x11(None, None), "no X display: native Wayland");
-        assert!(!prefer_x11(Some(OsStr::new("")), None));
+    fn x11_only_on_request() {
+        assert!(!force_x11(None), "native Wayland by default");
+        assert!(!force_x11(Some(OsStr::new(""))));
+        assert!(!force_x11(Some(OsStr::new("0"))));
+        assert!(force_x11(Some(OsStr::new("1"))));
     }
 }

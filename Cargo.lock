@@ -4490,6 +4490,7 @@ dependencies = [
  "i-slint-backend-testing",
  "image",
  "libc",
+ "raw-window-handle",
  "rfd",
  "shiv-api",
  "shiv-core",
@@ -4500,6 +4501,8 @@ dependencies = [
  "tiny_http",
  "ureq",
  "vpkmanager",
+ "wayland-backend",
+ "wayland-client",
  "winresource",
 ]
 
