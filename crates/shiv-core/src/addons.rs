@@ -279,16 +279,27 @@ pub(crate) fn plan_reorder(order: &[InstalledVpk]) -> Result<ReorderPlan, Addons
     let ranked: Vec<&InstalledVpk> = order.iter().filter(|v| v.pak.is_some()).collect();
     let mut numbers: Vec<u32> = ranked.iter().filter_map(|v| v.pak).collect();
     numbers.sort_unstable();
+    plan_renumber(&ranked, &numbers)
+}
+
+/// Plan giving the pak-numbered VPKs `ranked` (dir files with their chunks,
+/// enabled or not) the pak numbers `numbers`, one per VPK in order: the i-th
+/// VPK takes `numbers[i]`. VPKs whose number does not change are left alone.
+/// The caller supplies exactly one number per VPK.
+pub(crate) fn plan_renumber(
+    ranked: &[&InstalledVpk],
+    numbers: &[u32],
+) -> Result<ReorderPlan, AddonsError> {
     let mut plan = ReorderPlan {
         moves: Vec::new(),
         names: Vec::new(),
     };
-    for (vpk, number) in ranked.into_iter().zip(numbers) {
-        if vpk.pak == Some(number) {
+    for (vpk, number) in ranked.iter().zip(numbers) {
+        if vpk.pak == Some(*number) {
             continue;
         }
         for (i, file) in std::iter::once(&vpk.file).chain(&vpk.chunks).enumerate() {
-            let to = renumbered(file, number).ok_or_else(|| AddonsError::NotAPak(file.clone()))?;
+            let to = renumbered(file, *number).ok_or_else(|| AddonsError::NotAPak(file.clone()))?;
             if i == 0 {
                 plan.names.push((enabled_name(file), enabled_name(&to)));
             }

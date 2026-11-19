@@ -35,6 +35,8 @@ pub enum SidecarError {
     Addons(#[from] AddonsError),
     #[error("no such mod, or it is already managed by Shiv")]
     NotAdoptable,
+    #[error("pak number {0} is outside 01..=99")]
+    BadPak(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +409,78 @@ pub fn move_mod(
         })
         .collect();
     let plan = addons::plan_reorder(&flat)?;
+    apply_plan(addons, &order, &plan)
+}
+
+/// Give `mods[index]`'s VPKs `pak` as their pak numbers. A mod with several
+/// VPKs takes `pak`, `pak + 1`, ... in its load order; every VPK of another
+/// mod with a number at or above `pak` moves up by that many places, and
+/// everything below stays, so no other mod changes its relative order. Files
+/// are renamed in two phases and the sidecars are kept pointing at them,
+/// with the same rollback as [`move_mod`]. A number outside `01..=99`, or one
+/// that would push another VPK past 99, fails before anything changes. Like
+/// [`move_mod`], a mod without a pak number (a hand-added file under another
+/// name) is not movable and the call is a no-op.
+pub fn set_pak(
+    addons: &Path,
+    mods: &[InstalledMod],
+    index: usize,
+    pak: u32,
+) -> Result<(), SidecarError> {
+    let Some(target) = mods.get(index).filter(|m| m.load_position() != u32::MAX) else {
+        return Ok(());
+    };
+    let take = target.vpks.iter().filter(|v| v.pak.is_some()).count() as u32;
+    if pak == 0 || pak + take - 1 > addons::PAK_CAPACITY {
+        return Err(SidecarError::BadPak(pak));
+    }
+    let order: Vec<&InstalledMod> = mods
+        .iter()
+        .filter(|m| m.load_position() != u32::MAX)
+        .collect();
+    if !order.iter().any(|m| std::ptr::eq(*m, target)) {
+        return Ok(());
+    }
+    // Every pak-numbered VPK in load order, marked when it belongs to the mod.
+    let mut ranked: Vec<(InstalledVpk, bool)> = Vec::new();
+    for m in &order {
+        let own = std::ptr::eq(*m, target);
+        let mut vpks = m.vpks.clone();
+        vpks.sort_by_key(|v| v.pak);
+        for v in vpks.into_iter().filter(|v| v.pak.is_some()) {
+            ranked.push((v, own));
+        }
+    }
+    let mut numbers: Vec<u32> = Vec::with_capacity(ranked.len());
+    let mut nth = 0u32;
+    for (v, own) in &ranked {
+        let old = v.pak.expect("ranked holds pak-numbered VPKs");
+        let n = if *own {
+            nth += 1;
+            pak + nth - 1
+        } else if old >= pak {
+            old + take
+        } else {
+            old
+        };
+        if n > addons::PAK_CAPACITY {
+            return Err(SidecarError::BadPak(pak));
+        }
+        numbers.push(n);
+    }
+    let refs: Vec<&InstalledVpk> = ranked.iter().map(|(v, _)| v).collect();
+    let plan = addons::plan_renumber(&refs, &numbers)?;
+    apply_plan(addons, &order, &plan)
+}
+
+/// Apply `plan`'s renames, then keep the sidecars in `order` pointing at the
+/// renamed files. On a failed sidecar write, the renames and the sidecars
+/// written so far are undone.
+fn apply_plan(
+    addons: &Path,
+    order: &[&InstalledMod],
+    plan: &addons::ReorderPlan,
+) -> Result<(), SidecarError> {
     addons::apply_moves(&plan.moves)?;
 
     let mut written: Vec<&Sidecar> = Vec::new();

@@ -345,3 +345,128 @@ fn move_fails_cleanly_when_a_file_is_gone() {
         ["pak01_dir.vpk"]
     );
 }
+
+#[test]
+fn set_pak_inserts_the_mod_and_shifts_higher_numbers_up() {
+    let d = tempdir().unwrap();
+    touch(
+        d.path(),
+        &[
+            "pak01_dir.vpk",
+            "pak02_dir.vpk",
+            "pak02_000.vpk",
+            "pak05_dir.vpk.disabled",
+        ],
+    );
+    sidecar::write(d.path(), &sc("a", &["pak01_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("c", &["pak05_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    // `c` sits at index 2; give it pak 2. `a` keeps 01, `b` shifts to 03.
+    sidecar::set_pak(d.path(), &mods, 2, 2).unwrap();
+
+    for f in [
+        "pak01_dir.vpk",
+        "pak02_dir.vpk.disabled",
+        "pak03_dir.vpk",
+        "pak03_000.vpk",
+    ] {
+        assert!(d.path().join(f).is_file(), "{f}");
+    }
+    for gone in ["pak02_dir.vpk", "pak02_000.vpk", "pak05_dir.vpk.disabled"] {
+        assert!(!d.path().join(gone).exists(), "{gone}");
+    }
+    // The chunk followed its dir file; the disabled state stayed.
+    assert_eq!(
+        fs::read(d.path().join("pak02_dir.vpk.disabled")).unwrap(),
+        b"pak05_dir.vpk.disabled"
+    );
+    assert_eq!(
+        fs::read(d.path().join("pak03_000.vpk")).unwrap(),
+        b"pak02_000.vpk"
+    );
+    assert_eq!(ids(d.path()), ["a", "c", "b"]);
+    assert_eq!(
+        sidecar::read(d.path(), "c").unwrap().unwrap().vpks,
+        ["pak02_dir.vpk"]
+    );
+    assert_eq!(
+        sidecar::read(d.path(), "b").unwrap().unwrap().vpks,
+        ["pak03_dir.vpk"]
+    );
+}
+
+#[test]
+fn set_pak_on_a_free_number_keeps_the_others_in_place() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak01_dir.vpk", "pak02_dir.vpk"]);
+    sidecar::write(d.path(), &sc("a", &["pak01_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    // A number nothing holds is taken literally; the load order follows it.
+    sidecar::set_pak(d.path(), &mods, 0, 40).unwrap();
+    assert!(d.path().join("pak40_dir.vpk").is_file());
+    assert!(!d.path().join("pak01_dir.vpk").exists());
+    assert!(d.path().join("pak02_dir.vpk").is_file());
+    assert_eq!(
+        sidecar::read(d.path(), "a").unwrap().unwrap().vpks,
+        ["pak40_dir.vpk"]
+    );
+    assert_eq!(ids(d.path()), ["b", "a"]);
+}
+
+#[test]
+fn set_pak_gives_a_multi_vpk_mod_consecutive_numbers() {
+    let d = tempdir().unwrap();
+    touch(
+        d.path(),
+        &["pak01_dir.vpk", "pak07_dir.vpk", "pak08_dir.vpk"],
+    );
+    sidecar::write(d.path(), &sc("a", &["pak01_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("d", &["pak07_dir.vpk", "pak08_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    // `d` takes pak 2 and pak 3; `a` stays at 01.
+    sidecar::set_pak(d.path(), &mods, 1, 2).unwrap();
+    for f in ["pak01_dir.vpk", "pak02_dir.vpk", "pak03_dir.vpk"] {
+        assert!(d.path().join(f).is_file(), "{f}");
+    }
+    assert!(!d.path().join("pak07_dir.vpk").exists());
+    assert!(!d.path().join("pak08_dir.vpk").exists());
+    assert_eq!(
+        sidecar::read(d.path(), "d").unwrap().unwrap().vpks,
+        ["pak02_dir.vpk", "pak03_dir.vpk"]
+    );
+    assert_eq!(ids(d.path()), ["a", "d"]);
+}
+
+#[test]
+fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak98_dir.vpk", "pak99_dir.vpk"]);
+    sidecar::write(d.path(), &sc("a", &["pak98_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("b", &["pak99_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    // The mod at 98 to pak 99 would push the one at 99 past the limit.
+    let err = sidecar::set_pak(d.path(), &mods, 0, 99).unwrap_err();
+    assert!(matches!(err, SidecarError::BadPak(99)), "{err:?}");
+    let err = sidecar::set_pak(d.path(), &mods, 0, 0).unwrap_err();
+    assert!(matches!(err, SidecarError::BadPak(0)), "{err:?}");
+    assert!(d.path().join("pak98_dir.vpk").is_file());
+    assert!(d.path().join("pak99_dir.vpk").is_file());
+    assert_eq!(
+        sidecar::read(d.path(), "a").unwrap().unwrap().vpks,
+        ["pak98_dir.vpk"]
+    );
+    assert_eq!(
+        sidecar::read(d.path(), "b").unwrap().unwrap().vpks,
+        ["pak99_dir.vpk"]
+    );
+
+    // A file without a pak number is not movable: a no-op, not an error.
+    touch(d.path(), &["custom.vpk"]);
+    let mods = sidecar::group(d.path());
+    let hand = mods.iter().position(|m| m.sidecar.is_none()).unwrap();
+    sidecar::set_pak(d.path(), &mods, hand, 5).unwrap();
+    assert!(d.path().join("custom.vpk").is_file());
+    assert!(!d.path().join("pak05_dir.vpk").exists());
+}
