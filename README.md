@@ -101,19 +101,39 @@ One command, no install step:
 nix run github:luxus/shiv
 ```
 
-Or in a flake-based config, add the input and use the package; it ships a
-desktop entry, so Shiv appears in the application menu:
+The package ships a desktop entry and an icon, so a system that installed
+it lists Shiv in the application menu.
+
+**In a flake-based config**, add the input once:
 
 ```nix
 inputs.shiv.url = "github:luxus/shiv";
-
-# system packages, hjem, home-manager — wherever your packages live:
-inputs.shiv.packages.${system}.default
 ```
 
-Developers get the pinned toolchain and the windowing libraries with
-`nix develop`, and `nix flake check` builds Shiv — tests included — the
-same way CI does.
+then use the package wherever your packages live:
+
+```nix
+# NixOS module
+environment.systemPackages = [ inputs.shiv.packages.${system}.default ];
+
+# home-manager / hjem, the same shape
+home.packages = [ inputs.shiv.packages.${system}.default ];
+```
+
+The package builds with the toolchain pinned in `rust-toolchain.toml`,
+links the system `zstd`, and runs the workspace tests inside the build —
+so an installed Shiv is a tested Shiv, and `nix flake check` builds exactly
+what CI builds.
+
+**Developers:** `nix develop` gives you the pinned toolchain, the Wayland
+and fontconfig libraries Slint renders with, and a `pkg-config` that finds
+them; `cargo` fetches the rest as usual.
+
+```sh
+nix develop
+cargo test --workspace          # everything
+cargo run --release -p shiv-ui  # the app
+```
 
 ### Windows
 
@@ -130,10 +150,20 @@ if you want to verify the download (`certutil -hashfile <file> SHA256` on Window
 ## Build from source
 
 You need a recent stable Rust toolchain (edition 2024) and the usual Linux
-windowing libraries (Wayland or X11, `libxkbcommon`, `fontconfig`).
+windowing libraries (Wayland or X11, `libxkbcommon`, `fontconfig`). On a
+Nix system, `nix develop` in a checkout provides all of it, pinned:
 
 ```sh
-git clone https://github.com/Siebe-Uy/shiv.git
+git clone https://github.com/luxus/shiv.git
+cd shiv
+nix develop
+cargo run --release -p shiv-ui      # the binary is target/release/shiv
+```
+
+Without Nix:
+
+```sh
+git clone https://github.com/luxus/shiv.git
 cd shiv
 cargo run --release -p shiv-ui      # the binary is target/release/shiv
 ```
