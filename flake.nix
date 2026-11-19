@@ -69,14 +69,19 @@
           ]
         );
 
-      # zstd-sys builds its C in the sandbox when nothing tells it not to;
-      # linking the nixpkgs zstd instead is one pkg-config lookup and
-      # skips a fragile vendored build.
-      zstdFromPkgConfig =
+      # zstd-sys builds its vendored C in the sandbox and fails there; the
+      # crate links the system zstd when told to. zstd.dev carries the
+      # libzstd.pc the build script looks up, so it belongs beside
+      # pkg-config in the native inputs.
+      zstdForPkgConfig =
         pkgs:
-        nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          ZSTD_SYS_USE_PKG_CONFIG = "1";
-        };
+        nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+          with pkgs;
+          [
+            pkg-config
+            zstd.dev
+          ]
+        );
 
       shivPackage =
         pkgs:
@@ -89,9 +94,12 @@
 
           doCheck = true;
 
-          env = zstdFromPkgConfig pkgs;
+          env = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            ZSTD_SYS_USE_PKG_CONFIG = "1";
+          };
 
-          nativeBuildInputs = windowingDeps pkgs ++ [ pkgs.copyDesktopItems ];
+          nativeBuildInputs =
+            windowingDeps pkgs ++ zstdForPkgConfig pkgs ++ [ pkgs.copyDesktopItems ];
           buildInputs = windowingDeps pkgs ++ [ pkgs.zstd ];
 
           desktopItems = [
@@ -150,8 +158,11 @@
                 pkgs.git
               ]
               ++ windowingDeps pkgs
+              ++ zstdForPkgConfig pkgs
               ++ nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.zstd ];
-            env = zstdFromPkgConfig pkgs;
+            env = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              ZSTD_SYS_USE_PKG_CONFIG = "1";
+            };
             shellHook = ''
               echo "shiv $(rustc --version)"
               echo "cargo test --workspace          — everything"
