@@ -92,7 +92,11 @@
           src = self;
           cargoLock.lockFile = "${self}/Cargo.lock";
 
-          doCheck = true;
+          # The install must not hinge on a UI test's environment: the
+          # sandbox has no $HOME or runtime dir, and the one integration
+          # test that inits the Slint platform needs one. The workspace
+          # tests run in `checks.tests` and on the GitHub CI instead.
+          doCheck = false;
 
           env = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             ZSTD_SYS_USE_PKG_CONFIG = "1";
@@ -172,12 +176,35 @@
         }
       );
 
-      # `nix flake check` — the package builds with its tests inside, the
-      # same gates CI runs, from one command.
+      # `nix flake check` — the package builds, and the workspace tests
+      # run beside it as their own derivation.
       checks = forAllSystems (
         pkgs:
         nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           shiv = shivPackage pkgs;
+
+          # The library, core and API tests: everything that needs no
+          # windowing environment. The one Slint integration test runs on
+          # the GitHub CI, where the environment is a real one.
+          tests =
+            pkgs.runCommand "shiv-tests"
+              {
+                nativeBuildInputs =
+                  [
+                    (toolchain pkgs)
+                    pkgs.git
+                  ]
+                  ++ windowingDeps pkgs
+                  ++ zstdForPkgConfig pkgs;
+                env = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+                  ZSTD_SYS_USE_PKG_CONFIG = "1";
+                };
+              }
+              ''
+                cd ${self}
+                cargo test --workspace --offline -p shiv-core -p shiv-api -p shiv-repair -p kv-parser -p vpk-parser -p vpkmanager -p source2-model
+                touch $out
+              '';
         }
       );
     };
