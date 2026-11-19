@@ -69,6 +69,15 @@
           ]
         );
 
+      # zstd-sys builds its C in the sandbox when nothing tells it not to;
+      # linking the nixpkgs zstd instead is one pkg-config lookup and
+      # skips a fragile vendored build.
+      zstdFromPkgConfig =
+        pkgs:
+        nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          ZSTD_SYS_USE_PKG_CONFIG = "1";
+        };
+
       shivPackage =
         pkgs:
         (rustPlatform pkgs).buildRustPackage {
@@ -80,8 +89,10 @@
 
           doCheck = true;
 
+          env = zstdFromPkgConfig pkgs;
+
           nativeBuildInputs = windowingDeps pkgs ++ [ pkgs.copyDesktopItems ];
-          buildInputs = windowingDeps pkgs;
+          buildInputs = windowingDeps pkgs ++ [ pkgs.zstd ];
 
           desktopItems = [
             (pkgs.makeDesktopItem {
@@ -138,7 +149,9 @@
                 (toolchain pkgs)
                 pkgs.git
               ]
-              ++ windowingDeps pkgs;
+              ++ windowingDeps pkgs
+              ++ nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.zstd ];
+            env = zstdFromPkgConfig pkgs;
             shellHook = ''
               echo "shiv $(rustc --version)"
               echo "cargo test --workspace          — everything"
