@@ -90,10 +90,14 @@ fn export_writes_a_bundle_another_manager_can_read() {
     let report = interchange::export(&e.paths.addons, &dest, &|_| None).unwrap();
 
     // A new folder under the asked one, holding the manifest and the VPKs.
-    assert!(report
-        .root
-        .to_string_lossy()
-        .contains("deadlock-mods-export-"), "{:?}", report.root);
+    assert!(
+        report
+            .root
+            .to_string_lossy()
+            .contains("deadlock-mods-export-"),
+        "{:?}",
+        report.root
+    );
     assert!(report.root.join("mod-interchange.json").is_file());
     assert_eq!(report.exported.len(), 2);
     assert!(report.skipped.is_empty());
@@ -153,7 +157,11 @@ fn exported_keys_stay_stable_across_exports() {
 fn export_maps_catalog_mods_to_gamebanana_keys() {
     let e = env();
     // A catalog mod: Shiv's own sidecar, as Browse installs it.
-    vpk(&e.paths.addons.join("pak01_dir.vpk"), &["a/x.vmat_c"], "cat");
+    vpk(
+        &e.paths.addons.join("pak01_dir.vpk"),
+        &["a/x.vmat_c"],
+        "cat",
+    );
     sidecar::write(
         &e.paths.addons,
         &sidecar::Sidecar {
@@ -211,7 +219,7 @@ fn import_round_trips_mods_enabled_state_and_order() {
     assert!(!mods[1].is_enabled());
     // The files arrived byte for byte under fresh pak slots.
     let first = files(&target.paths.addons);
-    assert!(first["pak01_dir.vpk"].len() > 0);
+    assert!(!first["pak01_dir.vpk"].is_empty());
     assert!(first.contains_key("pak02_dir.vpk.disabled"));
     // The bundle is never touched by an import.
     assert!(report.root.join("mod-interchange.json").is_file());
@@ -268,13 +276,15 @@ fn import_recognises_a_mod_the_catalog_already_knows() {
     )
     .unwrap();
     fs::write(target.paths.addons.join("pak01_dir.vpk"), b"already here").unwrap();
-    let imported =
-        interchange::import(&report.root, &target.paths, || false, &|key| {
-            (key == "gamebanana:mod:650634").then(|| "777".to_owned())
-        })
-        .unwrap();
+    let imported = interchange::import(&report.root, &target.paths, || false, &|key| {
+        (key == "gamebanana:mod:650634").then(|| "777".to_owned())
+    })
+    .unwrap();
     assert!(imported.installed.is_empty());
-    assert_eq!(imported.skipped[0], ("From Bundle".into(), "already installed".into()));
+    assert_eq!(
+        imported.skipped[0],
+        ("From Bundle".into(), "already installed".into())
+    );
     assert_eq!(sidecar::group(&target.paths.addons).len(), 1);
 }
 
@@ -441,7 +451,10 @@ fn import_skips_broken_entries_and_carries_on() {
     assert_eq!(
         skips,
         [
-            ("Missing File", "files/9999-missing/gone.vpk is missing from the bundle"),
+            (
+                "Missing File",
+                "files/9999-missing/gone.vpk is missing from the bundle"
+            ),
             ("Escape", "../../evil.vpk does not stay inside the bundle"),
             ("Only Variants", "no selected VPK files in the bundle"),
         ]
@@ -478,6 +491,33 @@ fn manifests_are_validated_before_anything_is_imported() {
     fs::create_dir_all(&empty).unwrap();
     let err = interchange::import(&empty, &e.paths, || false, &|_| None).unwrap_err();
     assert!(matches!(err, InterchangeError::NotABundle(_)), "{err:?}");
+}
+
+#[test]
+fn a_false_selected_survives_serialization() {
+    // The reader defaults `selected` to true, so a writer must never drop
+    // a false. This pins the bug where `skip_serializing_if` on the bool
+    // silently resurrected an unselected variant as selected for every
+    // other reader of the bundle.
+    let file = interchange::InterchangeFile {
+        name: "variant.vpk".into(),
+        path: "files/0000-x/variant.vpk".into(),
+        sha256: None,
+        size: None,
+        selected: false,
+    };
+    let json = serde_json::to_string(&file).unwrap();
+    assert!(
+        json.contains(r#""selected":false"#),
+        "the bundle must say a variant is unselected: {json}"
+    );
+    let back: interchange::InterchangeFile = serde_json::from_str(&json).unwrap();
+    assert!(!back.selected);
+    // And the lenient default holds: an old bundle without the field
+    // reads as selected, as the format requires.
+    let old: interchange::InterchangeFile =
+        serde_json::from_str(r#"{"name":"old.vpk","path":"files/0000-x/old.vpk"}"#).unwrap();
+    assert!(old.selected);
 }
 
 #[test]
@@ -537,7 +577,11 @@ fn import_refuses_while_the_game_runs_and_exports_into_a_new_folder() {
         "{err:?}"
     );
     // A hand-added file with no sidecar is exported as a local mod too.
-    fs::write(e.paths.addons.join("custom.vpk"), b"\x34\x12\xaa\x55\x02\x00\x00\x00hand").unwrap();
+    fs::write(
+        e.paths.addons.join("custom.vpk"),
+        b"\x34\x12\xaa\x55\x02\x00\x00\x00hand",
+    )
+    .unwrap();
     let report2 = interchange::export(&e.paths.addons, &dest, &|_| None).unwrap();
     let (_, doc) = interchange::read_manifest(&report2.root).unwrap();
     assert_eq!(doc.mods.len(), 2);

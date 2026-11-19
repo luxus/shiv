@@ -2,8 +2,21 @@
 
 // A GUI app on Windows: no console window behind it.
 #![cfg_attr(windows, windows_subsystem = "windows")]
+// A panic on the event loop takes the whole app down, so production code
+// returns errors instead; workers report a panic as a message. The
+// handful of justified `expect`s carry a scoped `#[allow]` with the
+// reason (docs/code-quality.md).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+// Unit tests inside src may unwrap freely.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-slint::include_modules!();
+// Slint's generated bindings are machine-made; their unwraps are the
+// generator's business, not Shiv's.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod generated {
+    slint::include_modules!();
+}
+pub use generated::*;
 
 use shiv_core::game::{self, GameError, GamePaths};
 
@@ -2018,7 +2031,7 @@ mod tests {
         // then retrying: the retry waits for the cancelled worker's answer,
         // so one link can never install twice.
         let rows_before = state.get_rows().row_count();
-        let guard = crate::browse::INSTALL_LOCK
+        let guard = shiv_core::install::INSTALL_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.invoke_install_file();

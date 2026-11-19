@@ -673,3 +673,205 @@ fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
     assert!(d.path().join("custom.vpk").is_file());
     assert!(!d.path().join("pak05_dir.vpk").exists());
 }
+
+#[test]
+fn set_pak_refuses_huge_numbers_without_overflowing() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak01_dir.vpk"]);
+    sidecar::write(d.path(), &sc("a", &["pak01_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    // Near-u32::MAX is refused as out of range by the check that runs
+    // before the block arithmetic, not wrapped into a number that fits.
+    for bad in [u32::MAX - 1, u32::MAX] {
+        let err = sidecar::set_pak(d.path(), &mods, 0, bad).unwrap_err();
+        assert!(matches!(err, SidecarError::BadPak(_)), "{err:?} for {bad}");
+    }
+    assert_eq!(
+        fs::read(d.path().join("pak01_dir.vpk")).unwrap(),
+        b"pak01_dir.vpk"
+    );
+}
+
+/// A tiny reproducible generator: a Lehmer LCG, so a failing case can be
+/// replayed from its seed.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0 >> 33
+    }
+
+    /// A value in `0..n`.
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Byte snapshot of everything `set_pak` may touch: the files directly in
+/// the folder and the sidecars in `.shiv`.
+fn snapshot(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    use std::collections::BTreeMap;
+    let mut out: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut add = |base: &std::path::Path, prefix: &str| {
+        for entry in fs::read_dir(base).unwrap().flatten() {
+            if entry.file_type().unwrap().is_file() {
+                out.insert(
+                    format!("{prefix}{}", entry.file_name().to_string_lossy()),
+                    fs::read(entry.path()).unwrap(),
+                );
+            }
+        }
+    };
+    add(dir, "");
+    add(&dir.join(".shiv"), ".shiv/");
+    out
+}
+
+/// The ids of the pak-movable mods, in load order.
+fn load_order(mods: &[shiv_core::sidecar::InstalledMod]) -> Vec<String> {
+    mods.iter()
+        .filter(|m| m.load_position() != u32::MAX)
+        .map(|m| m.sidecar.as_ref().unwrap().mod_id.clone())
+        .collect()
+}
+
+/// The invariants `set_pak` must hold, checked across random
+/// configurations instead of hand-computed examples: after a success,
+/// pak numbers stay unique and inside 01..=99, the target occupies exactly
+/// its asked block, every other mod keeps its relative order, sidecars
+/// point at files that exist and nothing else moves; after a refusal, not
+/// one byte changes. This is the test that would have caught a rename
+/// plan with duplicate targets (silent file loss) and the shift-amount
+/// errors.
+#[test]
+fn set_pak_invariants_hold_across_random_configurations() {
+    let mut rng = Lcg(0x5eed_1234);
+    for case in 0..120 {
+        let d = tempdir().unwrap();
+        // 1..=4 mods, each 1..=2 paks drawn unique from 1..=99, sometimes
+        // disabled; a hand-added file sometimes sits among them.
+        let n_mods = 1 + rng.below(4) as usize;
+        let mut pool: Vec<u32> = (1..=99).collect();
+        let mut meta: Vec<(String, Vec<u32>)> = Vec::new();
+        for m in 0..n_mods {
+            let count = 1 + rng.below(2) as usize;
+            let mut paks = Vec::new();
+            for _ in 0..count {
+                paks.push(pool.remove(rng.below(pool.len() as u64) as usize));
+            }
+            paks.sort_unstable();
+            let disabled = rng.below(4) == 0;
+            for &p in &paks {
+                let name = format!("pak{p:02}_dir.vpk");
+                let file = if disabled {
+                    format!("{name}.disabled")
+                } else {
+                    name.clone()
+                };
+                fs::write(d.path().join(&file), file.as_bytes()).unwrap();
+            }
+            let names: Vec<String> = paks.iter().map(|p| format!("pak{p:02}_dir.vpk")).collect();
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            sidecar::write(d.path(), &sc(&format!("m{m}"), &name_refs)).unwrap();
+            meta.push((format!("m{m}"), paks));
+        }
+        let with_hand = rng.below(3) == 0;
+        if with_hand {
+            fs::write(d.path().join("custom.vpk"), b"custom.vpk").unwrap();
+        }
+
+        let mods = sidecar::group(d.path());
+        let (target_id, target_paks) = &meta[rng.below(n_mods as u64) as usize];
+        let target_pos = mods
+            .iter()
+            .position(|m| m.sidecar.as_ref().is_some_and(|s| &s.mod_id == target_id))
+            .unwrap();
+        let others_before: Vec<String> = load_order(&mods)
+            .into_iter()
+            .filter(|id| id != target_id)
+            .collect();
+        // 0..=101: refusals (0, past 99) are exercised next to real moves.
+        let ask = rng.below(102) as u32;
+        let before = snapshot(d.path());
+        let result = sidecar::set_pak(d.path(), &mods, target_pos, ask);
+
+        match result {
+            Ok(()) => {
+                // The asked block fits, or the call would have refused.
+                let take = target_paks.len() as u32;
+                assert!(
+                    ask >= 1 && ask + take - 1 <= 99,
+                    "case {case}: accepted pak {ask} for {take} VPKs"
+                );
+                let after = sidecar::group(d.path());
+                // Unique numbers, all inside the capacity.
+                let all: Vec<u32> = after
+                    .iter()
+                    .flat_map(|m| m.vpks.iter().filter_map(|v| v.pak))
+                    .collect();
+                let mut unique = all.clone();
+                unique.sort_unstable();
+                unique.dedup();
+                assert_eq!(
+                    unique.len(),
+                    all.len(),
+                    "case {case}: duplicate pak numbers"
+                );
+                assert!(all.iter().all(|p| (1..=99).contains(p)), "case {case}");
+                // The target occupies exactly pak..pak+take-1.
+                let target = after
+                    .iter()
+                    .find(|m| m.sidecar.as_ref().is_some_and(|s| &s.mod_id == target_id))
+                    .unwrap();
+                let mut got: Vec<u32> = target.vpks.iter().map(|v| v.pak.unwrap()).collect();
+                got.sort_unstable();
+                assert_eq!(
+                    got,
+                    (ask..ask + take).collect::<Vec<u32>>(),
+                    "case {case}: target block"
+                );
+                // Every other mod keeps its relative load order.
+                let others_after: Vec<String> = load_order(&after)
+                    .into_iter()
+                    .filter(|id| id != target_id)
+                    .collect();
+                assert_eq!(
+                    others_before, others_after,
+                    "case {case}: relative order changed"
+                );
+                // Sidecars point at files that exist, enabled or disabled.
+                for m in &after {
+                    let Some(s) = &m.sidecar else { continue };
+                    for name in &s.vpks {
+                        assert!(
+                            d.path().join(name).is_file()
+                                || d.path().join(format!("{name}.disabled")).is_file(),
+                            "case {case}: sidecar {} points at missing {name}",
+                            s.mod_id
+                        );
+                    }
+                }
+                // A hand-added file never moved.
+                if with_hand {
+                    assert_eq!(
+                        fs::read(d.path().join("custom.vpk")).unwrap(),
+                        b"custom.vpk",
+                        "case {case}"
+                    );
+                }
+            }
+            Err(_) => {
+                // A refusal must leave every byte untouched.
+                assert_eq!(
+                    snapshot(d.path()),
+                    before,
+                    "case {case}: a refused set_pak changed the disk"
+                );
+            }
+        }
+    }
+}

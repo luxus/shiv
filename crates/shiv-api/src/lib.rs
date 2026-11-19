@@ -1,5 +1,11 @@
 //! HTTP client for the Deadlock Mods API (blocking, `ureq`).
 
+// A network library must not panic on someone else's server: every
+// failure is a value (docs/code-quality.md).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+// Unit tests inside src may unwrap freely.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 mod client;
 mod dto;
 mod error;

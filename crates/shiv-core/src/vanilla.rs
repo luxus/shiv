@@ -17,10 +17,18 @@ use regex::Regex;
 
 use crate::game::GamePaths;
 
-/// Search-path lines that mount mods.
-static MOD_MOUNT: LazyLock<Regex> = LazyLock::new(|| {
+/// The pattern of a search-path line that mounts mods: a fixed literal,
+/// pinned by the tests below, that `Regex::new` cannot fail on.
+#[allow(
+    clippy::expect_used,
+    reason = "a fixed literal covered by the tests below"
+)]
+fn mod_mount_pattern() -> Regex {
     Regex::new(r"(?i)^\s*Game\s+citadel/(addons|shiv_repair)/?\s*(//.*)?$").expect("valid regex")
-});
+}
+
+/// Search-path lines that mount mods.
+static MOD_MOUNT: LazyLock<Regex> = LazyLock::new(mod_mount_pattern);
 
 /// Where the original `gameinfo.gi` is kept while mods are off.
 pub fn backup_path(paths: &GamePaths) -> PathBuf {

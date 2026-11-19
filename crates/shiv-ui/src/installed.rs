@@ -335,7 +335,7 @@ fn run_action(
             let paths = (deps.locate)().map_err(|e| fail(&game_error_text(&e)))?;
             // Renumbering shares the install lock: a rename while another
             // worker stages an install would race its pak allocation.
-            let _guard = crate::browse::INSTALL_LOCK
+            let _guard = shiv_core::install::INSTALL_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             sidecar::move_mod(&paths.addons, mods, index, to).map_err(|e| fail(&e.to_string()))
@@ -397,7 +397,7 @@ fn run_link_install(
         return Err(LinkFailure::Cancelled);
     }
     report(LinkUpdate::Installing);
-    let _guard = crate::browse::INSTALL_LOCK
+    let _guard = shiv_core::install::INSTALL_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Cancel may have been pressed while waiting for another install.
@@ -773,11 +773,13 @@ pub(crate) fn pick_import_folder() {
 }
 
 /// Export without the folder picker (tests drive this directly).
+#[cfg(test)]
 pub(crate) fn export_bundle_to(folder: PathBuf) {
     with_installed(|i| i.export_bundle(folder));
 }
 
 /// Import without the folder picker (tests drive this directly).
+#[cfg(test)]
 pub(crate) fn import_bundle_from(folder: PathBuf) {
     with_installed(|i| i.import_bundle(folder));
 }
@@ -1256,7 +1258,7 @@ impl Installed {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 // Renumbering shares the install lock: a rename while another
                 // worker stages an install would race its pak allocation.
-                let _guard = crate::browse::INSTALL_LOCK
+                let _guard = shiv_core::install::INSTALL_LOCK
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 // The sidecar edit runs first: it is idempotent, so a failed
@@ -1388,7 +1390,7 @@ impl Installed {
                 // The lock every install path shares: pak slots are
                 // allocated against the folder while staging, so an install
                 // must not renumber beside another.
-                let _guard = crate::browse::INSTALL_LOCK
+                let _guard = shiv_core::install::INSTALL_LOCK
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let sc = install::install_local_with(&path, &name, &paths, move || running())

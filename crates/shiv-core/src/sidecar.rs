@@ -87,7 +87,15 @@ pub fn new_local_id(addons: &Path) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let dir = addons.join(DIR);
+    unused_local_id(&addons.join(DIR), secs)
+}
+
+/// The counter runs over u32, so a name no sidecar uses exists.
+#[allow(
+    clippy::expect_used,
+    reason = "the counter is bounded by u32, so an unused id exists"
+)]
+fn unused_local_id(dir: &Path, secs: u64) -> String {
     (0u32..)
         .map(|n| format!("{LOCAL_PREFIX}{secs}-{n}"))
         .find(|id| !dir.join(format!("{id}.json")).exists())
@@ -460,7 +468,7 @@ pub fn set_pak(
     let mut numbers: Vec<u32> = Vec::with_capacity(ranked.len());
     let mut nth = 0u32;
     for (v, own) in &ranked {
-        let old = v.pak.expect("ranked holds pak-numbered VPKs");
+        let old = pak_of(v);
         let n = if *own {
             nth += 1;
             pak + nth - 1
@@ -491,6 +499,17 @@ pub fn set_pak(
         .collect();
     let plan = addons::plan_renumber(&refs, &numbers)?;
     apply_plan(addons, &order, &plan)
+}
+
+/// The pak number of a ranked VPK. `ranked` only holds pak-numbered VPKs
+/// (the loop that builds it filters `pak.is_some()`), so this cannot fail;
+/// a panic here would mean the plan is built on a broken invariant.
+#[allow(
+    clippy::expect_used,
+    reason = "ranked only holds pak-numbered VPKs; the filter is where it is built"
+)]
+fn pak_of(v: &addons::InstalledVpk) -> u32 {
+    v.pak.expect("ranked holds pak-numbered VPKs")
 }
 
 /// Apply `plan`'s renames, then keep the sidecars in `order` pointing at the

@@ -414,7 +414,7 @@ pub fn export_into(
         let name = m
             .sidecar
             .as_ref()
-            .map_or_else(|| first_file_name(m), |s| display_name(s));
+            .map_or_else(|| first_file_name(m), display_name);
         if m.vpks.is_empty() {
             report.skipped.push((name, "no VPK files on disk".into()));
             continue;
@@ -753,7 +753,12 @@ pub fn import(
         }
         // A file already in the addons folder byte for byte is adopted in
         // place (checked by size, then hash), so the game never loads two
-        // copies. All files matching means adopting the whole mod.
+        // copies. All files matching means adopting the whole mod. The
+        // install lock serialises this against every other pak-mutating
+        // path, exactly like the UI's installs and moves.
+        let _guard = install::INSTALL_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match adopt_or_install(addons, paths, m, &name, &files, &game_running) {
             Ok((true, id)) => {
                 report.adopted.push(name.clone());

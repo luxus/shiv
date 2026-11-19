@@ -21,6 +21,19 @@ const DISABLED_EXT: &str = ".disabled";
 const SHIV_DIR: &str = ".shiv";
 const TMP_DIR: &str = "tmp";
 
+/// Serialises every path that allocates pak numbers or renames paks:
+/// catalog, file and link installs, interchange imports, and the
+/// load-order moves (`set_pak`, `move_mod`) from the UI. Held from just
+/// before the folder is touched until the change is complete, so the
+/// holders' cancel checks after acquiring it stay meaningful.
+///
+/// Not reentrant: [`install_with`] deliberately does **not** take it — its
+/// callers hold it already and need the wait-and-recheck pattern above —
+/// so never call these functions while holding the lock yourself. Any new
+/// path that renames `pakNN_*` files or allocates numbers must take it
+/// first; `docs/code-quality.md` pins the rule.
+pub static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Default cap on total extracted bytes (decompression-bomb guard).
 pub const MAX_EXTRACTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Default cap on archive entries.
@@ -166,8 +179,8 @@ pub fn install_files(
     for file in files {
         let name = file
             .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| InstallError::UnsupportedArchive)?;
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or(InstallError::UnsupportedArchive)?;
         if !is_plain_vpk_name(name) {
             return Err(InstallError::UnsupportedArchive);
         }
