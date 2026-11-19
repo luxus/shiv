@@ -361,16 +361,15 @@ fn run_link_install(
     cancel: &AtomicBool,
     mut report: impl FnMut(LinkUpdate),
 ) -> Result<String, LinkFailure> {
-    let fail = |text: String| LinkFailure::Failed(text);
-    let paths = (deps.locate)().map_err(|e| fail(game_error_text(&e)))?;
+    let paths = (deps.locate)().map_err(|e| link_fail(game_error_text(&e)))?;
     let running = deps.running.clone();
     if running() {
-        return Err(fail(install_error_text(&InstallError::GameRunning)));
+        return Err(link_fail(install_error_text(&InstallError::GameRunning)));
     }
     let dir = tempfile::Builder::new()
         .prefix("shiv-download-")
         .tempdir()
-        .map_err(|e| fail(format!("Could not create a temporary folder: {e}")))?;
+        .map_err(|e| link_fail(format!("Could not create a temporary folder: {e}")))?;
     // The file name becomes the mod's `source`, so a newer copy of the same
     // download is recognised as an update.
     let dest = dir.path().join(file);
@@ -389,7 +388,7 @@ fn run_link_install(
     });
     match fetched {
         Err(ApiError::Cancelled) => return Err(LinkFailure::Cancelled),
-        Err(e) => return Err(fail(format!("Download failed: {e}"))),
+        Err(e) => return Err(link_fail(format!("Download failed: {e}"))),
         Ok(()) => {}
     }
     if cancel.load(Ordering::Relaxed) {
@@ -404,8 +403,13 @@ fn run_link_install(
         return Err(LinkFailure::Cancelled);
     }
     let sc = install::install_local_with(&dest, name, &paths, move || running())
-        .map_err(|e| fail(install_error_text(&e)))?;
+        .map_err(|e| link_fail(install_error_text(&e)))?;
     Ok(format!("Installed {} as {}.", sc.name, sc.vpks.join(", ")))
+}
+
+/// Wrap a worker-side message as a link-install failure.
+fn link_fail(text: String) -> LinkFailure {
+    LinkFailure::Failed(text)
 }
 
 // ---------------------------------------------------------------------------

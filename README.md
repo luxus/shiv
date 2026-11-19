@@ -25,7 +25,11 @@ gigabytes of RAM. Shiv does the essentials and nothing else.
   from the author's name to all of their mods. "Updated 5 days ago" instead of raw dates.
 - **Install** mods from zip, rar, 7z and multi-VPK archives, with a file picker when a mod offers
   several downloads, and a **Downloads** screen with progress, speed, cancel and retry.
-- **Installed** mods open their detail page when clicked. Enable, disable and uninstall from there.
+- **Install local files and links** the same way: a `.vpk` or archive from disk, a dropped file —
+  several at once — or a pasted download link, all as cleanly managed mods.
+- **Installed** mods open their detail page when clicked. Enable, disable and uninstall from
+  there, edit the name and notes, and set which pak number a mod sits at; everything else
+  renumbers around it.
 - **Profiles.** Keep separate sets of mods (a "sweaty" setup, a "just for fun" one) and switch
   between them from the sidebar. Each profile has its own addons folder, so nothing leaks between them.
 - **Launch** the game through Steam, or **Launch without mods** for a clean session; your mods
