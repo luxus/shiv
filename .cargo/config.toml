@@ -2,3 +2,12 @@
 # the Visual C++ redistributable.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Local macOS builds. Apple's cc (`/usr/bin/cc`) must drive the final link:
+# a GCC on PATH (nix, homebrew) links its own libstdc++ runtime, which the SDK
+# has no copy of. unrar-sys compiles its C++ without linking a stdlib
+# (`cpp_link_stdlib(None)`), so libc++ is spelled out here; its objects are
+# built with Apple clang when `CC`/`CXX` point at it too.
+[target.'cfg(target_os = "macos")']
+linker = "/usr/bin/cc"
+rustflags = ["-C", "link-args=-lc++"]
