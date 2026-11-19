@@ -33,6 +33,7 @@ mod log;
 mod performance;
 mod profiles;
 mod repair;
+mod sources;
 mod thumbs;
 
 /// The API serves its routes under `/api` (`/api/v2/mods`, ...).
@@ -109,7 +110,7 @@ pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Show the Repair screen (from a stale-package notice elsewhere).
 pub(crate) fn open_repair(app: &App) {
-    app.set_screen(4);
+    app.set_screen(5);
     // `changed screen` also asks for a check; a second request while the
     // first runs is dropped, so this costs nothing when both fire.
     app.global::<RepairState>().invoke_shown();
@@ -141,6 +142,7 @@ fn run() -> Result<(), slint::PlatformError> {
     crosshair::attach(&app);
     performance::attach(&app, &api_url);
     profiles::attach(&app);
+    sources::attach(&app);
     downloads::attach(&app);
     dnd::attach(&app);
     // Debug builds only: open on another screen (e.g. for screenshots); 0 is Browse.
@@ -149,13 +151,13 @@ fn run() -> Result<(), slint::PlatformError> {
         .ok()
         .and_then(|v| v.parse::<i32>().ok())
     {
-        app.set_screen(n.clamp(0, 5));
+        app.set_screen(n.clamp(0, 7));
         // Setting the screen from Rust does not run `changed screen`.
         match app.get_screen() {
-            2 => app.global::<CrosshairState>().invoke_shown(),
-            3 => app.global::<PerfState>().invoke_shown(),
-            4 => app.global::<RepairState>().invoke_shown(),
-            5 => app.global::<ProfilesState>().invoke_shown(),
+            3 => app.global::<CrosshairState>().invoke_shown(),
+            4 => app.global::<PerfState>().invoke_shown(),
+            5 => app.global::<RepairState>().invoke_shown(),
+            6 => app.global::<ProfilesState>().invoke_shown(),
             _ => {}
         }
     }
@@ -263,6 +265,7 @@ mod tests {
 
         for (i, screen) in [
             "Installed",
+            "Sources",
             "Crosshair",
             "Performance",
             "Repair",
@@ -273,7 +276,7 @@ mod tests {
         .enumerate()
         {
             click(&app, screen);
-            assert_eq!(app.get_screen(), ((i + 1) % 6) as i32, "{screen}");
+            assert_eq!(app.get_screen(), ((i + 1) % 7) as i32, "{screen}");
         }
         let api = stub_api();
         install_cancel_and_failure(&api);
@@ -284,6 +287,7 @@ mod tests {
         #[cfg(unix)]
         profiles_flow();
         installed_screen();
+        registry_flow();
         launch_flow();
         repair_flow();
         crosshair_flow();
@@ -417,7 +421,7 @@ mod tests {
         // Nothing runs until the screen is shown; then the check is off-thread.
         assert_eq!(state.get_load_state(), LoadState::Loading);
         assert!(!state.get_scanning());
-        app.set_screen(4);
+        app.set_screen(5);
         assert!(run_until(&app, Duration::from_secs(60), idle));
         let r = state.get_rows().row_data(0).expect("row");
         assert_eq!(r.name.as_str(), "Data mod");
@@ -586,7 +590,7 @@ mod tests {
             s.get_load_state() == LoadState::Ready && !s.get_busy() && s.get_repair_stale()
         }));
         click(&app, "Open Repair");
-        assert_eq!(app.get_screen(), 4);
+        assert_eq!(app.get_screen(), 5);
         assert!(run_until(&app, Duration::from_secs(60), idle));
         let launch = app.global::<LaunchState>();
         assert!(run_until(&app, Duration::from_secs(20), |a| {
@@ -602,7 +606,7 @@ mod tests {
         assert_eq!(launches.load(Ordering::SeqCst), 0);
         launch.invoke_open_repair();
         assert!(!launch.get_dialog_open());
-        assert_eq!(app.get_screen(), 4);
+        assert_eq!(app.get_screen(), 5);
         assert!(run_until(&app, Duration::from_secs(60), idle));
 
         // Remove repair package: asks, unmounts and deletes, independent of
@@ -698,7 +702,7 @@ mod tests {
             let s = a.global::<PerfState>();
             s.get_load_state() == LoadState::Ready && s.get_status().contains("settings set")
         };
-        app.set_screen(3);
+        app.set_screen(4);
         assert!(run_until(&app, Duration::from_secs(20), ready));
         assert_eq!(
             state.get_status().as_str(),
@@ -850,7 +854,7 @@ mod tests {
         assert_eq!(state.get_tiers().row_count(), 0);
         assert!(!state.get_editor().open);
         assert_eq!(state.get_changes().row_count(), 2, "pending edits are kept");
-        app.set_screen(3);
+        app.set_screen(4);
         let back = |a: &App| {
             let s = a.global::<PerfState>();
             s.get_load_state() == LoadState::Ready && s.get_rows().row_count() == 4
@@ -927,7 +931,7 @@ mod tests {
         // Defaults until shown; showing reads the hero settings on a worker.
         assert_eq!(state.get_values().pip_gap, 0.0);
         // (`changed screen` runs on the event loop, not inside set_screen.)
-        app.set_screen(2);
+        app.set_screen(3);
         let loaded = |a: &App| {
             let s = a.global::<CrosshairState>();
             !s.get_loading() && s.get_values().pip_gap == 5.0
@@ -1243,7 +1247,7 @@ mod tests {
         // Fixing the files elsewhere: a screen change refreshes the count.
         std::fs::remove_file(&bad).expect("remove");
         std::fs::remove_file(&bad2).expect("remove");
-        app.set_screen(2);
+        app.set_screen(3);
         assert!(run_until(&app, Duration::from_secs(20), count(0)));
 
         // Clean: Launch goes straight through.
@@ -1393,6 +1397,121 @@ mod tests {
 
     /// Installed screen against a temp addons dir (never the real one):
     /// listing, toggle, game-running gating, uninstall, and error states.
+    /// A registry from descriptor to installed mod: the descriptor is
+    /// reviewed before it is saved, its listings appear in Browse beside
+    /// the catalog, an install downloads the artifact of the current
+    /// release, and the sidecar records the content revision so a newer
+    /// one updates.
+    fn registry_flow() {
+        use shiv_core::registry::Registry;
+        use slint::Model;
+        use std::sync::Arc;
+
+        let vpk = b"\x34\x12\xaa\x55\x02\x00\x00\x00registry";
+        let (descriptor, catalog, detail, artifact) = (
+            r#"{"format":"dmm-source","protocolVersion":"1.0",
+               "sourceId":"my-community","name":"Example Community","gameId":"deadlock",
+               "catalog":{"kind":"static","indexUrl":"./catalog.json"},
+               "networkOrigins":{"api":["ORIGIN"],"downloads":["ORIGIN"],"media":[]}}"#,
+            r#"{"snapshotId":"s1","items":[{"id":"example","availability":"available",
+               "detailUrl":"./mods/example.json"}]}"#,
+            r#"{"id":"example","title":"Harmless Example","availability":"available",
+               "isNsfw":false,"author":"Example Community","description":"One VPK.",
+               "release":{"id":"release-1","contentRevision":"revision-1","version":"1.0.0",
+               "artifacts":[{"id":"example-vpk","filename":"example.vpk","format":"vpk",
+               "download":{"url":"../files/example.vpk"},"size":141}],
+               "installation":{"mode":"manual"}}}"#,
+            vpk.to_vec(),
+        );
+        let api_catalog = r#"[{"id":"catalog","remoteId":"1","name":"Catalog Mod"}]"#;
+        let (d, c, i) = (descriptor.to_owned(), catalog.to_owned(), detail.to_owned());
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("stub server");
+        let url = format!("http://{}", server.server_addr().to_ip().expect("ip"));
+        let origin = url.clone();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                if req.url() == "/files/example.vpk" {
+                    let _ = req.respond(tiny_http::Response::from_data(artifact.clone()));
+                    continue;
+                }
+                let (body, status) = match req.url() {
+                    "/d.json" => (d.replace("ORIGIN", &origin), 200),
+                    "/catalog.json" => (c.clone(), 200),
+                    "/mods/example.json" => (i.clone(), 200),
+                    "/v2/mods" => (api_catalog.to_owned(), 200),
+                    _ => (String::new(), 404),
+                };
+                let _ =
+                    req.respond(tiny_http::Response::from_string(body).with_status_code(status));
+            }
+        });
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let game_root = root.path().join("Deadlock");
+        let paths = GamePaths::from_root(game_root.clone());
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let app = App::new().expect("app");
+        let located = paths.clone();
+        let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
+        let cache = browse::attach_with(&app, &url, locate.clone());
+        sources::attach_with(&app, locate.clone());
+        installed::attach_with(
+            &app,
+            cache,
+            installed::Deps {
+                locate,
+                running: Arc::new(|| false),
+            },
+        );
+        app.show().expect("show");
+
+        // Adding a source reviews the descriptor before saving it.
+        let state = app.global::<crate::SourcesState>();
+        state.set_add_url(format!("{url}/d.json").into());
+        state.invoke_add();
+        assert!(run_until(&app, Duration::from_secs(5), |a| a
+            .global::<crate::SourcesState>()
+            .get_review_open()));
+        assert_eq!(state.get_review_name(), "Example Community");
+        assert_eq!(state.get_review_id(), "my-community");
+        state.invoke_confirm_add();
+        assert!(run_until(&app, Duration::from_secs(5), |a| {
+            a.global::<crate::SourcesState>().get_rows().row_count() == 1
+        }));
+
+        // The catalog loaded and Browse lists the registry's mod beside it.
+        assert!(run_until(&app, Duration::from_secs(10), |a| {
+            a.global::<BrowseState>().get_mods().row_count() == 2
+        }));
+        let mods = app.global::<BrowseState>().get_mods();
+        let registry_row = (0..mods.row_count())
+            .map(|i| mods.row_data(i).expect("row"))
+            .find(|r| r.id.as_str() == "src-my_2dcommunity-example")
+            .expect("the registry row");
+        assert_eq!(registry_row.name.as_str(), "Harmless Example");
+        assert_eq!(registry_row.state, InstallState::Idle);
+
+        // Installing downloads the artifact, verifies it and records the
+        // content revision as the mod's version.
+        app.global::<BrowseState>()
+            .invoke_install("src-my_2dcommunity-example".into());
+        assert!(run_until(&app, Duration::from_secs(10), |a| {
+            let s = a.global::<crate::InstalledState>();
+            s.get_rows().row_count() == 1 && !s.get_busy()
+        }));
+        let installed = app.global::<crate::InstalledState>();
+        let row = installed.get_rows().row_data(0).expect("row");
+        assert!(row.managed);
+        assert_eq!(row.id.as_str(), "src-my_2dcommunity-example");
+        assert!(row.detail.contains("revision-1"), "{}", row.detail);
+
+        // The store remembers the source; re-loading it finds the same one.
+        let reloaded = Registry::load(&GamePaths::from_root(game_root)).expect("registry");
+        assert_eq!(reloaded.sources().len(), 1);
+        assert_eq!(reloaded.sources()[0].source_id, "my-community");
+        assert!(paths.addons.join("pak01_dir.vpk").is_file());
+    }
+
     fn installed_screen() {
         use shiv_core::game::{GameError, GamePaths};
         use shiv_core::sidecar::{self, Sidecar};
@@ -2341,13 +2460,13 @@ mod tests {
         assert_eq!(state.get_summary().as_str(), "32 mods");
 
         // Opened from another screen, Back returns there.
-        assert!(!browse::show_detail_from("missing", 2));
-        assert!(browse::show_detail_from("f4", 2));
+        assert!(!browse::show_detail_from("missing", 3));
+        assert!(browse::show_detail_from("f4", 3));
         assert_eq!(app.get_screen(), 0);
         assert!(state.get_detail_open());
         click(&app, "Back");
         assert!(!state.get_detail_open());
-        assert_eq!(app.get_screen(), 2);
+        assert_eq!(app.get_screen(), 3);
         assert_eq!(state.get_return_screen(), -1);
         app.set_screen(0);
 

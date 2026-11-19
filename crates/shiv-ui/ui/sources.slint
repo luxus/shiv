@@ -1,0 +1,209 @@
+// Sources: the built-in catalog plus the registries the user added.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Button, TextButton, SearchField } from "widgets.slint";
+
+export struct SourceRow {
+    origin: string,
+    id: string,
+    name: string,
+    descriptor: string,
+}
+
+export global SourcesState {
+    in property <[SourceRow]> rows;
+    in property <string> banner-text;
+    in-out property <string> add-url;
+    in property <string> add-error;
+    in property <bool> add-busy;
+    in property <bool> review-open;
+    in property <string> review-name;
+    in property <string> review-origin;
+    in property <string> review-id;
+    in property <string> review-descriptor;
+
+    callback refresh();
+    callback add();
+    callback confirm-add();
+    callback cancel-add();
+    callback remove(string, string);
+    callback dismiss-banner();
+}
+
+component SourceCard inherits Rectangle {
+    in property <SourceRow> item;
+    callback removed();
+
+    height: 84px + 2 * Theme.s1;
+    background: Theme.raised;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    HorizontalLayout {
+        padding: Theme.s2;
+        spacing: Theme.s2;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                color: Theme.text;
+                font-size: Theme.text-lg;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.id + " \u{b7} " + root.item.origin;
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.descriptor;
+                color: Theme.text-faint;
+                font-size: Theme.text-sm;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: "Remove";
+                clicked => { root.removed(); }
+            }
+        }
+    }
+}
+
+export component SourcesPage inherits Rectangle {
+    background: Theme.bg;
+
+    VerticalLayout {
+        padding: Theme.s3;
+        spacing: Theme.s2;
+
+        Text {
+            text: "Mod sources";
+            color: Theme.text;
+            font-size: Theme.text-xl;
+            font-weight: 600;
+        }
+
+        if SourcesState.banner-text != "": Rectangle {
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.raised;
+            HorizontalLayout {
+                padding: Theme.s1;
+                padding-left: Theme.s2;
+                padding-right: Theme.s1;
+                spacing: Theme.s2;
+                Text {
+                    text: SourcesState.banner-text;
+                    color: Theme.text;
+                    font-size: Theme.text-md;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                TextButton {
+                    text: "Dismiss";
+                    clicked => { SourcesState.dismiss-banner(); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.s1;
+            SearchField {
+                placeholder: "https://example.org/.well-known/dmm-source.json";
+                text <=> SourcesState.add-url;
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: SourcesState.add-busy ? "Checking" : "Add source";
+                primary: true;
+                disabled: SourcesState.add-busy;
+                clicked => { SourcesState.add(); }
+            }
+        }
+
+        if SourcesState.add-error != "": Text {
+            text: SourcesState.add-error;
+            color: Theme.danger;
+            font-size: Theme.text-md;
+            wrap: word-wrap;
+        }
+
+        if SourcesState.review-open: Rectangle {
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.accent;
+            background: Theme.raised;
+            VerticalLayout {
+                padding: Theme.s2;
+                spacing: Theme.s1;
+                Text {
+                    text: "Add " + SourcesState.review-name + "?";
+                    color: Theme.text;
+                    font-size: Theme.text-lg;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "Shiv will browse and install this source's mods. It can only download from " + SourcesState.review-origin + ", the origin the descriptor declares.";
+                    color: Theme.text-muted;
+                    font-size: Theme.text-md;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Theme.s1;
+                    alignment: end;
+                    TextButton {
+                        text: "Cancel";
+                        clicked => { SourcesState.cancel-add(); }
+                    }
+                    Button {
+                        text: "Add";
+                        primary: true;
+                        clicked => { SourcesState.confirm-add(); }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            if SourcesState.rows.length == 0: VerticalLayout {
+                alignment: center;
+                Text {
+                    text: "No sources added yet";
+                    color: Theme.text-muted;
+                    font-size: Theme.text-lg;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Paste a dmm-source.json URL above to browse a registry's mods here and in Browse.";
+                    color: Theme.text-faint;
+                    font-size: Theme.text-md;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            ListView {
+                visible: SourcesState.rows.length > 0;
+                for row in SourcesState.rows: SourceCard {
+                    item: row;
+                    removed => { SourcesState.remove(row.origin, row.id); }
+                }
+            }
+        }
+    }
+}

@@ -12,7 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use shiv_api::{ApiError, Client, DownloadFile, ModDto, ModQuery, SortKey, apply_query};
-use shiv_core::game::{self, GameError};
+use shiv_core::game::{self, GameError, GamePaths};
 use shiv_core::install::{self, InstallError, ModMeta};
 use shiv_core::sidecar;
 use slint::{
@@ -536,6 +536,18 @@ struct Entry {
     nsfw: bool,
     hero: Option<String>,
     category: Option<String>,
+    /// The registry release this row installs, when the row is one.
+    registry: Option<RegistryInstall>,
+}
+
+/// What a registry row needs to install: the artifact of the listing's
+/// current release and the identity the sidecar records.
+#[derive(Clone)]
+struct RegistryInstall {
+    source: shiv_core::registry::AddedSource,
+    listing: shiv_api::NativeListing,
+    release: shiv_api::NativeRelease,
+    artifact: shiv_api::NativeArtifact,
 }
 
 impl Entry {
@@ -573,6 +585,7 @@ impl Entry {
             id: m.id,
             remote_id: m.remote_id,
             name: m.name,
+            registry: None,
         }
     }
 }
@@ -801,6 +814,57 @@ struct InstallTask {
     /// Catalog `(hero, category)` by mod id: stands in for mods installed
     /// before their sidecar recorded these.
     kinds: HashMap<String, (Option<String>, Option<String>)>,
+    /// A registry install records the artifact's published checksum, which
+    /// the download must match before anything reaches the addons folder.
+    published_sha256: Option<String>,
+}
+
+impl InstallTask {
+    fn catalog(
+        mod_id: String,
+        file: DownloadFile,
+        entry: &Entry,
+        kinds: HashMap<String, (Option<String>, Option<String>)>,
+    ) -> Self {
+        InstallTask {
+            mod_id,
+            file,
+            name: entry.name.clone(),
+            version: entry.version.clone(),
+            thumbnail_url: entry.thumb_url.clone(),
+            nsfw: entry.nsfw,
+            hero: entry.hero.clone(),
+            category: entry.category.clone(),
+            kinds,
+            published_sha256: None,
+        }
+    }
+
+    fn registry(
+        source: &shiv_core::registry::AddedSource,
+        listing: &shiv_api::NativeListing,
+        release: &shiv_api::NativeRelease,
+        artifact: &shiv_api::NativeArtifact,
+    ) -> Self {
+        let file = DownloadFile {
+            url: artifact.url.clone(),
+            name: artifact.filename.clone(),
+            size: artifact.size,
+            md5_checksum: None,
+        };
+        InstallTask {
+            mod_id: source.mod_id_of(&listing.id),
+            file,
+            name: listing.title.clone(),
+            version: Some(release.content_revision.clone()),
+            thumbnail_url: listing.thumbnail_url().map(str::to_owned),
+            nsfw: listing.nsfw.unwrap_or(false),
+            hero: listing.hero.clone(),
+            category: listing.content_type.clone(),
+            kinds: HashMap::new(),
+            published_sha256: artifact.sha256.clone(),
+        }
+    }
 }
 
 enum Update {
@@ -825,14 +889,18 @@ enum Failure {
     Message(String),
 }
 
+/// Where the game is: injectable so tests never touch the real install.
+pub(crate) type Locate = Arc<dyn Fn() -> Result<GamePaths, GameError> + Send + Sync>;
+
 fn run_install(
     client: &Client,
+    locate: &Locate,
     mut task: InstallTask,
     cancel: &AtomicBool,
     mut post: impl FnMut(Update),
 ) -> Result<(), Failure> {
     let msg = Failure::Message;
-    let paths = crate::locate_game().map_err(|e| msg(game_error_text(&e)))?;
+    let paths = locate().map_err(|e| msg(game_error_text(&e)))?;
     // Checked before downloading too, so a long download is not wasted.
     if game::is_running() {
         return Err(msg(install_error_text(&InstallError::GameRunning)));
@@ -875,6 +943,10 @@ fn run_install(
     if cancel.load(Ordering::Relaxed) {
         return Err(Failure::Cancelled);
     }
+    // A registry publishes the checksum of the bytes it serves; a download
+    // that does not match never reaches the addons folder.
+    shiv_core::registry::verify_download(&dest, task.published_sha256.as_deref())
+        .map_err(|e| msg(e.to_string()))?;
     post(Update::Installing);
     let _guard = INSTALL_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     // Cancel may have been pressed while waiting for another install.
@@ -910,14 +982,77 @@ fn run_install(
 }
 
 /// Mod ids with a sidecar in `addons`; empty when the game is not found.
-fn installed_ids() -> HashSet<String> {
-    let Ok(paths) = crate::locate_game() else {
+fn installed_ids(locate: &Locate) -> HashSet<String> {
+    let Ok(paths) = locate() else {
         return HashSet::new();
     };
     sidecar::group(&paths.addons)
         .into_iter()
         .filter_map(|m| m.sidecar.map(|s| s.mod_id))
         .collect()
+}
+
+/// The registry rows Browse shows: one per installable listing of every
+/// added source, after its catalog. A failed registry shows nothing here;
+/// its error is the Sources banner.
+fn registry_entries() -> Vec<Entry> {
+    let mut entries = Vec::new();
+    for (source, listings) in crate::sources::catalogs() {
+        entries.extend(
+            listings
+                .into_iter()
+                .filter(|l| l.installable())
+                .filter_map(|l| registry_entry(&source, l)),
+        );
+    }
+    entries
+}
+
+fn registry_entry(
+    source: &shiv_core::registry::AddedSource,
+    listing: shiv_api::NativeListing,
+) -> Option<Entry> {
+    let release = listing.release.clone()?;
+    let artifact = release.artifacts.first()?.clone();
+    let updated = listing
+        .updated_at
+        .as_deref()
+        .and_then(|u| relative_time(u, now_epoch()))
+        .map(|d| format!("Updated {d}"))
+        .unwrap_or_default();
+    let version = Some(release.content_revision.clone());
+    let nsfw = listing.nsfw.unwrap_or(false);
+    let install = RegistryInstall {
+        source: source.clone(),
+        listing,
+        release,
+        artifact,
+    };
+    let (listing, install_release) = (&install.listing, &install.release);
+    Some(Entry {
+        id: source.mod_id_of(&listing.id),
+        remote_id: String::new(),
+        name: listing.title.clone(),
+        byline: format!(
+            "{} \u{b7} {}",
+            source.name,
+            listing.author.as_deref().unwrap_or("unknown author")
+        )
+        .into(),
+        stats: install_release
+            .version
+            .clone()
+            .unwrap_or_else(|| install_release.id.clone())
+            .into(),
+        updated: updated.into(),
+        thumb_url: listing.thumbnail_url().map(str::to_owned),
+        version,
+        downloadable: true,
+        nsfw,
+        hero: listing.hero.clone(),
+        category: listing.content_type.clone(),
+        registry: Some(install),
+    })
 }
 
 /// Whether NSFW images are shown unblurred (the Browse switch; shared with
@@ -1002,6 +1137,12 @@ pub(crate) fn update_mod(id: &str) {
     with_browse(|b| b.install(id));
 }
 
+/// Rebuild the list with the registries' current catalogs: the Sources
+/// screen reloaded them.
+pub(crate) fn refresh_sources() {
+    with_browse(|b| b.refresh());
+}
+
 /// Cancel a running install (from the Downloads screen).
 pub(crate) fn cancel_install(id: &str) {
     with_browse(|b| b.cancel(id));
@@ -1024,6 +1165,7 @@ pub(crate) fn refresh_installed() {
 
 pub struct Browse {
     weak: Weak<App>,
+    locate: Locate,
     client: Arc<Client>,
     list: Rc<ModList>,
     catalog: RefCell<Rc<Vec<ModDto>>>,
@@ -1068,6 +1210,12 @@ struct Detail {
 
 /// Wire the Browse screen to `app` and start loading the catalog.
 pub fn attach(app: &App, api_url: &str) -> Arc<thumbs::Cache> {
+    attach_with(app, api_url, Arc::new(crate::locate_game))
+}
+
+/// [`attach`] with an injectable game location, so tests install into a
+/// throwaway folder instead of the real one.
+pub(crate) fn attach_with(app: &App, api_url: &str, locate: Locate) -> Arc<thumbs::Cache> {
     let weak = app.as_weak();
     let cache = Arc::new(thumbs::Cache::new(THUMB_BUDGET));
     let list = Rc::new(ModList {
@@ -1105,6 +1253,7 @@ pub fn attach(app: &App, api_url: &str) -> Arc<thumbs::Cache> {
     ));
     let browse = Rc::new(Browse {
         weak: weak.clone(),
+        locate: locate.clone(),
         client: Arc::new(Client::new(api_url)),
         list: list.clone(),
         nsfw_ids: RefCell::new(None),
@@ -1214,12 +1363,13 @@ impl Browse {
             s.set_summary("".into());
         });
         let client = self.client.clone();
+        let locate = self.locate.clone();
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
             "shiv-catalog",
             move || {
                 let result = client.list_mods().map_err(|e| catalog_error_text(&e));
-                (result, installed_ids())
+                (result, installed_ids(&locate))
             },
             move |result| {
                 let (result, installed) = result.unwrap_or_else(|text| (Err(text), HashSet::new()));
@@ -1240,15 +1390,20 @@ impl Browse {
         let generation = self.installed_generation.get() + 1;
         self.installed_generation.set(generation);
         self.list.installed_since.borrow_mut().clear();
+        let locate = self.locate.clone();
         let weak = self.weak.clone();
-        crate::spawn_worker("shiv-installed-ids", installed_ids, move |result| {
-            // A failed read keeps the badges as they are.
-            if let Ok(ids) = result {
-                let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_browse(|b| b.installed_read(generation, ids));
-                });
-            }
-        });
+        crate::spawn_worker(
+            "shiv-installed-ids",
+            move || installed_ids(&locate),
+            move |result| {
+                // A failed read keeps the badges as they are.
+                if let Ok(ids) = result {
+                    let _ = weak.upgrade_in_event_loop(move |_| {
+                        with_browse(|b| b.installed_read(generation, ids));
+                    });
+                }
+            },
+        );
     }
 
     fn installed_read(&self, generation: u64, mut ids: HashSet<String>) {
@@ -1349,8 +1504,9 @@ impl Browse {
         let page = apply_query(&catalog, &self.query.borrow());
         let total = catalog.len();
         let shown = page.total;
-        self.list
-            .set_entries(page.items.into_iter().map(Entry::from_dto).collect());
+        let mut entries: Vec<Entry> = page.items.into_iter().map(Entry::from_dto).collect();
+        entries.extend(registry_entries());
+        self.list.set_entries(entries);
         let summary = if shown == total {
             format!("{} mods", fmt_count(total as u64))
         } else {
@@ -1461,7 +1617,8 @@ impl Browse {
 
     /// Install: fetch the mod's download list first. One file installs at
     /// once; several open the picker. Nothing is marked in flight until a
-    /// file is chosen.
+    /// file is chosen. A registry row installs its current release's
+    /// artifact directly: the registry already says which file.
     fn install(&self, id: &str) {
         if self.busy(id) || self.picker.borrow().is_some() {
             return;
@@ -1469,6 +1626,12 @@ impl Browse {
         let Some(entry) = self.entry_for(id) else {
             return;
         };
+        if let Some(registry) = entry.registry.clone() {
+            let generation = self.next_job.get() + 1;
+            self.next_job.set(generation);
+            self.start_registry_job(id, entry, &registry, generation);
+            return;
+        }
         let generation = self.next_job.get() + 1;
         self.next_job.set(generation);
         self.list
@@ -1562,6 +1725,44 @@ impl Browse {
         self.start_job(&id, file);
     }
 
+    /// A registry row's install: the same job machinery as a catalog
+    /// install, minus the download-list request.
+    fn start_registry_job(
+        &self,
+        id: &str,
+        entry: Entry,
+        registry: &RegistryInstall,
+        generation: u64,
+    ) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.list.jobs.borrow_mut().insert(
+            id.to_owned(),
+            Job {
+                generation,
+                #[cfg(test)]
+                url: registry.artifact.url.clone(),
+                cancel: cancel.clone(),
+                phase: Phase::Downloading {
+                    progress: -1.0,
+                    text: "Starting".into(),
+                },
+            },
+        );
+        self.list
+            .in_flight
+            .borrow_mut()
+            .insert(id.to_owned(), generation);
+        self.list.changed(id);
+        crate::downloads::started(id, &entry.name);
+        let task = InstallTask::registry(
+            &registry.source,
+            &registry.listing,
+            &registry.release,
+            &registry.artifact,
+        );
+        self.spawn_install_worker(id, task, generation, cancel);
+    }
+
     /// Download and install `file`: the in-flight marker is set here.
     fn start_job(&self, id: &str, file: DownloadFile) {
         if self.busy(id) {
@@ -1597,26 +1798,33 @@ impl Browse {
         self.list.changed(id);
         crate::downloads::started(id, &entry.name);
 
-        let task = InstallTask {
-            mod_id: entry.id.clone(),
+        let task = InstallTask::catalog(
+            entry.id.clone(),
             file,
-            name: entry.name,
-            version: entry.version,
-            thumbnail_url: entry.thumb_url,
-            nsfw: entry.nsfw,
-            hero: entry.hero,
-            category: entry.category,
-            kinds: self
-                .catalog
+            &entry,
+            self.catalog
                 .borrow()
                 .iter()
                 .filter(|m| m.hero.is_some())
                 .map(|m| (m.id.clone(), (m.hero.clone(), m.category.clone())))
                 .collect(),
-        };
+        );
+        self.spawn_install_worker(id, task, generation, cancel);
+    }
+
+    /// The worker behind every install: download, checksum, install, and
+    /// the job bookkeeping the Downloads screen reads.
+    fn spawn_install_worker(
+        &self,
+        id: &str,
+        task: InstallTask,
+        generation: u64,
+        cancel: Arc<AtomicBool>,
+    ) {
         let client = self.client.clone();
+        let locate = self.locate.clone();
         let weak = self.weak.clone();
-        let job_id = entry.id;
+        let job_id = id.to_owned();
         let poster = move |update: Update| {
             let id = job_id.clone();
             let _ = weak.upgrade_in_event_loop(move |_| {
@@ -1626,7 +1834,7 @@ impl Browse {
         let post = poster.clone();
         let started = crate::spawn_worker(
             "shiv-install",
-            move || run_install(&client, task, &cancel, post),
+            move || run_install(&client, &locate, task, &cancel, post),
             // `Done` clears the in-flight marker, even after a panic.
             move |result| {
                 poster(Update::Done(
@@ -1741,6 +1949,8 @@ impl Browse {
     fn open_detail(&self, id: &str) {
         let catalog = self.catalog.borrow().clone();
         let Some(m) = catalog.iter().find(|m| m.id == id) else {
+            // A registry row has no catalog page; the Installed screen
+            // already says so for managed mods without one.
             return;
         };
         self.drop_gallery();

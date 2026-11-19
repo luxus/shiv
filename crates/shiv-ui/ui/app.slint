@@ -3,6 +3,7 @@
 import { Theme } from "theme.slint";
 import { BrowsePage, BrowseState, ModRow, LoadState, InstallState, DownloadPicker, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow } from "browse.slint";
 import { InstalledPage, InstalledState, InstalledRow, ConflictDialog, ConflictState, ModEditDialog, ModEditState, LocalInstallDialog, LocalInstallState, UpdateFileDialog, UpdateFileState, DropState, DropOverlay } from "installed.slint";
+import { SourcesPage, SourcesState, SourceRow } from "sources.slint";
 import { LaunchPanel, LaunchDialog, LaunchState, FindingRow } from "launch.slint";
 import { RepairPage, RepairDialog, RepairState, RepairRow, RepairTone } from "repair.slint";
 import { CrosshairPage, CrosshairState, CrosshairValues, CrosshairField } from "crosshair.slint";
@@ -11,7 +12,7 @@ import { ProfilesPage, ProfilesState, ProfileRow } from "profiles.slint";
 import { Dropdown } from "widgets.slint";
 import { PerformancePage, PerfState, PerfTier, PerfRow, PerfControl, PerfEditor, PerfChange } from "performance.slint";
 
-export { BrowseState, ModRow, LoadState, InstallState, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow, InstalledState, InstalledRow, ConflictState, ModEditState, LocalInstallState, UpdateFileState, DropState, LaunchState, FindingRow, RepairState, RepairRow, RepairTone, CrosshairState, CrosshairValues, CrosshairField, PerfState, PerfTier, PerfRow, PerfControl, PerfEditor, PerfChange, ProfilesState, ProfileRow, DownloadsState, DownloadPhase, TransferRow }
+export { BrowseState, ModRow, LoadState, InstallState, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow, InstalledState, InstalledRow, ConflictState, ModEditState, LocalInstallState, UpdateFileState, DropState, SourcesState, SourceRow, LaunchState, FindingRow, RepairState, RepairRow, RepairTone, CrosshairState, CrosshairValues, CrosshairField, PerfState, PerfTier, PerfRow, PerfControl, PerfEditor, PerfChange, ProfilesState, ProfileRow, DownloadsState, DownloadPhase, TransferRow }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -77,7 +78,7 @@ export component App inherits Window {
     default-font-size: Theme.text-md;
 
     in-out property <int> screen: 0;
-    property <[string]> screens: ["Browse", "Installed", "Crosshair", "Performance", "Repair", "Profiles", "Downloads"];
+    property <[string]> screens: ["Browse", "Installed", "Sources", "Crosshair", "Performance", "Repair", "Profiles", "Downloads"];
 
     // Re-read the addons folder whenever the Installed screen is shown.
     changed screen => {
@@ -88,17 +89,20 @@ export component App inherits Window {
             InstalledState.refresh();
         }
         if (root.screen == 2) {
-            CrosshairState.shown();
+            SourcesState.refresh();
         }
         if (root.screen == 3) {
+            CrosshairState.shown();
+        }
+        if (root.screen == 4) {
             PerfState.shown();
         } else {
             PerfState.hidden();
         }
-        if (root.screen == 4) {
+        if (root.screen == 5) {
             RepairState.shown();
         }
-        if (root.screen == 5) {
+        if (root.screen == 6) {
             ProfilesState.shown();
         }
         LaunchState.refresh();
@@ -136,7 +140,7 @@ export component App inherits Window {
                 for name[i] in root.screens: NavItem {
                     label: name;
                     active: root.screen == i;
-                    badge: i == 4 && RepairState.fixable-count > 0 ? RepairState.fixable-count : (i == 6 && DownloadsState.active-count > 0 ? DownloadsState.active-count : "");
+                    badge: i == 5 && RepairState.fixable-count > 0 ? RepairState.fixable-count : (i == 7 && DownloadsState.active-count > 0 ? DownloadsState.active-count : "");
                     clicked => {
                         BrowseState.return-screen = -1;
                         root.screen = i;
@@ -171,34 +175,40 @@ export component App inherits Window {
                 visible: root.screen == 1;
             }
 
-            CrosshairPage {
+            SourcesPage {
                 width: parent.width;
                 height: parent.height;
                 visible: root.screen == 2;
             }
 
-            RepairPage {
-                width: parent.width;
-                height: parent.height;
-                visible: root.screen == 4;
-            }
-
-            PerformancePage {
+            CrosshairPage {
                 width: parent.width;
                 height: parent.height;
                 visible: root.screen == 3;
             }
 
+            RepairPage {
+                width: parent.width;
+                height: parent.height;
+                visible: root.screen == 5;
+            }
+
+            PerformancePage {
+                width: parent.width;
+                height: parent.height;
+                visible: root.screen == 4;
+            }
+
             DownloadsPage {
                 width: parent.width;
                 height: parent.height;
-                visible: root.screen == 6;
+                visible: root.screen == 7;
             }
 
             ProfilesPage {
                 width: parent.width;
                 height: parent.height;
-                visible: root.screen == 5;
+                visible: root.screen == 6;
             }
         }
     }
