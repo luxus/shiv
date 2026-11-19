@@ -997,7 +997,9 @@ impl Installed {
             s.set_error_text("Give the mod a name.".into());
             return;
         }
-        let mod_ = {
+        // A snapshot to work on: the mods list, where the mod sits in it,
+        // the mod itself, and the pak number to move it to (when asked).
+        let job = {
             let mods = self.mods.borrow();
             let entries = self.entries.borrow();
             let Some(index) = mods.iter().position(|m| key(m) == id) else {
@@ -1026,11 +1028,9 @@ impl Installed {
                     Some(n) => Some(n),
                 }
             };
-            let mods = mods.clone();
-            let mod_ = mods[index].clone();
-            (mods, index, mod_, pak_to_set)
+            (mods.clone(), index, mods[index].clone(), pak_to_set)
         };
-        let (mods, index, mod_, pak_to_set) = mod_;
+        let (mods, index, mod_, pak_to_set) = job;
         s.set_busy(true);
         s.set_error_text("".into());
         self.set_flags(None, Some(true));
