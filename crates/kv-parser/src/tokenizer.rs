@@ -241,9 +241,7 @@ impl Tokenizer {
                 let escaped = self.read_escape_sequence()?;
                 value.push(escaped);
                 // Add the raw escape sequence
-                for i in escape_start..self.pos {
-                    raw.push(self.input[i]);
-                }
+                raw.extend(&self.input[escape_start..self.pos]);
             } else {
                 value.push(ch);
                 raw.push(ch);
@@ -389,9 +387,7 @@ impl Tokenizer {
         };
 
         let mut raw = String::new();
-        for i in raw_start..self.pos {
-            raw.push(self.input[i]);
-        }
+        raw.extend(&self.input[raw_start..self.pos]);
 
         Ok(Token {
             token_type,

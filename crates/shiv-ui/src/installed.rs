@@ -684,6 +684,9 @@ pub(crate) fn file_dropped(path: PathBuf) {
 
 /// Several files were dropped on the window: they are queued and processed
 /// one by one, each opening the dialog it needs.
+// Only the Wayland drop path calls this; macOS builds without it, so the
+// lint fires there while Linux and the tests keep it alive.
+#[cfg_attr(target_vendor = "apple", allow(dead_code))]
 pub(crate) fn files_dropped(paths: Vec<PathBuf>) {
     with_installed(|i| i.dropped_batch(paths));
 }
@@ -1140,7 +1143,7 @@ impl Installed {
         // A link downloads first; everything else is a local path.
         let text = s.get_path().to_string();
         if is_link(&text) {
-            self.install_link(&text, &s.get_name().to_string());
+            self.install_link(&text, &s.get_name());
             return;
         }
         let home = std::env::var_os("HOME").map(PathBuf::from);
