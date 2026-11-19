@@ -67,7 +67,7 @@ makepkg -si
 ### Any Linux: AppImage
 
 Download `Shiv-<version>-x86_64.AppImage` from the
-[latest release](https://github.com/Siebe-Uy/shiv/releases/latest), then:
+[latest release](../../releases/latest), then:
 
 ```sh
 chmod +x Shiv-*-x86_64.AppImage
@@ -79,7 +79,7 @@ A `.sha256` file sits next to it if you want to verify the download.
 ### Any Linux: Flatpak
 
 Download `Shiv-<version>-x86_64.flatpak` from the
-[latest release](https://github.com/Siebe-Uy/shiv/releases/latest), then:
+[latest release](../../releases/latest), then:
 
 ```sh
 flatpak install --user Shiv-*-x86_64.flatpak
@@ -91,9 +91,31 @@ library on another drive, grant it access:
 `flatpak override --user --filesystem=/path/to/library io.github.Siebe_Uy.shiv`.
 Inside the sandbox Shiv cannot see whether Deadlock is already running.
 
+### Nix (NixOS, home-manager, any flake)
+
+One command, no install step:
+
+```sh
+nix run github:luxus/shiv
+```
+
+Or in a flake-based config, add the input and use the package; it ships a
+desktop entry, so Shiv appears in the application menu:
+
+```nix
+inputs.shiv.url = "github:luxus/shiv";
+
+# system packages, hjem, home-manager — wherever your packages live:
+inputs.shiv.packages.${system}.default
+```
+
+Developers get the pinned toolchain and the windowing libraries with
+`nix develop`, and `nix flake check` builds Shiv — tests included — the
+same way CI does.
+
 ### Windows
 
-Download from the [latest release](https://github.com/Siebe-Uy/shiv/releases/latest):
+Download from the [latest release](../../releases/latest):
 
 - `Shiv-<version>-x64-setup.exe`: installer (per user, no admin rights needed), with a Start
   menu entry and an uninstaller.
@@ -109,7 +131,7 @@ You need a recent stable Rust toolchain (edition 2024) and the usual Linux
 windowing libraries (Wayland or X11, `libxkbcommon`, `fontconfig`).
 
 ```sh
-git clone git@github.com:Siebe-Uy/shiv.git
+git clone https://github.com/Siebe-Uy/shiv.git
 cd shiv
 cargo run --release -p shiv-ui      # the binary is target/release/shiv
 ```

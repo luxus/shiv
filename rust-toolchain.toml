@@ -1,0 +1,6 @@
+# The toolchain `nix develop` provides. CI installs the latest stable
+# instead; both must satisfy edition 2024 (Rust 1.85 or newer).
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
