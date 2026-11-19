@@ -337,7 +337,7 @@ export component InstalledPage inherits Rectangle {
                 vertical-alignment: center;
             }
             Button {
-                text: "Install from file";
+                text: "Install a mod";
                 disabled: InstalledState.game-running || InstalledState.busy;
                 clicked => { InstalledState.install-file(); }
             }
@@ -687,9 +687,9 @@ export global LocalInstallState {
 }
 
 export component LocalInstallDialog inherits DialogCard {
-    title: "Install from file";
+    title: "Install a mod";
     Text {
-        text: "A .vpk file, or a zip, rar or 7z archive with VPKs inside. Shiv copies it into a free pak slot; the original file stays where it is.";
+        text: "A .vpk file, a zip, rar or 7z archive with VPKs inside, or a link to one. Shiv copies it into a free pak slot; a local file stays where it is.";
         color: Theme.text-muted;
         font-size: Theme.text-md;
         wrap: word-wrap;
@@ -698,8 +698,8 @@ export component LocalInstallDialog inherits DialogCard {
         spacing: Theme.s1;
         Field {
             horizontal-stretch: 1;
-            label: "File";
-            placeholder: "/path/to/mod.vpk";
+            label: "File or link";
+            placeholder: "/path/to/mod.vpk or a download link";
             text <=> LocalInstallState.path;
         }
         VerticalLayout {

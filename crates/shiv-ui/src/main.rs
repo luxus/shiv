@@ -23,7 +23,7 @@ mod repair;
 mod thumbs;
 
 /// The API serves its routes under `/api` (`/api/v2/mods`, ...).
-const DEFAULT_API_URL: &str = "https://api.deadlockmods.app/api";
+pub(crate) const DEFAULT_API_URL: &str = "https://api.deadlockmods.app/api";
 
 /// Where Deadlock lives. In debug builds only, `SHIV_GAME_ROOT` (the `Deadlock`
 /// folder) overrides the Steam lookup, for testing against a throwaway install;
@@ -1790,6 +1790,113 @@ mod tests {
         edit.invoke_cancel();
         assert!(!edit.get_open());
         assert!(exists("pak40_dir.vpk") && exists("pak56_dir.vpk"));
+
+        // Install from a link: a stub server serves the file, progress shows
+        // on the Downloads screen, and the result installs like a local file.
+        let link_server = tiny_http::Server::http("127.0.0.1:0").expect("stub server");
+        let link_url = format!("http://{}", link_server.server_addr().to_ip().expect("ip"));
+        {
+            let fast = b"\x34\x12\xaa\x55\x02\x00\x00\x00link".to_vec();
+            let slow = b"\x34\x12\xaa\x55\x02\x00\x00\x00slow".to_vec();
+            std::thread::spawn(move || {
+                for req in link_server.incoming_requests() {
+                    let resp = match req.url() {
+                        "/dl/Haze%20Skin.vpk" => tiny_http::Response::from_data(fast.clone()),
+                        "/dl/Slow%20Mod.vpk" => {
+                            std::thread::sleep(Duration::from_millis(400));
+                            tiny_http::Response::from_data(slow.clone())
+                        }
+                        _ => tiny_http::Response::from_string("not found").with_status_code(404),
+                    };
+                    let _ = req.respond(resp);
+                }
+            });
+        }
+        downloads::attach(&app);
+        let dl_state = app.global::<crate::DownloadsState>();
+        let before = state.get_rows().row_count();
+
+        state.invoke_install_file();
+        assert!(local.get_open());
+        local.set_path(format!("{link_url}/dl/Haze%20Skin.vpk").into());
+        local.set_name("".into());
+        local.invoke_install();
+        assert!(!local.get_open());
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            a.global::<InstalledState>().get_rows().row_count() == before + 1
+                && !a.global::<InstalledState>().get_busy()
+        }));
+        assert!(
+            state.get_banner_text().starts_with("Installed "),
+            "{}",
+            state.get_banner_text()
+        );
+        // The decoded link name became the mod name and its recorded source.
+        let r = state.get_rows().row_data(0).expect("row");
+        assert_eq!(r.name.as_str(), "Haze Skin");
+        assert!(r.local && r.managed);
+        assert!(exists("pak01_dir.vpk"));
+        let sc = shiv_core::sidecar::read(&addons, &r.id)
+            .expect("sidecar")
+            .expect("present");
+        assert_eq!(sc.name, "Haze Skin");
+        assert_eq!(sc.source.as_deref(), Some("Haze Skin.vpk"));
+        // The Downloads screen holds the finished row.
+        assert_eq!(dl_state.get_rows().row_count(), 1);
+        let tr = dl_state.get_rows().row_data(0).expect("row");
+        assert_eq!(
+            (tr.name.as_str(), tr.phase),
+            ("Haze Skin.vpk", DownloadPhase::Done)
+        );
+
+        // A slow link can be cancelled from the Downloads screen...
+        state.invoke_install_file();
+        local.set_path(format!("{link_url}/dl/Slow%20Mod.vpk").into());
+        local.invoke_install();
+        assert!(run_until(&app, Duration::from_secs(5), |a| {
+            a.global::<crate::DownloadsState>()
+                .get_rows()
+                .row_data(0)
+                .is_some_and(|r| r.phase == DownloadPhase::Downloading)
+        }));
+        let slow_id = dl_state.get_rows().row_data(0).expect("row").id;
+        dl_state.invoke_cancel(slow_id.clone());
+        assert!(run_until(&app, Duration::from_secs(5), |a| {
+            a.global::<crate::DownloadsState>()
+                .get_rows()
+                .row_data(0)
+                .is_some_and(|r| r.phase == DownloadPhase::Cancelled)
+        }));
+        assert_eq!(
+            state.get_rows().row_count(),
+            before + 1,
+            "nothing installed from a cancelled download"
+        );
+        // ...and retried into the same row, once the download responds again.
+        dl_state.invoke_retry(slow_id);
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            let dl = a.global::<crate::DownloadsState>();
+            dl.get_rows()
+                .row_data(0)
+                .is_some_and(|r| r.phase == DownloadPhase::Done)
+                && a.global::<InstalledState>().get_rows().row_count() == before + 2
+        }));
+        // The rows are pak-ordered, so the retried mod sits after Haze Skin.
+        let slow_installed = (0..state.get_rows().row_count()).any(|i| {
+            state
+                .get_rows()
+                .row_data(i)
+                .is_some_and(|r| r.name.as_str() == "Slow Mod")
+        });
+        assert!(slow_installed, "the retried download installed");
+
+        // Clean up the link-installed mods so the checks below start clean.
+        for _ in 0..2 {
+            let rid = state.get_rows().row_data(0).expect("row").id;
+            state.invoke_uninstall(rid);
+            let left = state.get_rows().row_count() - 1;
+            assert!(run_until(&app, Duration::from_secs(20), rows_are(left)));
+        }
 
         // Clean up for the error-state checks below.
         state.invoke_uninstall(id);

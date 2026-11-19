@@ -8,11 +8,13 @@
 //! after every action, and that same read refreshes the game-running state.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use shiv_api::{ApiError, Client};
 use shiv_core::addons::{self, AddonsError};
 use shiv_core::game::{self, GameError, GamePaths};
 use shiv_core::install::{self, InstallError, MatchReason};
@@ -53,7 +55,7 @@ const SUFFIX: &str = ".disabled";
 /// Shown when the file dialog returns nothing: cancelled, or no file dialog
 /// service (xdg-desktop-portal) is reachable.
 const NO_FILE_PICKED: &str =
-    "No file picked. You can also type or paste its path, or drop the file on the window.";
+    "No file picked. You can also type or paste a path or a link, or drop the file on the window.";
 
 thread_local! {
     static INSTALLED: RefCell<Option<Rc<Installed>>> = const { RefCell::new(None) };
@@ -325,6 +327,70 @@ fn run_action(
 }
 
 // ---------------------------------------------------------------------------
+// Link installs (custom sources)
+
+/// The link-install worker: download to a temporary folder, then install
+/// like a local file. Mirrors Browse's `run_install`: the game is checked
+/// before the download so it is not wasted, progress reports percent steps
+/// (per MB when the size is unknown), and the install takes the same lock
+/// so two installs never allocate pak slots against each other.
+fn run_link_install(
+    client: &Client,
+    deps: &Deps,
+    url: &str,
+    file: &str,
+    name: &str,
+    cancel: &AtomicBool,
+    mut report: impl FnMut(LinkUpdate),
+) -> Result<String, LinkFailure> {
+    let fail = |text: String| LinkFailure::Failed(text);
+    let paths = (deps.locate)().map_err(|e| fail(game_error_text(&e)))?;
+    let running = deps.running.clone();
+    if running() {
+        return Err(fail(install_error_text(&InstallError::GameRunning)));
+    }
+    let dir = tempfile::Builder::new()
+        .prefix("shiv-download-")
+        .tempdir()
+        .map_err(|e| fail(format!("Could not create a temporary folder: {e}")))?;
+    // The file name becomes the mod's `source`, so a newer copy of the same
+    // download is recognised as an update.
+    let dest = dir.path().join(file);
+    let mut last_step = u64::MAX;
+    let fetched = client.fetch_cancellable(url, &dest, cancel, |done, total| {
+        // Percent steps when the size is known, otherwise one per MB.
+        let step = match total {
+            Some(t) => done.saturating_mul(100) / t,
+            None => done / 1_000_000,
+        };
+        if step == last_step {
+            return;
+        }
+        last_step = step;
+        report(LinkUpdate::Progress { done, total });
+    });
+    match fetched {
+        Err(ApiError::Cancelled) => return Err(LinkFailure::Cancelled),
+        Err(e) => return Err(fail(format!("Download failed: {e}"))),
+        Ok(()) => {}
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(LinkFailure::Cancelled);
+    }
+    report(LinkUpdate::Installing);
+    let _guard = crate::browse::INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Cancel may have been pressed while waiting for another install.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(LinkFailure::Cancelled);
+    }
+    let sc = install::install_local_with(&dest, name, &paths, move || running())
+        .map_err(|e| fail(install_error_text(&e)))?;
+    Ok(format!("Installed {} as {}.", sc.name, sc.vpks.join(", ")))
+}
+
+// ---------------------------------------------------------------------------
 // Controller
 
 struct Installed {
@@ -344,6 +410,39 @@ struct Installed {
     editing: RefCell<Option<(String, bool)>>,
     /// Key of the mod the Update from file dialog replaces.
     updating: RefCell<Option<String>>,
+    /// Link installs by Downloads-screen id; `link-<n>`.
+    links: RefCell<HashMap<String, LinkJob>>,
+    next_link: Cell<u64>,
+    /// The HTTP agent link installs download with; its base is never used,
+    /// the links themselves are absolute.
+    client: Arc<Client>,
+}
+
+/// A link install, addressable from the Downloads screen. `generation`
+/// tells a late worker answer from a cancelled attempt apart from the
+/// current one after a retry.
+#[derive(Clone)]
+struct LinkJob {
+    url: String,
+    /// The name the mod installs under.
+    name: String,
+    /// The file name shown in the Downloads row and used on disk.
+    file: String,
+    cancel: Arc<AtomicBool>,
+    generation: u64,
+    active: bool,
+}
+
+/// A link install worker's answer.
+pub(crate) enum LinkFailure {
+    Cancelled,
+    Failed(String),
+}
+
+/// What a link-install worker reports while it runs.
+enum LinkUpdate {
+    Progress { done: u64, total: Option<u64> },
+    Installing,
 }
 
 /// Wire the Installed screen to `app` using the real game location.
@@ -365,6 +464,9 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         acting: Cell::new(false),
         editing: RefCell::new(None),
         updating: RefCell::new(None),
+        links: RefCell::new(HashMap::new()),
+        next_link: Cell::new(0),
+        client: Arc::new(Client::new(crate::DEFAULT_API_URL)),
     });
     INSTALLED.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<InstalledState>();
@@ -462,6 +564,46 @@ pub(crate) fn typed_pak(text: &str) -> Option<u32> {
     t.parse().ok()
 }
 
+/// Whether the text in the install dialog is a download link rather than a
+/// local path.
+pub(crate) fn is_link(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with("http://") || t.starts_with("https://")
+}
+
+/// The file name a link downloads under: its last path segment, without
+/// query or fragment, `%XX`-decoded. Names that are empty, dot-only or
+/// carry separators never reach the disk as-is: "mod" is used instead.
+pub(crate) fn link_file_name(url: &str) -> String {
+    let clean = url.trim();
+    let no_frag = clean.split(['#', '?']).next().unwrap_or(clean);
+    let raw = no_frag.rsplit('/').next().unwrap_or_default();
+    let decoded = percent_decode_lossy(raw);
+    let name = decoded.trim();
+    let safe = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0']);
+    if safe { name.to_owned() } else { "mod".into() }
+}
+
+/// `%XX` escapes decoded; anything malformed stays as it was written.
+fn percent_decode_lossy(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(hex) = std::str::from_utf8(bytes.get(i + 1..i + 3).unwrap_or_default()).ok()
+            && let Ok(b) = u8::from_str_radix(hex, 16)
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// The name a file installs under by default: its name without extension.
 fn default_name(path: &Path) -> String {
     path.file_stem()
@@ -505,6 +647,24 @@ pub(crate) fn drop_hover(on: bool) {
 /// local mod it is a newer version of.
 pub(crate) fn file_dropped(path: PathBuf) {
     with_installed(|i| i.dropped(path));
+}
+
+/// Cancel the link install behind a Downloads-screen row.
+pub(crate) fn cancel_link(id: &str) {
+    with_installed(|i| {
+        let job = i.links.borrow().get(id).cloned();
+        let Some(job) = job.filter(|j| j.active) else {
+            return;
+        };
+        // The worker notices at its next chunk; its late answer is ignored.
+        job.cancel.store(true, Ordering::Relaxed);
+        crate::downloads::finished(id, crate::downloads::Outcome::Cancelled);
+    });
+}
+
+/// Start a cancelled or failed link install again (Downloads screen).
+pub(crate) fn retry_link(id: &str) {
+    with_installed(|i| i.retry_link(id));
 }
 
 pub(crate) fn reload() {
@@ -934,6 +1094,12 @@ impl Installed {
             return;
         };
         let s = app.global::<LocalInstallState>();
+        // A link downloads first; everything else is a local path.
+        let text = s.get_path().to_string();
+        if is_link(&text) {
+            self.install_link(&text, &s.get_name().to_string());
+            return;
+        }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let path = typed_path(&s.get_path(), home.as_deref());
         if !path.is_file() {
@@ -985,6 +1151,161 @@ impl Installed {
                 self.acted(Ok(()));
             }
             Err(_) => self.set_flags(None, Some(false)),
+        }
+    }
+
+    /// Download the link in the install dialog and install it as a local
+    /// mod. The dialog closes at once; progress shows on the Downloads
+    /// screen, where the row can be cancelled and retried.
+    fn install_link(&self, url: &str, name: &str) {
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let s = app.global::<LocalInstallState>();
+        let url = url.trim().to_owned();
+        let file = link_file_name(&url);
+        // The mod name defaults to the link's file stem, like a local file.
+        let stem = Path::new(&file)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name = match name.trim() {
+            "" => stem,
+            n => n.to_owned(),
+        };
+        let n = self.next_link.get() + 1;
+        self.next_link.set(n);
+        let id = format!("link-{n}");
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.links.borrow_mut().insert(
+            id.clone(),
+            LinkJob {
+                url: url.clone(),
+                name: name.clone(),
+                file: file.clone(),
+                cancel: cancel.clone(),
+                generation: n,
+                active: true,
+            },
+        );
+        s.set_error_text("".into());
+        s.set_open(false);
+        crate::downloads::started(&id, &file);
+        self.start_link_job(&id, n, &url, &name, &file, cancel);
+    }
+
+    /// Start (or restart, after a retry) the worker behind a link row.
+    fn start_link_job(
+        &self,
+        id: &str,
+        generation: u64,
+        url: &str,
+        name: &str,
+        file: &str,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let client = self.client.clone();
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let job_id = id.to_owned();
+        let report = move |update: LinkUpdate| {
+            let job_id = job_id.clone();
+            let _ = weak.clone().upgrade_in_event_loop(move |_| match update {
+                LinkUpdate::Progress { done, total } => {
+                    crate::downloads::progress(&job_id, done, total)
+                }
+                LinkUpdate::Installing => crate::downloads::installing(&job_id),
+            });
+        };
+        let weak_done = self.weak.clone();
+        let done_id = id.to_owned();
+        let url = url.to_owned();
+        let name = name.to_owned();
+        let file = file.to_owned();
+        let started = crate::spawn_worker(
+            "shiv-install-link",
+            move || run_link_install(&client, &deps, &url, &file, &name, &cancel, report),
+            move |result| {
+                let result = result.map_err(LinkFailure::Failed).and_then(|r| r);
+                let _ = weak_done.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.link_finished(&done_id, generation, result));
+                });
+            },
+        );
+        if !started {
+            self.link_finished(
+                id,
+                generation,
+                Err(LinkFailure::Failed(
+                    "Could not start a background thread.".into(),
+                )),
+            );
+        }
+    }
+
+    /// Retry the link install `id` with a fresh worker, same row. Allowed
+    /// once the last attempt finished or was cancelled; the stale worker's
+    /// late answer is told apart by the new generation.
+    fn retry_link(&self, id: &str) {
+        let job = self.links.borrow().get(id).cloned();
+        let Some(job) = job.filter(|j| !j.active || j.cancel.load(Ordering::Relaxed)) else {
+            return;
+        };
+        let n = self.next_link.get() + 1;
+        self.next_link.set(n);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let fresh = LinkJob {
+            url: job.url.clone(),
+            name: job.name.clone(),
+            file: job.file.clone(),
+            cancel: cancel.clone(),
+            generation: n,
+            active: true,
+        };
+        self.links.borrow_mut().insert(id.to_owned(), fresh);
+        crate::downloads::started(id, &job.file);
+        self.start_link_job(id, n, &job.url, &job.name, &job.file, cancel);
+    }
+
+    /// A link worker answered. A stale generation (the row was retried
+    /// meanwhile) is ignored, except for an install that made it to disk.
+    fn link_finished(&self, id: &str, generation: u64, result: Result<String, LinkFailure>) {
+        let file = self.links.borrow().get(id).map(|j| j.file.clone());
+        let Some(file) = file else {
+            return;
+        };
+        let current = self
+            .links
+            .borrow()
+            .get(id)
+            .is_some_and(|j| j.generation == generation);
+        if !current {
+            if result.is_ok() {
+                // The disk changed under a newer attempt of the same row.
+                crate::launch::refresh();
+                crate::browse::refresh_installed();
+                self.refresh(false);
+            }
+            return;
+        }
+        if let Some(j) = self.links.borrow_mut().get_mut(id) {
+            j.active = false;
+        }
+        match result {
+            Ok(banner) => {
+                crate::downloads::finished(id, crate::downloads::Outcome::Done);
+                self.with_state(|s| s.set_banner_text(banner.into()));
+                self.acted(Ok(()));
+            }
+            Err(LinkFailure::Cancelled) => {
+                crate::downloads::finished(id, crate::downloads::Outcome::Cancelled);
+            }
+            Err(LinkFailure::Failed(text)) => {
+                crate::downloads::finished(id, crate::downloads::Outcome::Failed(text.clone()));
+                self.with_state(|s| {
+                    s.set_banner_text(format!("Could not install {file}. {text}").into())
+                });
+            }
         }
     }
 
@@ -1434,6 +1755,41 @@ mod tests {
         assert_eq!(typed_pak("many"), None);
         assert_eq!(typed_pak("-1"), None);
         assert_eq!(typed_pak("1.5"), None);
+    }
+
+    #[test]
+    fn links_are_told_apart_from_paths() {
+        assert!(is_link("https://host/Haze Skin.vpk"));
+        assert!(is_link(" http://host/mod.zip "));
+        assert!(!is_link("/home/kai/Haze Skin.vpk"));
+        assert!(!is_link("file:///tmp/a.vpk"));
+        assert!(!is_link(""));
+    }
+
+    #[test]
+    fn link_file_names_decode_and_never_travel() {
+        assert_eq!(
+            link_file_name("https://host/dl/Haze%20Skin.zip"),
+            "Haze Skin.zip"
+        );
+        assert_eq!(
+            link_file_name("https://host/dl/a.vpk?token=x#frag"),
+            "a.vpk",
+            "query and fragment dropped"
+        );
+        assert_eq!(link_file_name("https://host/dl/%C3%A4.vpk"), "ä.vpk");
+        assert_eq!(
+            link_file_name("https://host/dl/%ZZ.vpk"),
+            "%ZZ.vpk",
+            "a broken escape stays as written"
+        );
+        assert_eq!(link_file_name("https://host/"), "mod");
+        assert_eq!(link_file_name("https://host/dl/"), "mod");
+        assert_eq!(link_file_name("https://host/dl/.."), "mod");
+        assert_eq!(link_file_name("https://host/dl/.hidden"), ".hidden");
+        // A decoded separator is refused, not written to disk.
+        assert_eq!(link_file_name("https://host/dl/a%2Fb.vpk"), "mod");
+        assert_eq!(link_file_name("https://host/dl/a%5Cb.vpk"), "mod");
     }
 
     #[test]

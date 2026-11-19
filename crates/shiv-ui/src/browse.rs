@@ -56,7 +56,10 @@ const GALLERY_QUEUE: usize = 3;
 const GALLERY_MAX: usize = 24;
 
 /// Serialises installs: two installs must not allocate pak numbers at once.
-static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+/// One install at a time: pak slots are allocated against the folder while
+/// staging, so two installs must not overlap (link installs in `installed`
+/// take it too).
+pub(crate) static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     /// The controller, reachable from closures posted by worker threads.

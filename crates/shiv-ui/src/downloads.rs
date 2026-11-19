@@ -57,8 +57,23 @@ pub fn attach(app: &App) {
     let state = app.global::<DownloadsState>();
     state.set_rows(ModelRc::from(rows));
     DOWNLOADS.with(|c| *c.borrow_mut() = Some(controller));
-    state.on_cancel(|id| crate::browse::cancel_install(id.as_str()));
-    state.on_retry(|id| crate::browse::retry_install(id.as_str()));
+    state.on_cancel(|id| {
+        let id = id.as_str();
+        // Link installs belong to the Installed screen, catalog ones to Browse.
+        if id.starts_with("link-") {
+            crate::installed::cancel_link(id);
+        } else {
+            crate::browse::cancel_install(id);
+        }
+    });
+    state.on_retry(|id| {
+        let id = id.as_str();
+        if id.starts_with("link-") {
+            crate::installed::retry_link(id);
+        } else {
+            crate::browse::retry_install(id);
+        }
+    });
     state.on_clear_finished(|| with_downloads(|d| d.clear_finished()));
 }
 
