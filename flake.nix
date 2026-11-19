@@ -57,6 +57,8 @@
 
       # What Slint needs to render, and pkg-config so the build scripts
       # find it — on Linux. macOS development needs the toolchain alone.
+      # winit dlopens the wayland client library at runtime, so it belongs
+      # in buildInputs, not only in the build-time lookup path.
       windowingDeps =
         pkgs:
         nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
@@ -66,6 +68,18 @@
             fontconfig
             libxkbcommon
             wayland
+          ]
+        );
+
+      runtimeDeps =
+        pkgs:
+        nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+          with pkgs;
+          [
+            wayland
+            libxkbcommon
+            fontconfig
+            zstd
           ]
         );
 
@@ -104,7 +118,7 @@
 
           nativeBuildInputs =
             windowingDeps pkgs ++ zstdForPkgConfig pkgs ++ [ pkgs.copyDesktopItems ];
-          buildInputs = windowingDeps pkgs ++ [ pkgs.zstd ];
+          buildInputs = runtimeDeps pkgs;
 
           desktopItems = [
             (pkgs.makeDesktopItem {
