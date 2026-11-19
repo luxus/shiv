@@ -29,6 +29,8 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
       ];
       forAllSystems =
         f:
@@ -53,92 +55,88 @@
           cargo = toolchain pkgs;
         };
 
-      # What Slint needs to render, and pkg-config so the build scripts find
-      # it. The unrar C++ links against the same nixpkgs, so one glibc
-      # runs the whole binary.
+      # What Slint needs to render, and pkg-config so the build scripts
+      # find it — on Linux. macOS development needs the toolchain alone.
       windowingDeps =
         pkgs:
-        with pkgs;
-        [
-          pkg-config
-          fontconfig
-          libxkbcommon
-          wayland
-        ];
+        nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+          with pkgs;
+          [
+            pkg-config
+            fontconfig
+            libxkbcommon
+            wayland
+          ]
+        );
+
+      shivPackage =
+        pkgs:
+        (rustPlatform pkgs).buildRustPackage {
+          pname = "shiv";
+          version = (pkgs.lib.importTOML "${self}/crates/shiv-ui/Cargo.toml").package.version;
+
+          src = self;
+          cargoLock.lockFile = "${self}/Cargo.lock";
+
+          doCheck = true;
+
+          nativeBuildInputs = windowingDeps pkgs ++ [ pkgs.copyDesktopItems ];
+          buildInputs = windowingDeps pkgs;
+
+          desktopItems = [
+            (pkgs.makeDesktopItem {
+              name = "io.github.Siebe_Uy.shiv";
+              desktopName = "Shiv";
+              genericName = "Deadlock Mod Manager";
+              comment = "Lean, fast mod manager for Deadlock";
+              exec = "shiv";
+              icon = "io.github.Siebe_Uy.shiv";
+              terminal = false;
+              categories = [ "Game" ];
+              keywords = [
+                "Deadlock"
+                "Mods"
+                "Valve"
+              ];
+              startupWMClass = "shiv";
+            })
+          ];
+
+          postInstall = ''
+            install -Dm644 ${self}/packaging/flatpak/io.github.Siebe_Uy.shiv.128.png \
+              $out/share/icons/hicolor/128x128/apps/io.github.Siebe_Uy.shiv.png
+          '';
+
+          meta = with pkgs.lib; {
+            description = "A small, native mod manager for Deadlock";
+            homepage = "https://github.com/luxus/shiv";
+            license = licenses.gpl3Only;
+            mainProgram = "shiv";
+            platforms = platforms.linux;
+          };
+        };
     in
     {
+      # The shipped app: Linux only, with a desktop entry and an icon so
+      # any desktop that added it lists Shiv in the application menu.
       packages = forAllSystems (
         pkgs:
-        let
-          version = (pkgs.lib.importTOML "${self}/crates/shiv-ui/Cargo.toml").package.version;
-        in
-        {
-          default = self.packages.${pkgs.stdenv.hostPlatform.system}.shiv;
-
-          # `nix run github:luxus/shiv` — the release binary, its tests run
-          # inside the build, with a launcher entry so the app appears in
-          # the application menu of any desktop that installed it.
-          shiv = (rustPlatform pkgs).buildRustPackage {
-            pname = "shiv";
-            inherit version;
-
-            src = self;
-            cargoLock.lockFile = "${self}/Cargo.lock";
-
-            doCheck = true;
-
-            nativeBuildInputs =
-              windowingDeps pkgs
-              ++ [ pkgs.copyDesktopItems ];
-            buildInputs = windowingDeps pkgs;
-
-            desktopItems = [
-              (pkgs.makeDesktopItem {
-                name = "io.github.Siebe_Uy.shiv";
-                desktopName = "Shiv";
-                genericName = "Deadlock Mod Manager";
-                comment = "Lean, fast mod manager for Deadlock";
-                exec = "shiv";
-                icon = "io.github.Siebe_Uy.shiv";
-                terminal = false;
-                categories = [
-                  "Game"
-                ];
-                keywords = [
-                  "Deadlock"
-                  "Mods"
-                  "Valve"
-                ];
-                startupWMClass = "shiv";
-              })
-            ];
-
-            postInstall = ''
-              install -Dm644 ${self}/packaging/flatpak/io.github.Siebe_Uy.shiv.128.png \
-                $out/share/icons/hicolor/128x128/apps/io.github.Siebe_Uy.shiv.png
-            '';
-
-            meta = with pkgs.lib; {
-              description = "A small, native mod manager for Deadlock";
-              homepage = "https://github.com/luxus/shiv";
-              license = licenses.gpl3Only;
-              mainProgram = "shiv";
-              platforms = platforms.linux;
-            };
-          };
+        nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          default = shivPackage pkgs;
+          shiv = shivPackage pkgs;
         }
       );
 
+      # `nix develop` — the pinned toolchain and the libraries Slint
+      # renders with; cargo fetches the rest as usual.
       devShells = forAllSystems (
         pkgs:
         {
-          # `nix develop` — the pinned toolchain, the windowing libraries
-          # and a pkg-config that finds them; cargo fetches the rest.
           default = pkgs.mkShell {
             packages =
               [
                 (toolchain pkgs)
-                git
+                pkgs.git
               ]
               ++ windowingDeps pkgs;
             shellHook = ''
@@ -150,12 +148,12 @@
         }
       );
 
-      # `nix flake check` builds the package, tests included, on one
-      # command — the same gates CI runs.
+      # `nix flake check` — the package builds with its tests inside, the
+      # same gates CI runs, from one command.
       checks = forAllSystems (
         pkgs:
-        {
-          shiv = self.packages.${pkgs.stdenv.hostPlatform.system}.shiv;
+        nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          shiv = shivPackage pkgs;
         }
       );
     };
