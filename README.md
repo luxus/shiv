@@ -20,6 +20,10 @@ gigabytes of RAM. Shiv does the essentials and nothing else.
 
 - **Browse** the Deadlock Mods catalog with search, sorting, category and hero filters, pagination and
   thumbnails. Pick several heroes at once.
+- **Mod registries.** Add any `dmm-source` catalog (a mod site or your own static hosting) under
+  **Sources**: Shiv reviews its name and download origin before saving it, browses its mods beside
+  the catalog, verifies the published SHA-256 of every download, and updates a registry mod when
+  its release's content revision changes.
 - **Mod pages** with an image gallery, description, **Files**, **Changelog** and **Comments** tabs,
   the author's **Ko-fi** (or Patreon, Buy Me a Coffee, PayPal) link when they have one, and a link
   from the author's name to all of their mods. "Updated 5 days ago" instead of raw dates.
@@ -27,6 +31,9 @@ gigabytes of RAM. Shiv does the essentials and nothing else.
   several downloads, and a **Downloads** screen with progress, speed, cancel and retry.
 - **Install local files and links** the same way: a `.vpk` or archive from disk, a dropped file —
   several at once — or a pasted download link, all as cleanly managed mods.
+- **Move your library** between mod managers with the Deadlock Mod Interchange format: export an
+  interchange bundle from Installed, and import one back — duplicate mods are recognised, files
+  already in the game folder are adopted in place, and nothing of the source bundle is touched.
 - **Installed** mods open their detail page when clicked. Enable, disable and uninstall from
   there, edit the name and notes, and set which pak number a mod sits at; everything else
   renumbers around it.
