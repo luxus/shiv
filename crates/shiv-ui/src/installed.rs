@@ -8,7 +8,7 @@
 //! after every action, and that same read refreshes the game-running state.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -56,6 +56,24 @@ const SUFFIX: &str = ".disabled";
 /// service (xdg-desktop-portal) is reachable.
 const NO_FILE_PICKED: &str =
     "No file picked. You can also type or paste a path or a link, or drop the file on the window.";
+
+/// What the banner says when dropped files wait behind a dialog.
+pub(crate) fn queued_banner(n: usize) -> String {
+    if n == 1 {
+        "1 file queued; it continues after the open dialog.".into()
+    } else {
+        format!("{n} files queued; they continue after the open dialog.")
+    }
+}
+
+/// What the banner says when cancelling a dialog dropped the rest of a batch.
+pub(crate) fn stopped_banner(n: usize) -> String {
+    if n == 1 {
+        "Stopped; 1 more dropped file was not processed.".into()
+    } else {
+        format!("Stopped; {n} more dropped files were not processed.")
+    }
+}
 
 thread_local! {
     static INSTALLED: RefCell<Option<Rc<Installed>>> = const { RefCell::new(None) };
@@ -416,6 +434,11 @@ struct Installed {
     /// The HTTP agent link installs download with; its base is never used,
     /// the links themselves are absolute.
     client: Arc<Client>,
+    /// Dropped files waiting for their turn: the open dialog (or any busy
+    /// state) holds the queue until it clears.
+    pending: RefCell<VecDeque<PathBuf>>,
+    /// A dropped file is being inspected on a worker.
+    stepping: Cell<bool>,
 }
 
 /// A link install, addressable from the Downloads screen. `generation`
@@ -467,6 +490,8 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         links: RefCell::new(HashMap::new()),
         next_link: Cell::new(0),
         client: Arc::new(Client::new(crate::DEFAULT_API_URL)),
+        pending: RefCell::new(VecDeque::new()),
+        stepping: Cell::new(false),
     });
     INSTALLED.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<InstalledState>();
@@ -528,6 +553,8 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
                 }
             });
             *i.updating.borrow_mut() = None;
+            // Cancelling stops a dropped batch, not just this file.
+            i.stop_batch();
         });
     });
     let local = app.global::<LocalInstallState>();
@@ -541,6 +568,8 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
                     s.set_open(false);
                 }
             });
+            // Cancelling stops a dropped batch, not just this file.
+            i.stop_batch();
         });
     });
 }
@@ -646,7 +675,13 @@ pub(crate) fn drop_hover(on: bool) {
 /// A file was dropped on the window: install it, or offer to replace the
 /// local mod it is a newer version of.
 pub(crate) fn file_dropped(path: PathBuf) {
-    with_installed(|i| i.dropped(path));
+    with_installed(|i| i.dropped_batch(vec![path]));
+}
+
+/// Several files were dropped on the window: they are queued and processed
+/// one by one, each opening the dialog it needs.
+pub(crate) fn files_dropped(paths: Vec<PathBuf>) {
+    with_installed(|i| i.dropped_batch(paths));
 }
 
 /// Cancel the link install behind a Downloads-screen row.
@@ -827,6 +862,8 @@ impl Installed {
         self.fetch_thumbs(&list);
         *self.mods.borrow_mut() = loaded.mods;
         *self.entries.borrow_mut() = list;
+        // Dropped files waiting behind the last action or dialog go next.
+        self.step();
     }
 
     /// Fetch thumbnails the cache does not hold yet, one worker for the batch.
@@ -935,6 +972,8 @@ impl Installed {
     fn close_edit(&self) {
         *self.editing.borrow_mut() = None;
         self.with_app(|app| app.global::<ModEditState>().set_open(false));
+        // Dropped files queued behind the dialog go next.
+        self.step();
     }
 
     fn save_edit(&self) {
@@ -1472,24 +1511,23 @@ impl Installed {
         }
     }
 
-    /// Look inside the dropped file on a worker, then open the replace
+    /// Look inside the next dropped file on a worker, then open the replace
     /// dialog for the mod it matches or the install dialog prefilled.
-    fn dropped(&self, path: PathBuf) {
+    fn step(&self) {
+        if self.stepping.get() {
+            return;
+        }
         let Some(app) = self.weak.upgrade() else {
             return;
         };
-        app.global::<DropState>().set_hover(false);
-        if app.get_screen() != 1 {
-            app.set_screen(1);
-        }
+        // A dialog, a re-read or an action in flight holds the queue.
         if self.dialog_open(&app) || !self.idle() {
-            self.with_state(|s| {
-                s.set_banner_text(
-                    "Finish or cancel the open dialog first, then drop the file again.".into(),
-                );
-            });
             return;
         }
+        let Some(path) = self.pending.borrow_mut().pop_front() else {
+            return;
+        };
+        self.stepping.set(true);
         let file = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -1520,6 +1558,7 @@ impl Installed {
         );
         if !started {
             self.set_flags(None, Some(false));
+            self.stepping.set(false);
         }
     }
 
@@ -1528,9 +1567,14 @@ impl Installed {
         path: PathBuf,
         result: Result<Option<(String, String, MatchReason)>, String>,
     ) {
+        self.stepping.set(false);
         self.set_flags(None, Some(false));
         match result {
-            Err(text) => self.with_state(|s| s.set_banner_text(text.into())),
+            // A file that cannot be read is reported; the rest still go.
+            Err(text) => {
+                self.with_state(|s| s.set_banner_text(text.into()));
+                self.step();
+            }
             Ok(found) => {
                 self.with_state(|s| s.set_banner_text("".into()));
                 let shown = path.to_string_lossy().into_owned();
@@ -1540,8 +1584,58 @@ impl Installed {
                     }
                     None => self.show_local_install(&path),
                 }
+                // The dialog holds the queue: it resumes when the dialog
+                // closes (success refreshes and `loaded` steps again) or is
+                // cancelled (which also stops the batch).
             }
         }
+    }
+
+    /// Stop processing dropped files: the queue is dropped and a note says
+    /// how many were left.
+    fn stop_batch(&self) {
+        let left = self.pending.borrow().len();
+        if left > 0 {
+            self.with_state(|s| s.set_banner_text(stopped_banner(left).into()));
+        }
+        self.pending.borrow_mut().clear();
+    }
+
+    /// Files were dropped on the window. They are queued and processed one
+    /// by one; anything that is not a file is skipped with a note.
+    fn dropped_batch(&self, paths: Vec<PathBuf>) {
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        app.global::<DropState>().set_hover(false);
+        if app.get_screen() != 1 {
+            app.set_screen(1);
+        }
+        let (files, skipped): (Vec<PathBuf>, Vec<PathBuf>) =
+            paths.into_iter().partition(|p| p.is_file());
+        let n_queued = {
+            let mut pending = self.pending.borrow_mut();
+            pending.extend(files);
+            pending.len()
+        };
+        let held = self.dialog_open(&app) || !self.idle() || self.stepping.get();
+        let mut parts: Vec<String> = Vec::new();
+        if !skipped.is_empty() {
+            parts.push(format!(
+                "Skipped {} dropped {} that {} not file{}.",
+                skipped.len(),
+                if skipped.len() == 1 { "item" } else { "items" },
+                if skipped.len() == 1 { "is" } else { "are" },
+                if skipped.len() == 1 { "" } else { "s" },
+            ));
+        }
+        if n_queued > 0 && held {
+            parts.push(queued_banner(n_queued));
+        }
+        if !parts.is_empty() {
+            self.with_state(|s| s.set_banner_text(parts.join(" ").into()));
+        }
+        self.step();
     }
 
     fn act(&self, id: &str, action: Action) {
@@ -1742,6 +1836,30 @@ mod tests {
         );
         assert_eq!(typed_path("\"/x/c.vpk\"", None), PathBuf::from("/x/c.vpk"));
         assert_eq!(typed_path("~/d.vpk", None), PathBuf::from("~/d.vpk"));
+    }
+
+    #[test]
+    fn batch_banners_count_what_is_left() {
+        assert!(
+            queued_banner(1).contains("1 file queued"),
+            "{}",
+            queued_banner(1)
+        );
+        assert!(
+            queued_banner(3).contains("3 files queued"),
+            "{}",
+            queued_banner(3)
+        );
+        assert!(
+            stopped_banner(1).contains("1 more dropped file"),
+            "{}",
+            stopped_banner(1)
+        );
+        assert!(
+            stopped_banner(4).contains("4 more dropped files"),
+            "{}",
+            stopped_banner(4)
+        );
     }
 
     #[test]

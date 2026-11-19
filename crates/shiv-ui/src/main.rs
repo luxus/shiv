@@ -1746,15 +1746,77 @@ mod tests {
         }));
         assert!(!update.get_open());
         assert_eq!(local.get_name(), "Totally Different");
-        // A second drop while a dialog is open is refused with a hint.
-        installed::file_dropped(other.clone());
-        assert!(state.get_banner_text().contains("Finish or cancel"));
+        // Files dropped while a dialog is open are queued behind it, not
+        // refused.
+        let extra = newer_dir.join("Extra.vpk");
+        std::fs::write(&extra, b"\x34\x12\xaa\x55\x02\x00\x00\x00ex").expect("extra");
+        installed::files_dropped(vec![other.clone(), extra.clone()]);
+        assert!(
+            state.get_banner_text().contains("2 files queued"),
+            "{}",
+            state.get_banner_text()
+        );
         local.invoke_cancel();
+        // Cancelling stops the batch: the queued files are not processed.
+        run_until(&app, Duration::from_millis(300), |_| false);
+        assert!(!local.get_open() && !update.get_open());
+        assert!(
+            state.get_banner_text().contains("Stopped"),
+            "{}",
+            state.get_banner_text()
+        );
+        assert_eq!(
+            state.get_rows().row_count(),
+            2,
+            "nothing extra installed from a stopped batch"
+        );
         assert_eq!(
             std::fs::read(addons.join("pak01_dir.vpk")).expect("read"),
             std::fs::read(&v2).expect("read"),
             "nothing replaced without confirming"
         );
+
+        // A batch processes one file at a time: the first installs as a new
+        // mod, the second (a newer copy of Outlines) offers to replace it.
+        let another = newer_dir.join("Another.vpk");
+        std::fs::write(&another, b"\x34\x12\xaa\x55\x02\x00\x00\x00an").expect("another");
+        installed::files_dropped(vec![another.clone(), v3.clone()]);
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            a.global::<crate::LocalInstallState>().get_open()
+                && !a.global::<InstalledState>().get_busy()
+        }));
+        assert_eq!(local.get_name(), "Another");
+        local.invoke_install();
+        // Once the dialog closes, the queue steps to the second file.
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            a.global::<crate::UpdateFileState>().get_open()
+        }));
+        assert!(update.get_dropped());
+        assert_eq!(update.get_target_name(), "Outlines");
+        update.invoke_replace();
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy() && s.get_banner_text().contains("Updated Outlines")
+        }));
+        assert!(!update.get_open() && !local.get_open());
+        assert_eq!(state.get_rows().row_count(), 3);
+        assert_eq!(
+            std::fs::read(addons.join("pak01_dir.vpk")).expect("read"),
+            std::fs::read(&v3).expect("read"),
+            "the queued file replaced the mod it matched"
+        );
+        // Remove the mod the batch added so the checks below start clean.
+        let another_id = (0..state.get_rows().row_count())
+            .find_map(|i| {
+                state
+                    .get_rows()
+                    .row_data(i)
+                    .filter(|r| r.name.as_str() == "Another")
+                    .map(|r| r.id.clone())
+            })
+            .expect("row");
+        state.invoke_uninstall(another_id);
+        assert!(run_until(&app, Duration::from_secs(20), rows_are(2)));
 
         // Edit which pak number the mod sits at; others move out of the way.
         state.invoke_edit(id.clone());
@@ -1777,7 +1839,7 @@ mod tests {
         assert!(r.detail.contains("pak40"), "{}", r.detail);
         assert_eq!(
             std::fs::read(addons.join("pak40_dir.vpk")).expect("read"),
-            std::fs::read(&v2).expect("read"),
+            std::fs::read(&v3).expect("read"),
             "the file moved, its content and name stayed"
         );
 

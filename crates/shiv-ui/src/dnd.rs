@@ -1,5 +1,6 @@
-//! Dropping a mod file on the window installs it, or replaces the local mod
-//! it is a newer version of (see `installed::file_dropped`).
+//! Dropping mod files on the window installs them, or replaces the local
+//! mod they are a newer version of (see `installed::files_dropped`); several
+//! files dropped at once are queued and processed one by one.
 //!
 //! winit 0.30 reports file drops on X11, Windows and macOS but not on
 //! Wayland, so under Wayland Shiv listens itself (`wayland.rs`). Shiv runs
@@ -74,11 +75,7 @@ fn start_wayland(window: &winit::window::Window) -> Result<(), String> {
         wayland::start(wl.display, |event| {
             let _ = slint::invoke_from_event_loop(move || match event {
                 wayland::DropEvent::Hover(on) => installed::drop_hover(on),
-                wayland::DropEvent::Files(files) => {
-                    if let Some(first) = files.into_iter().next() {
-                        installed::file_dropped(first);
-                    }
-                }
+                wayland::DropEvent::Files(files) => installed::files_dropped(files),
             });
         })
     }
