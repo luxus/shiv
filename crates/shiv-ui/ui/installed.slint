@@ -614,6 +614,10 @@ export global ModEditState {
     in property <string> files;
     in-out property <string> name;
     in-out property <string> notes;
+    // The mod's VPKs carry pak numbers, so the pak it sits at can be changed.
+    in property <bool> has-pak;
+    // The pak number shown for editing, two digits ("05"); "5" and "pak05" parse too.
+    in-out property <string> pak-text;
     in property <string> error-text;
     in property <bool> busy;
 
@@ -635,6 +639,11 @@ export component ModEditDialog inherits DialogCard {
         label: "Name";
         placeholder: "Display name";
         text <=> ModEditState.name;
+    }
+    if ModEditState.has-pak: Field {
+        label: "Pak number";
+        placeholder: "05";
+        text <=> ModEditState.pak-text;
     }
     Field {
         label: "Notes";

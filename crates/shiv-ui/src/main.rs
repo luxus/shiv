@@ -1756,6 +1756,41 @@ mod tests {
             "nothing replaced without confirming"
         );
 
+        // Edit which pak number the mod sits at; others move out of the way.
+        state.invoke_edit(id.clone());
+        assert!(edit.get_open() && !edit.get_adopt());
+        assert_eq!(edit.get_pak_text(), "01");
+        assert!(edit.get_has_pak());
+        edit.set_pak_text(" pak40 ".into());
+        edit.invoke_save();
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            !a.global::<InstalledState>().get_busy()
+                && !a.global::<crate::ModEditState>().get_open()
+        }));
+        assert!(exists("pak40_dir.vpk"));
+        assert!(!exists("pak01_dir.vpk"));
+        // The Hitsound pak (55, at or above 40) shifted up by one.
+        assert!(exists("pak56_dir.vpk"));
+        assert!(!exists("pak55_dir.vpk"));
+        let r = state.get_rows().row_data(0).expect("row");
+        assert_eq!(r.id.as_str(), id.as_str());
+        assert!(r.detail.contains("pak40"), "{}", r.detail);
+        assert_eq!(
+            std::fs::read(addons.join("pak40_dir.vpk")).expect("read"),
+            std::fs::read(&v2).expect("read"),
+            "the file moved, its content and name stayed"
+        );
+
+        // An out-of-range number is refused without touching anything.
+        state.invoke_edit(id.clone());
+        assert_eq!(edit.get_pak_text(), "40");
+        edit.set_pak_text("120".into());
+        edit.invoke_save();
+        assert!(edit.get_open() && edit.get_error_text().contains("01 to 99"));
+        edit.invoke_cancel();
+        assert!(!edit.get_open());
+        assert!(exists("pak40_dir.vpk") && exists("pak56_dir.vpk"));
+
         // Clean up for the error-state checks below.
         state.invoke_uninstall(id);
         assert!(run_until(&app, Duration::from_secs(20), rows_are(1)));

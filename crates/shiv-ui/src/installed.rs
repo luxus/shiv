@@ -88,6 +88,8 @@ pub(crate) struct Entry {
     pub position: u32,
     pub can_up: bool,
     pub can_down: bool,
+    /// The mod's lowest pak number; 0 when its files carry none.
+    pub pak: u32,
     /// Installed from a local file or adopted (`sidecar::LOCAL_PREFIX` id).
     pub local: bool,
     /// The user's notes from the sidecar.
@@ -159,6 +161,7 @@ fn entry(m: &InstalledMod) -> Entry {
             position: 0,
             can_up: false,
             can_down: false,
+            pak: m.vpks.iter().filter_map(|v| v.pak).min().unwrap_or(0),
         };
     };
     let mut parts: Vec<String> = Vec::new();
@@ -201,6 +204,7 @@ fn entry(m: &InstalledMod) -> Entry {
         position: 0,
         can_up: false,
         can_down: false,
+        pak: m.vpks.iter().filter_map(|v| v.pak).min().unwrap_or(0),
     }
 }
 
@@ -448,6 +452,14 @@ pub(crate) fn typed_path(text: &str, home: Option<&Path>) -> PathBuf {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(t),
     }
+}
+
+/// The pak number a user typed into the edit dialog: "5", "05" and "pak05"
+/// all mean 5. `None` when the field is empty or not a number.
+pub(crate) fn typed_pak(text: &str) -> Option<u32> {
+    let t = text.trim().to_ascii_lowercase();
+    let t = t.strip_prefix("pak").unwrap_or(&t).trim();
+    t.parse().ok()
 }
 
 /// The name a file installs under by default: its name without extension.
@@ -746,6 +758,14 @@ impl Installed {
             s.set_files(e.files.join(", ").into());
             s.set_name(if adopt { "" } else { e.raw_name.as_str() }.into());
             s.set_notes(e.notes.as_deref().unwrap_or("").into());
+            // The pak number is editable when the mod's files carry one; a
+            // hand-added file without one (or one about to be adopted) is not.
+            s.set_has_pak(!adopt && e.pak > 0);
+            s.set_pak_text(if e.pak > 0 {
+                format!("{:02}", e.pak).into()
+            } else {
+                String::new().into()
+            });
             s.set_error_text("".into());
             s.set_busy(false);
             s.set_open(true);
@@ -774,11 +794,40 @@ impl Installed {
             s.set_error_text("Give the mod a name.".into());
             return;
         }
-        let mod_ = self.mods.borrow().iter().find(|m| key(m) == id).cloned();
-        let Some(mod_) = mod_ else {
-            s.set_error_text("The mod is gone. Press Refresh.".into());
-            return;
+        let mod_ = {
+            let mods = self.mods.borrow();
+            let entries = self.entries.borrow();
+            let Some(index) = mods.iter().position(|m| key(m) == id) else {
+                s.set_error_text("The mod is gone. Press Refresh.".into());
+                return;
+            };
+            let Some(entry) = entries.get(index).cloned() else {
+                s.set_error_text("The mod is gone. Press Refresh.".into());
+                return;
+            };
+            // A new pak number moves the mod in the load order; an unchanged,
+            // empty or unparsable field leaves it alone. The range is
+            // checked here; deeper conflicts (a move that would push another
+            // VPK past 99) are refused by the worker without touching
+            // anything.
+            let pak_to_set = if adopt {
+                None
+            } else {
+                match typed_pak(&s.get_pak_text()) {
+                    None => None,
+                    Some(n) if n == entry.pak => None,
+                    Some(n) if n == 0 || n > addons::PAK_CAPACITY => {
+                        s.set_error_text("Pak numbers run from 01 to 99.".into());
+                        return;
+                    }
+                    Some(n) => Some(n),
+                }
+            };
+            let mods = mods.clone();
+            let mod_ = mods[index].clone();
+            (mods, index, mod_, pak_to_set)
         };
+        let (mods, index, mod_, pak_to_set) = mod_;
         s.set_busy(true);
         s.set_error_text("".into());
         self.set_flags(None, Some(true));
@@ -788,6 +837,10 @@ impl Installed {
             "shiv-installed-edit",
             move || -> Result<(), String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                if let Some(pak) = pak_to_set {
+                    sidecar::set_pak(&paths.addons, &mods, index, pak)
+                        .map_err(|e| e.to_string())?;
+                }
                 let done = if adopt {
                     sidecar::adopt(&paths.addons, &mod_, &name, notes)
                 } else {
@@ -1368,6 +1421,37 @@ mod tests {
         );
         assert_eq!(typed_path("\"/x/c.vpk\"", None), PathBuf::from("/x/c.vpk"));
         assert_eq!(typed_path("~/d.vpk", None), PathBuf::from("~/d.vpk"));
+    }
+
+    #[test]
+    fn typed_pak_numbers_parse_leniently() {
+        assert_eq!(typed_pak("05"), Some(5));
+        assert_eq!(typed_pak(" pak05 "), Some(5));
+        assert_eq!(typed_pak("PAK40"), Some(40));
+        assert_eq!(typed_pak("7"), Some(7));
+        assert_eq!(typed_pak(""), None);
+        assert_eq!(typed_pak("  "), None);
+        assert_eq!(typed_pak("many"), None);
+        assert_eq!(typed_pak("-1"), None);
+        assert_eq!(typed_pak("1.5"), None);
+    }
+
+    #[test]
+    fn entries_carry_the_lowest_pak_number() {
+        let multi = InstalledMod {
+            sidecar: Some(sidecar("m1", "Multi")),
+            vpks: vec![
+                vpk("pak07_dir.vpk", Some(7), true),
+                vpk("pak03_dir.vpk.disabled", Some(3), false),
+            ],
+        };
+        let hand = InstalledMod {
+            sidecar: None,
+            vpks: vec![vpk("custom.vpk", None, true)],
+        };
+        let e = entries(&[multi, hand]);
+        assert_eq!(e[0].pak, 3, "the lowest number decides where it sits");
+        assert_eq!(e[1].pak, 0);
     }
 
     #[test]
