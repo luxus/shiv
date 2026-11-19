@@ -107,6 +107,16 @@ cd shiv
 cargo run --release -p shiv-ui      # the binary is target/release/shiv
 ```
 
+On macOS (not shipped, but fine for development) a GCC from nix or Homebrew on
+`PATH` builds unrar's C++ against its own libstdc++, which the Apple linker
+cannot resolve; `.cargo/config.toml` already pins the final link to Apple
+clang. Point the C++ compilation there too:
+
+```sh
+export CC=/usr/bin/cc CXX=/usr/bin/cc
+cargo test --workspace
+```
+
 Run the tests:
 
 ```sh
