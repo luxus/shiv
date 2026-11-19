@@ -964,6 +964,38 @@ pub(crate) fn catalog_kind(id: &str) -> Option<(Option<String>, Option<String>)>
     out
 }
 
+/// The catalog's GameBanana `(submission id, is a Sound)` of `id`, for the
+/// interchange keys of an export and a duplicate check of an import.
+pub(crate) fn catalog_remote(id: &str) -> Option<(String, bool)> {
+    let mut out = None;
+    with_browse(|b| {
+        out = b
+            .catalog
+            .borrow()
+            .iter()
+            .find(|m| m.id == id)
+            .filter(|m| !m.remote_id.is_empty() && m.remote_id.bytes().all(|b| b.is_ascii_digit()))
+            .map(|m| (m.remote_id.clone(), m.is_audio));
+    });
+    out
+}
+
+/// The Shiv mod id of the catalog mod whose GameBanana submission is
+/// `submission`, so an interchange key can be told apart from an installed
+/// mod (the inverse of `catalog_remote`).
+pub(crate) fn catalog_remote_of_submission(submission: &str) -> Option<String> {
+    let mut out = None;
+    with_browse(|b| {
+        out = b
+            .catalog
+            .borrow()
+            .iter()
+            .find(|m| m.remote_id == submission)
+            .map(|m| m.id.clone());
+    });
+    out
+}
+
 /// Start an update of an installed mod (the Installed screen's Update button).
 pub(crate) fn update_mod(id: &str) {
     with_browse(|b| b.install(id));

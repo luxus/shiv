@@ -6,6 +6,7 @@ pub mod game;
 pub mod health;
 mod hero_settings;
 pub mod install;
+pub mod interchange;
 pub mod launch;
 pub mod link;
 pub mod perf;

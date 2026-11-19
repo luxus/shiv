@@ -18,6 +18,7 @@ use shiv_api::{ApiError, Client};
 use shiv_core::addons::{self, AddonsError};
 use shiv_core::game::{self, GameError, GamePaths};
 use shiv_core::install::{self, InstallError, MatchReason};
+use shiv_core::interchange;
 use shiv_core::sidecar::{self, InstalledMod, Move};
 use shiv_repair::OverlayState;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
@@ -545,6 +546,8 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
     });
     state.on_edit(|id| with_installed(|i| i.open_edit(id.as_str())));
     state.on_install_file(|| with_installed(|i| i.open_local_install()));
+    state.on_export_library(crate::installed::pick_export_folder);
+    state.on_import_library(crate::installed::pick_import_folder);
     let edit = app.global::<ModEditState>();
     edit.on_save(|| with_installed(|i| i.save_edit()));
     edit.on_cancel(|| with_installed(|i| i.close_edit()));
@@ -713,6 +716,179 @@ pub(crate) fn files_dropped(paths: Vec<PathBuf>) {
 /// Queued dropped files continue (a dialog that held them closed).
 pub(crate) fn queue_step() {
     with_installed(|i| i.step());
+}
+
+/// Pick a folder and write the installed library into an interchange
+/// bundle in it (the Installed screen's Export button).
+pub(crate) fn pick_export_folder() {
+    with_installed(|i| {
+        if !i.idle() {
+            return;
+        }
+        let weak = i.weak.clone();
+        crate::spawn_worker(
+            "shiv-pick-export",
+            || {
+                rfd::FileDialog::new()
+                    .set_title("Export your mods for another mod manager")
+                    .pick_folder()
+            },
+            move |picked| {
+                let Some(folder) = picked.ok().flatten() else {
+                    return;
+                };
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.export_bundle(folder));
+                });
+            },
+        );
+    });
+}
+
+/// Pick an interchange bundle folder (or its manifest) and import the mods
+/// it holds (the Installed screen's Import button).
+pub(crate) fn pick_import_folder() {
+    with_installed(|i| {
+        if !i.idle() {
+            return;
+        }
+        let weak = i.weak.clone();
+        crate::spawn_worker(
+            "shiv-pick-import",
+            || {
+                rfd::FileDialog::new()
+                    .set_title("Import mods from another mod manager")
+                    .pick_folder()
+            },
+            move |picked| {
+                let Some(folder) = picked.ok().flatten() else {
+                    return;
+                };
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.import_bundle(folder));
+                });
+            },
+        );
+    });
+}
+
+/// Export without the folder picker (tests drive this directly).
+pub(crate) fn export_bundle_to(folder: PathBuf) {
+    with_installed(|i| i.export_bundle(folder));
+}
+
+/// Import without the folder picker (tests drive this directly).
+pub(crate) fn import_bundle_from(folder: PathBuf) {
+    with_installed(|i| i.import_bundle(folder));
+}
+
+impl Installed {
+    /// Write the installed library into a new bundle inside `folder`.
+    fn export_bundle(&self, folder: PathBuf) {
+        self.with_state(|s| {
+            s.set_banner_text("Exporting mods\u{2026}".into());
+        });
+        self.set_flags(None, Some(true));
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-export",
+            move || -> Result<String, String> {
+                let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                let report = interchange::export(&paths.addons, &folder, &|id| {
+                    crate::browse::catalog_remote(id).map(|(submission_id, is_audio)| {
+                        interchange::RemoteRef {
+                            submission_id,
+                            is_audio,
+                        }
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+                let mut text = format!(
+                    "Exported {} to {}.",
+                    report.exported.len(),
+                    report.root.display()
+                );
+                for (name, why) in &report.skipped {
+                    text.push_str(&format!(" {name} was skipped: {why}."));
+                }
+                Ok(text)
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.interchanged(result));
+                });
+            },
+        );
+        if !started {
+            self.interchanged(Err("Could not start a background thread.".into()));
+        }
+    }
+
+    /// Import the bundle `folder` points at into the active profile.
+    fn import_bundle(&self, folder: PathBuf) {
+        self.with_state(|s| {
+            s.set_banner_text("Importing mods\u{2026}".into());
+        });
+        self.set_flags(None, Some(true));
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-import",
+            move || -> Result<String, String> {
+                let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                let running = deps.running.clone();
+                let report = interchange::import(&folder, &paths, move || running(), &|key| {
+                    key.strip_prefix("gamebanana:")
+                        .and_then(|rest| {
+                            let (kind, id) = rest.split_once(':')?;
+                            Some((id.to_owned(), kind == "sound"))
+                        })
+                        .and_then(|(id, _)| {
+                            // The catalog lists Shiv ids, not GameBanana
+                            // submissions; find the mod whose remote id this
+                            // key names.
+                            crate::browse::catalog_remote_of_submission(&id)
+                        })
+                })
+                .map_err(|e| e.to_string())?;
+                let mut text = format!(
+                    "Imported {} mods ({} already on disk).",
+                    report.installed.len(),
+                    report.adopted.len()
+                );
+                for (name, why) in &report.skipped {
+                    text.push_str(&format!(" {name}: {why}."));
+                }
+                Ok(text)
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.interchanged(result));
+                });
+            },
+        );
+        if !started {
+            self.interchanged(Err("Could not start a background thread.".into()));
+        }
+    }
+
+    /// An export or import finished: its report (or error) is the banner.
+    fn interchanged(&self, result: Result<String, String>) {
+        match result {
+            Ok(text) => {
+                self.with_state(|s| s.set_banner_text(text.into()));
+                // The disk may have changed on an import.
+                self.acted(Ok(()));
+            }
+            Err(text) => {
+                self.with_state(|s| s.set_banner_text(text.into()));
+                self.set_flags(None, Some(false));
+            }
+        }
+    }
 }
 
 /// Cancel the link install behind a Downloads-screen row.

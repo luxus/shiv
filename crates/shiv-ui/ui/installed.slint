@@ -64,8 +64,13 @@ export global InstalledState {
     callback open-detail(string);
     // Rename or annotate a managed mod, or adopt one Shiv did not install.
     callback edit(string);
-    // Install a .vpk or archive from disk.
+    // Install a .vpk or archive from disk, or a download link.
     callback install-file();
+    // Export the installed library as an interchange bundle for another
+    // mod manager.
+    callback export-library();
+    // Import an interchange bundle from another mod manager.
+    callback import-library();
 }
 
 // A small triangle button for moving a mod up or down.
@@ -340,6 +345,16 @@ export component InstalledPage inherits Rectangle {
                 text: "Install a mod";
                 disabled: InstalledState.game-running || InstalledState.busy;
                 clicked => { InstalledState.install-file(); }
+            }
+            TextButton {
+                text: "Export";
+                disabled: InstalledState.game-running || InstalledState.busy;
+                clicked => { InstalledState.export-library(); }
+            }
+            TextButton {
+                text: "Import";
+                disabled: InstalledState.game-running || InstalledState.busy;
+                clicked => { InstalledState.import-library(); }
             }
             TextButton {
                 text: "Refresh";

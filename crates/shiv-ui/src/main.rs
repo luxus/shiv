@@ -1964,6 +1964,56 @@ mod tests {
             assert!(run_until(&app, Duration::from_secs(20), rows_are(left)));
         }
 
+        // Interchange: export the two installed mods, wipe the folder,
+        // and bring the bundle back in; a second import skips both.
+        let outline_id = (0..state.get_rows().row_count())
+            .find_map(|i| {
+                state
+                    .get_rows()
+                    .row_data(i)
+                    .filter(|r| r.name == "Outlines")
+                    .map(|r| r.id.clone())
+            })
+            .expect("Outlines still installed");
+        let exports = root.path().join("exports");
+        std::fs::create_dir_all(&exports).expect("exports dir");
+        installed::export_bundle_to(exports.clone());
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy() && s.get_banner_text().starts_with("Exported 2")
+        }));
+        let bundle: std::path::PathBuf = std::fs::read_dir(&exports)
+            .expect("bundle folder")
+            .flatten()
+            .map(|e| e.path())
+            .next()
+            .expect("one bundle");
+        assert!(bundle.join("mod-interchange.json").is_file());
+        // Wipe the library and import the bundle back. Each uninstall must
+        // finish (its refresh) before the next row is read.
+        state.invoke_uninstall(outline_id);
+        assert!(run_until(&app, Duration::from_secs(20), rows_are(1)));
+        let hit = state.get_rows().row_data(0).expect("row").id;
+        state.invoke_uninstall(hit);
+        assert!(run_until(&app, Duration::from_secs(20), rows_are(0)));
+        installed::import_bundle_from(bundle.clone());
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy() && s.get_banner_text().starts_with("Imported 2 mods")
+        }));
+        let rows = state.get_rows().row_count();
+        let names: Vec<_> = (0..rows)
+            .filter_map(|i| state.get_rows().row_data(i).map(|r| r.name.to_string()))
+            .collect();
+        assert_eq!(names, ["Outlines", "Hitsound"], "back in load order");
+        // A second import of the same bundle is recognised and skipped.
+        installed::import_bundle_from(bundle);
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy() && s.get_banner_text().contains("already installed")
+        }));
+        assert_eq!(state.get_rows().row_count(), 2);
+
         // Cancelling while the install phase is stuck on the install lock,
         // then retrying: the retry waits for the cancelled worker's answer,
         // so one link can never install twice.
@@ -2018,12 +2068,14 @@ mod tests {
             rows_are(rows_before)
         ));
 
-        // Clean up for the error-state checks below.
-        state.invoke_uninstall(id);
-        assert!(run_until(&app, Duration::from_secs(20), rows_are(1)));
-        let hit = state.get_rows().row_data(0).expect("row").id;
-        state.invoke_uninstall(hit);
-        assert!(run_until(&app, Duration::from_secs(20), rows_are(0)));
+        // Clean up for the error-state checks below: whatever ids the
+        // imports gave the mods, uninstall what the rows say is left.
+        for _ in 0..state.get_rows().row_count() {
+            let rid = state.get_rows().row_data(0).expect("row").id;
+            state.invoke_uninstall(rid);
+            let left = state.get_rows().row_count() - 1;
+            assert!(run_until(&app, Duration::from_secs(20), rows_are(left)));
+        }
         state.set_banner_text("".into());
 
         // Error states: game not found, addons folder unreadable; Retry recovers.

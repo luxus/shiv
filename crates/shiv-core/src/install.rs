@@ -136,6 +136,56 @@ pub fn install_with_limits(
     let staging = Staging::create(addons_dir)?;
     extract(format, archive, staging.path(), limits)?;
     let staged = collect_vpks(staging.path())?;
+    place_and_record(addons_dir, staged, meta, old)
+}
+
+/// Install several plain VPK files (already extracted, for example from an
+/// interchange bundle) as one mod. Works like [`install_with`], minus the
+/// archive step: the files are copied into staging under their own names,
+/// so a pak-named VPK keeps its chunks (its `pakNN_<digits>.vpk` siblings
+/// must be in `files` too).
+pub fn install_files(
+    files: &[PathBuf],
+    meta: ModMeta,
+    paths: &GamePaths,
+    game_running: impl Fn() -> bool,
+) -> Result<Sidecar, InstallError> {
+    // Checked first: nothing may be written while the game runs.
+    if game_running() {
+        return Err(InstallError::GameRunning);
+    }
+    let addons_dir = paths.addons.as_path();
+    clean_stale_staging(addons_dir);
+    let old = match sidecar::read(addons_dir, &meta.mod_id) {
+        Ok(s) => s,
+        Err(SidecarError::Parse { .. }) => None,
+        Err(e) => return Err(e.into()),
+    };
+
+    let staging = Staging::create(addons_dir)?;
+    for file in files {
+        let name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| InstallError::UnsupportedArchive)?;
+        if !is_plain_vpk_name(name) {
+            return Err(InstallError::UnsupportedArchive);
+        }
+        fs::copy(file, staging.path().join(name)).map_err(io_err(file))?;
+    }
+    let staged = collect_vpks(staging.path())?;
+    place_and_record(addons_dir, staged, meta, old)
+}
+
+/// The shared tail of the install paths: give the staged VPKs free pak
+/// slots, move them in and record the sidecar, then drop the replaced
+/// files of an earlier version of the same mod.
+fn place_and_record(
+    addons_dir: &Path,
+    staged: Vec<StagedVpk>,
+    meta: ModMeta,
+    old: Option<Sidecar>,
+) -> Result<Sidecar, InstallError> {
     if staged.is_empty() {
         return Err(InstallError::NoVpk);
     }
