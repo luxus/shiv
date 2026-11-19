@@ -117,7 +117,12 @@
           };
 
           nativeBuildInputs =
-            windowingDeps pkgs ++ zstdForPkgConfig pkgs ++ [ pkgs.copyDesktopItems ];
+            windowingDeps pkgs
+            ++ zstdForPkgConfig pkgs
+            ++ [
+              pkgs.copyDesktopItems
+              pkgs.patchelf
+            ];
           buildInputs = runtimeDeps pkgs;
 
           desktopItems = [
@@ -142,6 +147,21 @@
           postInstall = ''
             install -Dm644 ${self}/packaging/flatpak/io.github.Siebe_Uy.shiv.128.png \
               $out/share/icons/hicolor/128x128/apps/io.github.Siebe_Uy.shiv.png
+          '';
+
+          # winit dlopens libwayland-client and libxkbcommon when a window
+          # opens, so nothing links them at build time and the automatic
+          # RPATH skips them. The binary cannot run without them, so the
+          # paths go in by hand.
+          postFixup = ''
+            rpaths="${
+              pkgs.lib.makeSearchPath "lib" [
+                pkgs.wayland
+                pkgs.libxkbcommon
+              ]
+            }"
+            existing="$(patchelf --print-rpath $out/bin/shiv)"
+            patchelf --set-rpath "$existing:$rpaths" $out/bin/shiv
           '';
 
           meta = with pkgs.lib; {
