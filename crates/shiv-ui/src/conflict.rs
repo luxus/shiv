@@ -97,7 +97,12 @@ fn show_front(app: &App) {
             state.set_error_text("".into());
             state.set_open(true);
         }
-        None => state.set_open(false),
+        None => {
+            state.set_open(false);
+            // Files dropped on the window queue behind this dialog; the
+            // queue continues now that it closed.
+            crate::installed::queue_step();
+        }
     }
 }
 

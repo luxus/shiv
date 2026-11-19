@@ -332,6 +332,11 @@ fn run_action(
         }
         Action::Move(to) => {
             let paths = (deps.locate)().map_err(|e| fail(&game_error_text(&e)))?;
+            // Renumbering shares the install lock: a rename while another
+            // worker stages an install would race its pak allocation.
+            let _guard = crate::browse::INSTALL_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             sidecar::move_mod(&paths.addons, mods, index, to).map_err(|e| fail(&e.to_string()))
         }
         Action::Uninstall => {
@@ -375,11 +380,7 @@ fn run_link_install(
     let dest = dir.path().join(file);
     let mut last_step = u64::MAX;
     let fetched = client.fetch_cancellable(url, &dest, cancel, |done, total| {
-        // Percent steps when the size is known, otherwise one per MB.
-        let step = match total {
-            Some(t) => done.saturating_mul(100) / t,
-            None => done / 1_000_000,
-        };
+        let step = progress_step(done, total);
         if step == last_step {
             return;
         }
@@ -457,7 +458,11 @@ struct LinkJob {
     file: String,
     cancel: Arc<AtomicBool>,
     generation: u64,
+    /// A worker is running for this row.
     active: bool,
+    /// The worker was cancelled and has not answered yet: retrying now
+    /// would run a second install beside the winding-down first one.
+    stopping: bool,
 }
 
 /// A link install worker's answer.
@@ -604,16 +609,30 @@ pub(crate) fn is_link(text: &str) -> bool {
     t.starts_with("http://") || t.starts_with("https://")
 }
 
+/// The progress step for a downloaded chunk: percent when the size is
+/// known and positive — a zero `Content-Length` with a body must not
+/// divide by zero — otherwise one per MB. A server that understates the
+/// size cannot push the step past 100. Browse's `run_install` computes
+/// the same steps.
+pub(crate) fn progress_step(done: u64, total: Option<u64>) -> u64 {
+    match total.filter(|t| *t > 0) {
+        Some(t) => (done.saturating_mul(100) / t).min(100),
+        None => done / 1_000_000,
+    }
+}
+
 /// The file name a link downloads under: its last path segment, without
 /// query or fragment, `%XX`-decoded. Names that are empty, dot-only or
-/// carry separators never reach the disk as-is: "mod" is used instead.
+/// carry separators (including `:`, a drive-relative path on Windows)
+/// never reach the disk as-is: "mod" is used instead.
 pub(crate) fn link_file_name(url: &str) -> String {
     let clean = url.trim();
     let no_frag = clean.split(['#', '?']).next().unwrap_or(clean);
     let raw = no_frag.rsplit('/').next().unwrap_or_default();
     let decoded = percent_decode_lossy(raw);
     let name = decoded.trim();
-    let safe = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0']);
+    let safe =
+        !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0', ':']);
     if safe { name.to_owned() } else { "mod".into() }
 }
 
@@ -691,15 +710,22 @@ pub(crate) fn files_dropped(paths: Vec<PathBuf>) {
     with_installed(|i| i.dropped_batch(paths));
 }
 
+/// Queued dropped files continue (a dialog that held them closed).
+pub(crate) fn queue_step() {
+    with_installed(|i| i.step());
+}
+
 /// Cancel the link install behind a Downloads-screen row.
 pub(crate) fn cancel_link(id: &str) {
     with_installed(|i| {
-        let job = i.links.borrow().get(id).cloned();
-        let Some(job) = job.filter(|j| j.active) else {
+        let mut links = i.links.borrow_mut();
+        let Some(job) = links.get_mut(id).filter(|j| j.active) else {
             return;
         };
-        // The worker notices at its next chunk; its late answer is ignored.
+        // The worker notices at its next chunk or install step; its late
+        // answer is ignored. Until it answers, a retry would run beside it.
         job.cancel.store(true, Ordering::Relaxed);
+        job.stopping = true;
         crate::downloads::finished(id, crate::downloads::Outcome::Cancelled);
     });
 }
@@ -1013,22 +1039,31 @@ impl Installed {
                 s.set_error_text("The mod is gone. Press Refresh.".into());
                 return;
             };
-            // A new pak number moves the mod in the load order; an unchanged,
-            // empty or unparsable field leaves it alone. The range is
-            // checked here; deeper conflicts (a move that would push another
-            // VPK past 99) are refused by the worker without touching
-            // anything.
+            // A new pak number moves the mod in the load order; an empty or
+            // unchanged field leaves it alone. The range is checked here;
+            // deeper conflicts (a move that would push another VPK past 99)
+            // are refused by the worker without touching anything.
             let pak_to_set = if adopt {
                 None
             } else {
-                match typed_pak(&s.get_pak_text()) {
-                    None => None,
-                    Some(n) if n == entry.pak => None,
-                    Some(n) if n == 0 || n > addons::PAK_CAPACITY => {
-                        s.set_error_text("Pak numbers run from 01 to 99.".into());
-                        return;
+                let typed = s.get_pak_text();
+                if typed.trim().is_empty() {
+                    None
+                } else {
+                    match typed_pak(&typed) {
+                        Some(n) if n == entry.pak => None,
+                        Some(n) if n == 0 || n > addons::PAK_CAPACITY => {
+                            s.set_error_text("Pak numbers run from 01 to 99.".into());
+                            return;
+                        }
+                        Some(n) => Some(n),
+                        // Non-empty but not a number must not silently do
+                        // nothing while Save reports success.
+                        None => {
+                            s.set_error_text("Enter the pak number as a number, 01 to 99.".into());
+                            return;
+                        }
                     }
-                    Some(n) => Some(n),
                 }
             };
             (mods.clone(), index, mods[index].clone(), pak_to_set)
@@ -1043,16 +1078,24 @@ impl Installed {
             "shiv-installed-edit",
             move || -> Result<(), String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
-                if let Some(pak) = pak_to_set {
-                    sidecar::set_pak(&paths.addons, &mods, index, pak)
-                        .map_err(|e| e.to_string())?;
-                }
+                // Renumbering shares the install lock: a rename while another
+                // worker stages an install would race its pak allocation.
+                let _guard = crate::browse::INSTALL_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // The sidecar edit runs first: it is idempotent, so a failed
+                // `set_pak` after it can be retried without renaming twice.
                 let done = if adopt {
                     sidecar::adopt(&paths.addons, &mod_, &name, notes)
                 } else {
                     sidecar::edit(&paths.addons, &id, &name, notes)
                 };
-                done.map(|_| ()).map_err(|e| e.to_string())
+                done.map(|_| ()).map_err(|e| e.to_string())?;
+                if let Some(pak) = pak_to_set {
+                    sidecar::set_pak(&paths.addons, &mods, index, pak)
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(())
             },
             move |result| {
                 let result = result.and_then(|r| r);
@@ -1166,6 +1209,12 @@ impl Installed {
             move || -> Result<String, String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
+                // The lock every install path shares: pak slots are
+                // allocated against the folder while staging, so an install
+                // must not renumber beside another.
+                let _guard = crate::browse::INSTALL_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let sc = install::install_local_with(&path, &name, &paths, move || running())
                     .map_err(|e| install_error_text(&e))?;
                 Ok(format!("Installed {} as {}.", sc.name, sc.vpks.join(", ")))
@@ -1232,11 +1281,12 @@ impl Installed {
                 cancel: cancel.clone(),
                 generation: n,
                 active: true,
+                stopping: false,
             },
         );
         s.set_error_text("".into());
         s.set_open(false);
-        crate::downloads::started(&id, &file);
+        crate::downloads::started(&id, &name);
         self.start_link_job(&id, n, &url, &name, &file, cancel);
     }
 
@@ -1289,12 +1339,13 @@ impl Installed {
         }
     }
 
-    /// Retry the link install `id` with a fresh worker, same row. Allowed
-    /// once the last attempt finished or was cancelled; the stale worker's
-    /// late answer is told apart by the new generation.
+    /// Retry the link install `id` with a fresh worker, same row. Only once
+    /// the last attempt answered (finished, failed or confirmed its
+    /// cancel); a worker that is merely winding down would install beside
+    /// the new attempt.
     fn retry_link(&self, id: &str) {
         let job = self.links.borrow().get(id).cloned();
-        let Some(job) = job.filter(|j| !j.active || j.cancel.load(Ordering::Relaxed)) else {
+        let Some(job) = job.filter(|j| !j.active && !j.stopping) else {
             return;
         };
         let n = self.next_link.get() + 1;
@@ -1307,17 +1358,18 @@ impl Installed {
             cancel: cancel.clone(),
             generation: n,
             active: true,
+            stopping: false,
         };
         self.links.borrow_mut().insert(id.to_owned(), fresh);
-        crate::downloads::started(id, &job.file);
+        crate::downloads::started(id, &job.name);
         self.start_link_job(id, n, &job.url, &job.name, &job.file, cancel);
     }
 
     /// A link worker answered. A stale generation (the row was retried
     /// meanwhile) is ignored, except for an install that made it to disk.
     fn link_finished(&self, id: &str, generation: u64, result: Result<String, LinkFailure>) {
-        let file = self.links.borrow().get(id).map(|j| j.file.clone());
-        let Some(file) = file else {
+        let name = self.links.borrow().get(id).map(|j| j.name.clone());
+        let Some(name) = name else {
             return;
         };
         let current = self
@@ -1336,6 +1388,7 @@ impl Installed {
         }
         if let Some(j) = self.links.borrow_mut().get_mut(id) {
             j.active = false;
+            j.stopping = false;
         }
         match result {
             Ok(banner) => {
@@ -1349,17 +1402,19 @@ impl Installed {
             Err(LinkFailure::Failed(text)) => {
                 crate::downloads::finished(id, crate::downloads::Outcome::Failed(text.clone()));
                 self.with_state(|s| {
-                    s.set_banner_text(format!("Could not install {file}. {text}").into())
+                    s.set_banner_text(format!("Could not install {name}. {text}").into())
                 });
             }
         }
     }
 
-    /// Whether any of the Installed dialogs is open.
+    /// Whether any of the Installed dialogs is open, or an install conflict
+    /// is being offered: dropped files queue behind all of them.
     fn dialog_open(&self, app: &App) -> bool {
         app.global::<ModEditState>().get_open()
             || app.global::<LocalInstallState>().get_open()
             || app.global::<UpdateFileState>().get_open()
+            || app.global::<crate::ConflictState>().get_open()
     }
 
     fn open_update(&self, id: &str) {
@@ -1566,6 +1621,9 @@ impl Installed {
         if !started {
             self.set_flags(None, Some(false));
             self.stepping.set(false);
+            self.with_state(|s| {
+                s.set_banner_text("Could not start a background thread.".into());
+            });
         }
     }
 
@@ -1628,13 +1686,12 @@ impl Installed {
         let held = self.dialog_open(&app) || !self.idle() || self.stepping.get();
         let mut parts: Vec<String> = Vec::new();
         if !skipped.is_empty() {
-            parts.push(format!(
-                "Skipped {} dropped {} that {} not file{}.",
-                skipped.len(),
-                if skipped.len() == 1 { "item" } else { "items" },
-                if skipped.len() == 1 { "is" } else { "are" },
-                if skipped.len() == 1 { "" } else { "s" },
-            ));
+            let n = skipped.len();
+            parts.push(if n == 1 {
+                "Skipped 1 dropped item that is not a file.".into()
+            } else {
+                format!("Skipped {n} dropped items that are not files.")
+            });
         }
         if n_queued > 0 && held {
             parts.push(queued_banner(n_queued));
@@ -1880,6 +1937,15 @@ mod tests {
         assert_eq!(typed_pak("many"), None);
         assert_eq!(typed_pak("-1"), None);
         assert_eq!(typed_pak("1.5"), None);
+    }
+
+    #[test]
+    fn progress_steps_survive_a_zero_content_length() {
+        assert_eq!(progress_step(50, Some(100)), 50);
+        assert_eq!(progress_step(150, Some(100)), 100, "clamped by the UI");
+        assert_eq!(progress_step(1, Some(0)), 0, "no divide by zero");
+        assert_eq!(progress_step(2_500_000, None), 2, "one step per MB");
+        assert_eq!(progress_step(0, None), 0);
     }
 
     #[test]

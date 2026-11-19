@@ -37,6 +37,10 @@ pub enum SidecarError {
     NotAdoptable,
     #[error("pak number {0} is outside 01..=99")]
     BadPak(u32),
+    #[error("setting pak {pak} would push another VPK past 99")]
+    PakPush { pak: u32 },
+    #[error("the mods list has two VPKs on the same pak number")]
+    DuplicatePak(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,9 +422,14 @@ pub fn move_mod(
 /// everything below stays, so no other mod changes its relative order. Files
 /// are renamed in two phases and the sidecars are kept pointing at them,
 /// with the same rollback as [`move_mod`]. A number outside `01..=99`, or one
-/// that would push another VPK past 99, fails before anything changes. Like
-/// [`move_mod`], a mod without a pak number (a hand-added file under another
-/// name) is not movable and the call is a no-op.
+/// that would push another VPK past 99 ([`SidecarError::PakPush`]), fails
+/// before anything changes. Like [`move_mod`], a mod without a pak number
+/// (a hand-added file under another name) is not movable and the call is a
+/// no-op.
+///
+/// `mods` must come from [`group`], which never puts two VPKs on one pak
+/// number; a slice that does is refused with [`SidecarError::DuplicatePak`]
+/// instead of planning a rename that would overwrite a file.
 pub fn set_pak(
     addons: &Path,
     mods: &[InstalledMod],
@@ -430,27 +439,24 @@ pub fn set_pak(
     let Some(target) = mods.get(index).filter(|m| m.load_position() != u32::MAX) else {
         return Ok(());
     };
-    let take = target.vpks.iter().filter(|v| v.pak.is_some()).count() as u32;
-    if pak == 0 || pak + take - 1 > addons::PAK_CAPACITY {
+    // Range first, so the block arithmetic below cannot overflow: a `pak`
+    // within 01..=99 plus at most 99 VPKs stays far below `u32::MAX`.
+    if pak == 0 || pak > addons::PAK_CAPACITY {
         return Err(SidecarError::BadPak(pak));
     }
-    let order: Vec<&InstalledMod> = mods
-        .iter()
-        .filter(|m| m.load_position() != u32::MAX)
-        .collect();
-    if !order.iter().any(|m| std::ptr::eq(*m, target)) {
-        return Ok(());
+    let take = target.vpks.iter().filter(|v| v.pak.is_some()).count() as u32;
+    if pak + take - 1 > addons::PAK_CAPACITY {
+        return Err(SidecarError::PakPush { pak });
     }
     // Every pak-numbered VPK in load order, marked when it belongs to the mod.
-    let mut ranked: Vec<(InstalledVpk, bool)> = Vec::new();
-    for m in &order {
-        let own = std::ptr::eq(*m, target);
-        let mut vpks = m.vpks.clone();
+    let mut ranked: Vec<(&InstalledVpk, bool)> = Vec::new();
+    for m in mods.iter().filter(|m| m.load_position() != u32::MAX) {
+        let own = std::ptr::eq(m, target);
+        let mut vpks: Vec<&InstalledVpk> = m.vpks.iter().filter(|v| v.pak.is_some()).collect();
         vpks.sort_by_key(|v| v.pak);
-        for v in vpks.into_iter().filter(|v| v.pak.is_some()) {
-            ranked.push((v, own));
-        }
+        ranked.extend(vpks.into_iter().map(|v| (v, own)));
     }
+    debug_assert!(ranked.iter().any(|(_, own)| *own), "target is ranked");
     let mut numbers: Vec<u32> = Vec::with_capacity(ranked.len());
     let mut nth = 0u32;
     for (v, own) in &ranked {
@@ -464,11 +470,25 @@ pub fn set_pak(
             old
         };
         if n > addons::PAK_CAPACITY {
-            return Err(SidecarError::BadPak(pak));
+            // The asked number fits; this VPK's shift does not.
+            return Err(SidecarError::PakPush { pak });
         }
         numbers.push(n);
     }
-    let refs: Vec<&InstalledVpk> = ranked.iter().map(|(v, _)| v).collect();
+    // Two VPKs landing on one number means the slice broke the invariant
+    // `group` guarantees (two mods claiming the same pak number). A plan
+    // with duplicate targets would rename one file onto another, so it
+    // is refused before anything changes.
+    let mut assigned = numbers.clone();
+    assigned.sort_unstable();
+    if assigned.windows(2).any(|w| w[0] == w[1]) {
+        return Err(SidecarError::DuplicatePak(pak));
+    }
+    let refs: Vec<&InstalledVpk> = ranked.iter().map(|(v, _)| *v).collect();
+    let order: Vec<&InstalledMod> = mods
+        .iter()
+        .filter(|m| m.load_position() != u32::MAX)
+        .collect();
     let plan = addons::plan_renumber(&refs, &numbers)?;
     apply_plan(addons, &order, &plan)
 }

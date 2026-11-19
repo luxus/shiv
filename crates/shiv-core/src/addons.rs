@@ -290,6 +290,7 @@ pub(crate) fn plan_renumber(
     ranked: &[&InstalledVpk],
     numbers: &[u32],
 ) -> Result<ReorderPlan, AddonsError> {
+    debug_assert_eq!(ranked.len(), numbers.len(), "one number per VPK");
     let mut plan = ReorderPlan {
         moves: Vec::new(),
         names: Vec::new(),

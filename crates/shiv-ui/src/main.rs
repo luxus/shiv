@@ -1903,12 +1903,12 @@ mod tests {
             .expect("present");
         assert_eq!(sc.name, "Haze Skin");
         assert_eq!(sc.source.as_deref(), Some("Haze Skin.vpk"));
-        // The Downloads screen holds the finished row.
+        // The Downloads screen holds the finished row, named like the mod.
         assert_eq!(dl_state.get_rows().row_count(), 1);
         let tr = dl_state.get_rows().row_data(0).expect("row");
         assert_eq!(
             (tr.name.as_str(), tr.phase),
-            ("Haze Skin.vpk", DownloadPhase::Done)
+            ("Haze Skin", DownloadPhase::Done)
         );
 
         // A slow link can be cancelled from the Downloads screen...
@@ -1935,6 +1935,10 @@ mod tests {
             "nothing installed from a cancelled download"
         );
         // ...and retried into the same row, once the download responds again.
+        // The retry only starts once the cancelled worker has answered;
+        // while it winds down the row refuses it, so one link can never
+        // install twice. The stub delay is 400 ms per request.
+        run_until(&app, Duration::from_millis(700), |_| false);
         dl_state.invoke_retry(slow_id);
         assert!(run_until(&app, Duration::from_secs(20), move |a| {
             let dl = a.global::<crate::DownloadsState>();
@@ -1959,6 +1963,60 @@ mod tests {
             let left = state.get_rows().row_count() - 1;
             assert!(run_until(&app, Duration::from_secs(20), rows_are(left)));
         }
+
+        // Cancelling while the install phase is stuck on the install lock,
+        // then retrying: the retry waits for the cancelled worker's answer,
+        // so one link can never install twice.
+        let rows_before = state.get_rows().row_count();
+        let guard = crate::browse::INSTALL_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.invoke_install_file();
+        local.set_path(format!("{link_url}/dl/Haze%20Skin.vpk").into());
+        local.invoke_install();
+        assert!(run_until(&app, Duration::from_secs(5), |a| {
+            a.global::<crate::DownloadsState>()
+                .get_rows()
+                .row_data(0)
+                .is_some_and(|r| r.phase == DownloadPhase::Installing)
+        }));
+        let stall_id = dl_state.get_rows().row_data(0).expect("row").id;
+        dl_state.invoke_cancel(stall_id.clone());
+        // The worker cannot answer while it waits on the lock, so the row
+        // refuses a retry instead of running a second install beside it.
+        dl_state.invoke_retry(stall_id.clone());
+        run_until(&app, Duration::from_millis(300), |_| false);
+        assert_eq!(
+            dl_state.get_rows().row_data(0).expect("row").phase,
+            DownloadPhase::Cancelled,
+            "retry refused while the worker winds down"
+        );
+        assert_eq!(
+            state.get_rows().row_count(),
+            rows_before,
+            "nothing installed from the refused retry"
+        );
+        // Freed, the worker answers its cancel; only then does a retry run.
+        drop(guard);
+        run_until(&app, Duration::from_millis(500), |_| false);
+        dl_state.invoke_retry(stall_id);
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            a.global::<InstalledState>().get_rows().row_count() == rows_before + 1
+                && !a.global::<InstalledState>().get_busy()
+        }));
+        assert_eq!(
+            dl_state.get_rows().row_data(0).expect("row").phase,
+            DownloadPhase::Done
+        );
+        // One mod came in, not two.
+        assert_eq!(state.get_rows().row_count(), rows_before + 1);
+        let rid = state.get_rows().row_data(0).expect("row").id;
+        state.invoke_uninstall(rid);
+        assert!(run_until(
+            &app,
+            Duration::from_secs(20),
+            rows_are(rows_before)
+        ));
 
         // Clean up for the error-state checks below.
         state.invoke_uninstall(id);

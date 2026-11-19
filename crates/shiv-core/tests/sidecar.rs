@@ -397,6 +397,203 @@ fn set_pak_inserts_the_mod_and_shifts_higher_numbers_up() {
 }
 
 #[test]
+fn set_pak_moving_down_to_an_occupied_number_shifts_the_rest_up() {
+    let d = tempdir().unwrap();
+    touch(
+        d.path(),
+        &["pak01_dir.vpk", "pak02_dir.vpk", "pak03_dir.vpk"],
+    );
+    for (id, f) in [
+        ("a", "pak01_dir.vpk"),
+        ("b", "pak02_dir.vpk"),
+        ("c", "pak03_dir.vpk"),
+    ] {
+        sidecar::write(d.path(), &sc(id, &[f])).unwrap();
+    }
+    let mods = sidecar::group(d.path());
+    // `a` moves down to the occupied 3: b keeps 02, c shifts to 04.
+    sidecar::set_pak(d.path(), &mods, 0, 3).unwrap();
+    for f in ["pak02_dir.vpk", "pak03_dir.vpk", "pak04_dir.vpk"] {
+        assert!(d.path().join(f).is_file(), "{f}");
+    }
+    assert!(!d.path().join("pak01_dir.vpk").exists());
+    assert_eq!(ids(d.path()), ["b", "a", "c"]);
+    assert_eq!(
+        sidecar::read(d.path(), "c").unwrap().unwrap().vpks,
+        ["pak04_dir.vpk"]
+    );
+}
+
+#[test]
+fn set_pak_shifts_by_the_target_size_not_by_one() {
+    let d = tempdir().unwrap();
+    touch(
+        d.path(),
+        &[
+            "pak01_dir.vpk",
+            "pak03_dir.vpk",
+            "pak04_dir.vpk",
+            "pak07_dir.vpk",
+            "pak08_dir.vpk",
+        ],
+    );
+    sidecar::write(d.path(), &sc("a", &["pak01_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("b", &["pak03_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("c", &["pak04_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("d", &["pak07_dir.vpk", "pak08_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    // The two-VPK mod `d` takes pak 2-3, so b and c shift by two: 5 and 6.
+    sidecar::set_pak(d.path(), &mods, 3, 2).unwrap();
+    for f in [
+        "pak01_dir.vpk",
+        "pak02_dir.vpk",
+        "pak03_dir.vpk",
+        "pak05_dir.vpk",
+        "pak06_dir.vpk",
+    ] {
+        assert!(d.path().join(f).is_file(), "{f}");
+    }
+    assert_eq!(
+        sidecar::read(d.path(), "b").unwrap().unwrap().vpks,
+        ["pak05_dir.vpk"]
+    );
+    assert_eq!(
+        sidecar::read(d.path(), "c").unwrap().unwrap().vpks,
+        ["pak06_dir.vpk"]
+    );
+    assert_eq!(ids(d.path()), ["a", "d", "b", "c"]);
+}
+
+#[test]
+fn set_pak_renumbers_a_target_straddling_other_mods() {
+    let d = tempdir().unwrap();
+    touch(
+        d.path(),
+        &["pak01_dir.vpk", "pak03_dir.vpk", "pak05_dir.vpk"],
+    );
+    sidecar::write(d.path(), &sc("wide", &["pak01_dir.vpk", "pak05_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("mid", &["pak03_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    // The target {1, 5} takes 3-4; the mod at 3 shifts to 5.
+    sidecar::set_pak(d.path(), &mods, 0, 3).unwrap();
+    for f in ["pak03_dir.vpk", "pak04_dir.vpk", "pak05_dir.vpk"] {
+        assert!(d.path().join(f).is_file(), "{f}");
+    }
+    // The names moved with the content: wide's two VPKs are at 3-4, and
+    // the pak05 name now holds what used to be pak03 (mid's file).
+    assert_eq!(
+        fs::read(d.path().join("pak03_dir.vpk")).unwrap(),
+        b"pak01_dir.vpk"
+    );
+    assert_eq!(
+        fs::read(d.path().join("pak04_dir.vpk")).unwrap(),
+        b"pak05_dir.vpk"
+    );
+    assert_eq!(
+        fs::read(d.path().join("pak05_dir.vpk")).unwrap(),
+        b"pak03_dir.vpk"
+    );
+    assert!(!d.path().join("pak01_dir.vpk").exists());
+    assert_eq!(
+        sidecar::read(d.path(), "wide").unwrap().unwrap().vpks,
+        ["pak03_dir.vpk", "pak04_dir.vpk"]
+    );
+    assert_eq!(
+        sidecar::read(d.path(), "mid").unwrap().unwrap().vpks,
+        ["pak05_dir.vpk"]
+    );
+    assert_eq!(ids(d.path()), ["wide", "mid"]);
+}
+
+#[test]
+fn set_pak_to_the_mods_own_range_touches_nothing() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak07_dir.vpk", "pak08_dir.vpk"]);
+    let before = fs::read(d.path().join("pak07_dir.vpk")).unwrap();
+    sidecar::write(d.path(), &sc("d", &["pak07_dir.vpk", "pak08_dir.vpk"])).unwrap();
+    let sc_before = sidecar::read(d.path(), "d").unwrap().unwrap();
+    let mods = sidecar::group(d.path());
+    sidecar::set_pak(d.path(), &mods, 0, 7).unwrap();
+    assert_eq!(fs::read(d.path().join("pak07_dir.vpk")).unwrap(), before);
+    assert_eq!(
+        fs::metadata(d.path().join("pak08_dir.vpk")).unwrap().len(),
+        "pak08_dir.vpk".len() as u64
+    );
+    assert_eq!(sidecar::read(d.path(), "d").unwrap().unwrap(), sc_before);
+}
+
+#[test]
+fn set_pak_fails_cleanly_when_a_file_is_gone() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak01_dir.vpk", "pak02_dir.vpk"]);
+    sidecar::write(d.path(), &sc("a", &["pak01_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    fs::remove_file(d.path().join("pak02_dir.vpk")).unwrap();
+    assert!(sidecar::set_pak(d.path(), &mods, 1, 1).is_err());
+    assert!(d.path().join("pak01_dir.vpk").is_file());
+    assert_eq!(
+        sidecar::read(d.path(), "a").unwrap().unwrap().vpks,
+        ["pak01_dir.vpk"]
+    );
+}
+
+#[test]
+fn set_pak_moves_only_pak_numbered_files_of_a_mixed_mod() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak03_dir.vpk", "custom.vpk"]);
+    let mut mixed = sc("m", &["pak03_dir.vpk", "custom.vpk"]);
+    mixed.notes = Some("hand-added file inside a managed mod".into());
+    sidecar::write(d.path(), &mixed).unwrap();
+    let mods = sidecar::group(d.path());
+    sidecar::set_pak(d.path(), &mods, 0, 5).unwrap();
+    assert!(d.path().join("pak05_dir.vpk").is_file());
+    assert!(!d.path().join("pak03_dir.vpk").exists());
+    assert_eq!(
+        fs::read(d.path().join("custom.vpk")).unwrap(),
+        b"custom.vpk",
+        "the hand-added file stays byte for byte"
+    );
+    let after = sidecar::read(d.path(), "m").unwrap().unwrap();
+    assert_eq!(after.vpks, ["pak05_dir.vpk", "custom.vpk"]);
+}
+
+#[test]
+fn set_pak_refuses_a_broken_slice_instead_of_overwriting() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak01_dir.vpk", "pak02_dir.vpk"]);
+    // A slice `group` could never produce: two mods claiming pak 02. When
+    // the target takes pak 1, both shift onto 3 — a plan that would
+    // rename one file onto another.
+    let vpk = |pak: u32, f: &str| shiv_core::addons::InstalledVpk {
+        file: d.path().join(f),
+        pak: Some(pak),
+        enabled: true,
+        chunks: Vec::new(),
+    };
+    let m = |pak: u32, f: &str| shiv_core::sidecar::InstalledMod {
+        sidecar: Some(sc("x", &[f])),
+        vpks: vec![vpk(pak, f)],
+    };
+    let mods = vec![
+        m(1, "pak01_dir.vpk"),
+        m(2, "pak02_dir.vpk"),
+        m(2, "pak02_dir.vpk"),
+    ];
+    let err = sidecar::set_pak(d.path(), &mods, 0, 1).unwrap_err();
+    assert!(matches!(err, SidecarError::DuplicatePak(_)), "{err:?}");
+    // The files on disk survive untouched.
+    assert_eq!(
+        fs::read(d.path().join("pak01_dir.vpk")).unwrap(),
+        b"pak01_dir.vpk"
+    );
+    assert_eq!(
+        fs::read(d.path().join("pak02_dir.vpk")).unwrap(),
+        b"pak02_dir.vpk"
+    );
+}
+
+#[test]
 fn set_pak_on_a_free_number_keeps_the_others_in_place() {
     let d = tempdir().unwrap();
     touch(d.path(), &["pak01_dir.vpk", "pak02_dir.vpk"]);
@@ -446,9 +643,15 @@ fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
     sidecar::write(d.path(), &sc("a", &["pak98_dir.vpk"])).unwrap();
     sidecar::write(d.path(), &sc("b", &["pak99_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
-    // The mod at 98 to pak 99 would push the one at 99 past the limit.
+    // The mod at 98 to pak 99 would push the one at 99 past the limit;
+    // the asked number itself is in range, so the reason says so.
     let err = sidecar::set_pak(d.path(), &mods, 0, 99).unwrap_err();
-    assert!(matches!(err, SidecarError::BadPak(99)), "{err:?}");
+    assert!(matches!(err, SidecarError::PakPush { pak: 99 }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "setting pak 99 would push another VPK past 99"
+    );
+    // An out-of-range number is refused as such.
     let err = sidecar::set_pak(d.path(), &mods, 0, 0).unwrap_err();
     assert!(matches!(err, SidecarError::BadPak(0)), "{err:?}");
     assert!(d.path().join("pak98_dir.vpk").is_file());
