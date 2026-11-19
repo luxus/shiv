@@ -48,7 +48,9 @@ gigabytes of RAM. Shiv does the essentials and nothing else.
   written to the game's `GameInfo` file.
 - NSFW mods are blurred until you turn them on, and that setting resets every session.
 
-Notes on the toolkit choice and repair port are in [`docs/`](docs/).
+Notes on the toolkit choice, the repair port and the coding rules this
+repository enforces (no panics in the libraries, invariants over examples)
+are in [`docs/`](docs/).
 
 ## Install
 
@@ -159,8 +161,8 @@ Shiv locates Deadlock through your Steam library automatically.
 | Crate | Purpose |
 |---|---|
 | `shiv-ui` | The Slint application: screens, state and thumbnail pipeline |
-| `shiv-core` | Game detection, install, enable/disable, profiles, health checks, launch, crosshair, performance |
-| `shiv-api` | Clients for the [Deadlock Mods API](https://api.deadlockmods.app) and GameBanana (files, changelog, comments) |
+| `shiv-core` | Game detection, install, enable/disable, load order, profiles, health checks, launch, crosshair, performance, interchange, registries |
+| `shiv-api` | Clients for the [Deadlock Mods API](https://api.deadlockmods.app), GameBanana (files, changelog, comments) and native `dmm-source` registries |
 | `shiv-repair` | Content repair for VPKs broken by game updates |
 | `vpkmanager`, `vpk-parser`, `kv-parser`, `source2-model` | VPK, KeyValues and Source 2 parsing, copied from the Deadlock Mod Manager |
 
