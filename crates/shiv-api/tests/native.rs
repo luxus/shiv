@@ -69,19 +69,35 @@ fn a_descriptor_from_another_game_or_protocol_is_refused() {
 
     let wrong_game = r#"{"format":"dmm-source","protocolVersion":"1.0","sourceId":"x","name":"X","gameId":"counter-strike","catalog":{"kind":"static","indexUrl":"http://x/c.json"},"networkOrigins":{"api":["http://x"],"downloads":["http://x"]}}"#.to_owned();
     let served = stub(move |_| json(wrong_game.clone()));
-    assert!(client.fetch_descriptor(&format!("{served}/d.json")).is_err());
+    assert!(
+        client
+            .fetch_descriptor(&format!("{served}/d.json"))
+            .is_err()
+    );
 
     let wrong_protocol = r#"{"format":"dmm-source","protocolVersion":"2.0","sourceId":"x","name":"X","gameId":"deadlock","catalog":{"kind":"static","indexUrl":"http://x/c.json"},"networkOrigins":{"api":["http://x"],"downloads":["http://x"]}}"#.to_owned();
     let served = stub(move |_| json(wrong_protocol.clone()));
-    assert!(client.fetch_descriptor(&format!("{served}/d.json")).is_err());
+    assert!(
+        client
+            .fetch_descriptor(&format!("{served}/d.json"))
+            .is_err()
+    );
 
     let wrong_format = r#"{"format":"other","protocolVersion":"1.0","sourceId":"x","name":"X","gameId":"deadlock","catalog":{"kind":"static","indexUrl":"http://x/c.json"},"networkOrigins":{"api":["http://x"],"downloads":["http://x"]}}"#.to_owned();
     let served = stub(move |_| json(wrong_format.clone()));
-    assert!(client.fetch_descriptor(&format!("{served}/d.json")).is_err());
+    assert!(
+        client
+            .fetch_descriptor(&format!("{served}/d.json"))
+            .is_err()
+    );
 
     let no_origins = r#"{"format":"dmm-source","protocolVersion":"1.0","sourceId":"x","name":"X","gameId":"deadlock","catalog":{"kind":"static","indexUrl":"http://x/c.json"},"networkOrigins":{"api":[],"downloads":[]}}"#.to_owned();
     let served = stub(move |_| json(no_origins.clone()));
-    assert!(client.fetch_descriptor(&format!("{served}/d.json")).is_err());
+    assert!(
+        client
+            .fetch_descriptor(&format!("{served}/d.json"))
+            .is_err()
+    );
 
     // A valid descriptor passes: one that declares the origin it is
     // actually served from.
@@ -118,14 +134,17 @@ fn an_artifact_outside_the_declared_download_origins_is_refused() {
 
 #[test]
 fn a_static_catalog_must_complete_one_snapshot() {
-    let origin = origin_stub(move |origin, req| match req.url().rsplit('/').next().unwrap_or_default() {
-        "d.json" => json(descriptor(origin, "static", "indexUrl")),
-        "catalog.json" => json(format!(
-            r#"{{"snapshotId":"s1","items":[{{"id":"a","availability":"removed"}}],
+    let origin =
+        origin_stub(
+            move |origin, req| match req.url().rsplit('/').next().unwrap_or_default() {
+                "d.json" => json(descriptor(origin, "static", "indexUrl")),
+                "catalog.json" => json(format!(
+                    r#"{{"snapshotId":"s1","items":[{{"id":"a","availability":"removed"}}],
             "nextUrl":"{origin}/other.json"}}"#
-        )),
-        _ => json(r#"{"snapshotId":"s2","items":[{"id":"b","availability":"removed"}]}"#),
-    });
+                )),
+                _ => json(r#"{"snapshotId":"s2","items":[{"id":"b","availability":"removed"}]}"#),
+            },
+        );
     let client = NativeSourceClient::new();
     let descriptor = client
         .fetch_descriptor(&format!("{origin}/d.json"))
@@ -167,9 +186,9 @@ fn an_api_catalog_follows_cursors_until_null() {
         url if url.contains("cursor=page-2") => {
             json(r#"{"items":[{"id":"b","availability":"removed"}],"nextCursor":null}"#)
         }
-        url if url.ends_with("/catalog.json") => json(
-            r#"{"items":[{"id":"a","availability":"removed"}],"nextCursor":"page-2"}"#,
-        ),
+        url if url.ends_with("/catalog.json") => {
+            json(r#"{"items":[{"id":"a","availability":"removed"}],"nextCursor":"page-2"}"#)
+        }
         other => panic!("unexpected request {other}"),
     });
     let client = NativeSourceClient::new();

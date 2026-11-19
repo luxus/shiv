@@ -27,13 +27,17 @@ fn source(origin: &str, id: &str) -> AddedSource {
 fn the_same_source_cannot_be_added_twice() {
     let paths = env();
     let mut registries = registry::Registry::load(&paths).unwrap();
-    registries.add(source("mods.example.org", "my-community")).unwrap();
+    registries
+        .add(source("mods.example.org", "my-community"))
+        .unwrap();
     let again = registries.add(source("mods.example.org", "my-community"));
     assert!(matches!(again, Err(RegistryError::Refused(_))), "{again:?}");
     // The same origin with a different id is a different source.
     registries.add(source("mods.example.org", "other")).unwrap();
     // The same id from another origin is a different source too.
-    registries.add(source("cdn.example.org", "my-community")).unwrap();
+    registries
+        .add(source("cdn.example.org", "my-community"))
+        .unwrap();
     assert_eq!(registries.sources().len(), 3);
 }
 
@@ -59,7 +63,11 @@ fn a_registry_mod_id_names_its_listing_and_stays_a_safe_file_name() {
     // The id becomes `<mod_id>.json` in `.shiv`, so it must be a single
     // plain file name whatever the registry's ids contain.
     assert_eq!(mod_id, "src-my_2dcommunity-example_20mod_2ev2");
-    assert!(mod_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
+    assert!(
+        mod_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    );
     assert_eq!(
         registry::split_mod_id(&mod_id),
         Some(("my-community".into(), "example mod.v2".into()))
@@ -76,7 +84,11 @@ fn a_registry_mod_id_names_its_listing_and_stays_a_safe_file_name() {
     assert_eq!(registry::split_mod_id("12345"), None);
     assert_eq!(registry::split_mod_id("local-1-0"), None);
     assert_eq!(registry::split_mod_id("src-"), None);
-    assert_eq!(registry::split_mod_id("src-a-b-c"), None, "two separator dashes");
+    assert_eq!(
+        registry::split_mod_id("src-a-b-c"),
+        None,
+        "two separator dashes"
+    );
 }
 
 #[test]
@@ -128,9 +140,6 @@ fn the_store_survives_a_halfwritten_save() {
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    assert!(
-        !entries.iter().any(|n| n.ends_with(".tmp")),
-        "{entries:?}"
-    );
+    assert!(!entries.iter().any(|n| n.ends_with(".tmp")), "{entries:?}");
     let _ = Path::new(&paths.addons);
 }
