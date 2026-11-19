@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A fork does not run push workflows until Actions is enabled in its
+  # Actions tab; dispatch makes the suite runnable by hand either way.
+  workflow_dispatch:
 
 permissions:
   contents: read
