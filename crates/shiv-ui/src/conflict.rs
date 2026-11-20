@@ -89,20 +89,17 @@ fn show_front(app: &App) {
             .front()
             .map(|o| (o.new_name.clone(), names(&o.with), o.enable.is_some()))
     });
-    match front {
-        Some((new_name, old, enabling)) => {
-            state.set_enabling(enabling);
-            state.set_new_name(new_name.into());
-            state.set_old_names(old.into());
-            state.set_error_text("".into());
-            state.set_open(true);
-        }
-        None => {
-            state.set_open(false);
-            // Files dropped on the window queue behind this dialog; the
-            // queue continues now that it closed.
-            crate::installed::queue_step();
-        }
+    if let Some((new_name, old, enabling)) = front {
+        state.set_enabling(enabling);
+        state.set_new_name(new_name.into());
+        state.set_old_names(old.into());
+        state.set_error_text("".into());
+        state.set_open(true);
+    } else {
+        state.set_open(false);
+        // Files dropped on the window queue behind this dialog; the
+        // queue continues now that it closed.
+        crate::installed::queue_step();
     }
 }
 

@@ -556,18 +556,15 @@ fn strip_autoexec_blocks(text: &str) -> Option<String> {
                 .map(|k| i + 1 + k)
                 .filter(|&j| marker_text(segments[j]) == end)
         });
-        match close {
-            Some(j) => {
-                if i == 0 && text.starts_with('\u{feff}') {
-                    out.push('\u{feff}');
-                }
-                removed = true;
-                i = j + 1;
+        if let Some(j) = close {
+            if i == 0 && text.starts_with('\u{feff}') {
+                out.push('\u{feff}');
             }
-            None => {
-                out.push_str(segments[i]);
-                i += 1;
-            }
+            removed = true;
+            i = j + 1;
+        } else {
+            out.push_str(segments[i]);
+            i += 1;
         }
     }
     removed.then_some(out)

@@ -332,15 +332,12 @@ impl Crosshair {
                 // Keep what the user is editing: only an untouched screen
                 // takes the file's crosshair.
                 if !self.dirty.get() && edits == self.edits.get() {
-                    match saved {
-                        Some(c) => {
-                            self.config.set(c);
-                            self.origin.set(Origin::Saved);
-                        }
-                        None => {
-                            self.config.set(CrosshairConfig::default());
-                            self.origin.set(Origin::NoneSaved);
-                        }
+                    if let Some(c) = saved {
+                        self.config.set(c);
+                        self.origin.set(Origin::Saved);
+                    } else {
+                        self.config.set(CrosshairConfig::default());
+                        self.origin.set(Origin::NoneSaved);
                     }
                 }
             }

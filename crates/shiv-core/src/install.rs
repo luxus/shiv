@@ -587,15 +587,12 @@ struct Budget {
 
 impl Budget {
     fn charge(&mut self, bytes: u64) -> Result<(), InstallError> {
-        match self.remaining.checked_sub(bytes) {
-            Some(r) => {
-                self.remaining = r;
-                Ok(())
-            }
-            None => {
-                self.exceeded = true;
-                Err(InstallError::TooLarge)
-            }
+        if let Some(r) = self.remaining.checked_sub(bytes) {
+            self.remaining = r;
+            Ok(())
+        } else {
+            self.exceeded = true;
+            Err(InstallError::TooLarge)
         }
     }
 }
@@ -1255,26 +1252,23 @@ pub fn replace_local_with(
     }
 
     let source = source_name(file);
-    let sc = match target.sidecar.clone() {
-        Some(mut sc) => {
-            sc.source = source;
-            sc
-        }
-        None => {
-            let mut vpks = dir_names;
-            vpks.sort();
-            Sidecar {
-                mod_id: sidecar::new_local_id(addons_dir),
-                name: file_stem(file),
-                version: None,
-                thumbnail_url: None,
-                vpks,
-                nsfw: Some(false),
-                hero: None,
-                category: None,
-                notes: None,
-                source,
-            }
+    let sc = if let Some(mut sc) = target.sidecar.clone() {
+        sc.source = source;
+        sc
+    } else {
+        let mut vpks = dir_names;
+        vpks.sort();
+        Sidecar {
+            mod_id: sidecar::new_local_id(addons_dir),
+            name: file_stem(file),
+            version: None,
+            thumbnail_url: None,
+            vpks,
+            nsfw: Some(false),
+            hero: None,
+            category: None,
+            notes: None,
+            source,
         }
     };
     if let Err(e) = sidecar::write(addons_dir, &sc) {

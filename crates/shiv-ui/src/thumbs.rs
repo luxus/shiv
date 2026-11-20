@@ -215,18 +215,15 @@ impl Cache {
         .ok()
         .flatten();
         let mut inner = self.lock();
-        match decoded {
-            Some(img) => {
-                inner.insert(url, img.clone(), self.max_bytes);
-                Some(img)
+        if let Some(img) = decoded {
+            inner.insert(url, img.clone(), self.max_bytes);
+            Some(img)
+        } else {
+            if inner.failed.len() >= MAX_FAILED {
+                inner.failed.clear();
             }
-            None => {
-                if inner.failed.len() >= MAX_FAILED {
-                    inner.failed.clear();
-                }
-                inner.failed.insert(url.to_owned());
-                None
-            }
+            inner.failed.insert(url.to_owned());
+            None
         }
     }
 }

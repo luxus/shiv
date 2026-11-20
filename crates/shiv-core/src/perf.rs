@@ -584,15 +584,14 @@ pub fn read_current(paths: &GamePaths) -> Result<Vec<ConfigEntry>, PerfError> {
             continue;
         }
         let key = path_key(rel);
-        match seen.get(&key) {
-            Some(&i) => out[i].value = Some(value.clone()),
-            None => {
-                seen.insert(key, out.len());
-                out.push(ConfigEntry {
-                    path: rel.to_vec(),
-                    value: Some(value.clone()),
-                });
-            }
+        if let Some(&i) = seen.get(&key) {
+            out[i].value = Some(value.clone());
+        } else {
+            seen.insert(key, out.len());
+            out.push(ConfigEntry {
+                path: rel.to_vec(),
+                value: Some(value.clone()),
+            });
         }
     }
     Ok(out)
@@ -871,12 +870,11 @@ fn edit(path: &Path, text: &str, entries: &[ConfigEntry]) -> Result<String, Perf
                 if parse_entry_line(line.content).map(|(_, r)| r) != Some(local.clone()) {
                     return Err(entry_err(entry, "it shares its line with other settings"));
                 }
-                let new = match entry.value.as_deref() {
-                    Some(value) => with_value(line.content, local, value),
-                    None => {
-                        let indent = indent_of(line.content);
-                        format!("{indent}{OFF_TAG}{}", &line.content[indent.len()..])
-                    }
+                let new = if let Some(value) = entry.value.as_deref() {
+                    with_value(line.content, local, value)
+                } else {
+                    let indent = indent_of(line.content);
+                    format!("{indent}{OFF_TAG}{}", &line.content[indent.len()..])
                 };
                 replaced.insert(i, new);
             }

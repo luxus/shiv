@@ -275,43 +275,40 @@ fn bbcode_tag(raw: &str, lower: &str, i: usize, out: &mut Out) -> Option<usize> 
     let rest = &lower[i..];
     let b = rest.as_bytes();
     let window = &b[..b.len().min(BB_WINDOW)];
-    let (name, closing, end) = match window.iter().position(|c| *c == b']') {
-        Some(close) => {
-            // `]` is ASCII, so `close` is a character boundary.
-            let inner = &rest[1..close];
-            let (closing, inner) = match inner.strip_prefix('/') {
-                Some(s) => (true, s),
-                None => (false, inner),
-            };
-            let name = inner.split('=').next().unwrap_or(inner);
-            if !BBCODE.contains(&name) || (closing && inner.contains('=')) {
-                return None;
-            }
-            (name, closing, i + close + 1)
+    let (name, closing, end) = if let Some(close) = window.iter().position(|c| *c == b']') {
+        // `]` is ASCII, so `close` is a character boundary.
+        let inner = &rest[1..close];
+        let (closing, inner) = match inner.strip_prefix('/') {
+            Some(s) => (true, s),
+            None => (false, inner),
+        };
+        let name = inner.split('=').next().unwrap_or(inner);
+        if !BBCODE.contains(&name) || (closing && inner.contains('=')) {
+            return None;
         }
-        None => {
-            // No `]` close by: a known `[name=` with an overlong value (a long
-            // URL) is dropped up to its `]`, or up to the first whitespace when
-            // it never closes. A short value is not a tag.
-            let name_len = b[1..]
-                .iter()
-                .take_while(|c| c.is_ascii_alphabetic())
-                .count();
-            let name = &rest[1..1 + name_len];
-            if !BBCODE.contains(&name) || b.get(1 + name_len) != Some(&b'=') {
-                return None;
-            }
-            let value = &b[2 + name_len..];
-            let stop = value
-                .iter()
-                .position(|c| *c == b']' || c.is_ascii_whitespace())
-                .unwrap_or(value.len());
-            if stop <= BB_VALUE_MAX {
-                return None;
-            }
-            let closed = usize::from(value.get(stop) == Some(&b']'));
-            (name, false, i + 2 + name_len + stop + closed)
+        (name, closing, i + close + 1)
+    } else {
+        // No `]` close by: a known `[name=` with an overlong value (a long
+        // URL) is dropped up to its `]`, or up to the first whitespace when
+        // it never closes. A short value is not a tag.
+        let name_len = b[1..]
+            .iter()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .count();
+        let name = &rest[1..1 + name_len];
+        if !BBCODE.contains(&name) || b.get(1 + name_len) != Some(&b'=') {
+            return None;
         }
+        let value = &b[2 + name_len..];
+        let stop = value
+            .iter()
+            .position(|c| *c == b']' || c.is_ascii_whitespace())
+            .unwrap_or(value.len());
+        if stop <= BB_VALUE_MAX {
+            return None;
+        }
+        let closed = usize::from(value.get(stop) == Some(&b']'));
+        (name, false, i + 2 + name_len + stop + closed)
     };
     match name {
         "img" if !closing => {

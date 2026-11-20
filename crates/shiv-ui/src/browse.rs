@@ -2284,14 +2284,13 @@ impl Browse {
         let Some(d) = detail.as_ref() else { return };
         for (i, g) in d.images.iter().enumerate() {
             let url = g.strip_url(&self.list.cache);
-            let shown = match self.list.cache.get(url) {
-                Some(img) => self.list.display_thumb(url, &img, d.nsfw),
-                None => {
-                    if !self.list.cache.has_failed(url) {
-                        self.list.loader.request(url);
-                    }
-                    None
+            let shown = if let Some(img) = self.list.cache.get(url) {
+                self.list.display_thumb(url, &img, d.nsfw)
+            } else {
+                if !self.list.cache.has_failed(url) {
+                    self.list.loader.request(url);
                 }
+                None
             };
             let row = match shown {
                 Some(image) => GalleryThumb {
