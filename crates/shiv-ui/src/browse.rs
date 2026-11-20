@@ -1058,7 +1058,7 @@ fn registry_entries() -> Vec<Entry> {
         entries.extend(
             listings
                 .into_iter()
-                .filter(|l| l.installable())
+                .filter(shiv_api::NativeListing::installable)
                 .filter_map(|l| registry_entry(&source, l)),
         );
     }
@@ -1335,7 +1335,7 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: Locate) -> Arc<thumb
             "shiv-gallery",
             GALLERY_WORKERS,
             GALLERY_QUEUE,
-            |b, url, ok| b.gallery_loaded(url, ok),
+            Browse::gallery_loaded,
         ),
         gallery_cache,
         opener: RefCell::new(Arc::new(|url: &str| {
@@ -2450,7 +2450,7 @@ mod dev_probe {
             after(open + n, |b| b.gallery_step(1));
         }
         if let Some(secs) = close {
-            after(open + secs, |b| b.close_detail());
+            after(open + secs, Browse::close_detail);
         }
     }
 }

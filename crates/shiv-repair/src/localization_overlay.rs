@@ -2660,8 +2660,7 @@ fn set_compiled_value_at_path(
             let item_count = items.len();
             let item = items.get_mut(*index).ok_or_else(|| {
                 Error::ModInvalid(format!(
-                    "Cannot apply compiled-data index {index}: array has {} items",
-                    item_count
+                    "Cannot apply compiled-data index {index}: array has {item_count} items"
                 ))
             })?;
             if remaining.is_empty() {

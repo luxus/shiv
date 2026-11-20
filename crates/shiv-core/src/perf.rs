@@ -941,11 +941,13 @@ fn edit(path: &Path, text: &str, entries: &[ConfigEntry]) -> Result<String, Perf
             .iter()
             .filter(|s| s.key_start > open && s.key_start < close)
             .find(|s| rel(s).is_some_and(|r| r.len() == parent.len() + 1))
-            .map(|s| {
-                let line = &lines[line_index(&lines, s.key_start)];
-                indent_of(line.content).to_string()
-            })
-            .unwrap_or_else(|| format!("{}\t", indent_of(lines[close_line].content)));
+            .map_or_else(
+                || format!("{}\t", indent_of(lines[close_line].content)),
+                |s| {
+                    let line = &lines[line_index(&lines, s.key_start)];
+                    indent_of(line.content).to_string()
+                },
+            );
         inserted
             .entry(close_line)
             .or_default()

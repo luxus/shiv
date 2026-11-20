@@ -505,8 +505,7 @@ impl Staging {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let unique = format!(
             "{}-{nanos}-{}",
             std::process::id(),
@@ -1108,7 +1107,7 @@ pub fn name_key(name: &str) -> String {
         .iter()
         .find_map(|ext| lower.strip_suffix(ext))
         .unwrap_or(&lower);
-    let mut key: String = stem.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let mut key: String = stem.chars().filter(char::is_ascii_alphanumeric).collect();
     // Trailing version: digits, optionally preceded by a `v`.
     let digits = key.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     if digits < key.len() {
@@ -1292,8 +1291,7 @@ pub fn replace_local_with(
 fn backup_dir(addons_dir: &Path, id: &str) -> Result<PathBuf, InstallError> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let safe: String = id
         .chars()
         .map(|c| {

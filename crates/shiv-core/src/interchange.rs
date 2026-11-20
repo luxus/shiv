@@ -316,8 +316,7 @@ pub struct ExportReport {
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// A folder nobody wrote yet: two exports in the same second bump the
@@ -430,7 +429,7 @@ pub fn export_into(
                     break;
                 }
             };
-            let size = fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+            let size = fs::metadata(&target).map_or(0, |m| m.len());
             if primary_hash.is_none() {
                 primary_hash = Some(sha.clone());
             }

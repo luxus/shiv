@@ -85,8 +85,7 @@ pub fn is_local(mod_id: &str) -> bool {
 pub fn new_local_id(addons: &Path) -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     unused_local_id(&addons.join(DIR), secs)
 }
 

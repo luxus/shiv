@@ -855,9 +855,10 @@ impl Perf {
             .iter()
             .position(|o| o.value == shown)
             .unwrap_or_default();
-        let note = denied
-            .map(|reason| format!("Shiv doesn't change this setting: {reason}"))
-            .unwrap_or_else(|| self.note.borrow().clone());
+        let note = denied.map_or_else(
+            || self.note.borrow().clone(),
+            |reason| format!("Shiv doesn't change this setting: {reason}"),
+        );
         let editor = PerfEditor {
             open: true,
             name: name.into(),
