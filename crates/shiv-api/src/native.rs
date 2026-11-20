@@ -80,13 +80,13 @@ impl NativeSourceClient {
                 "the download resolver served no URL".into(),
             ));
         };
-        let resolved = resolve_url(&resolver_url, &fresh);
-        if !origin_allowed(&resolved, &source.download_origins) {
+        let download_url = resolve_url(&resolver_url, &fresh);
+        if !origin_allowed(&download_url, &source.download_origins) {
             return Err(ApiError::Parse(format!(
-                "the resolved download is outside the source's download origins: {resolved}"
+                "the resolved download is outside the source's download origins: {download_url}"
             )));
         }
-        Ok(resolved)
+        Ok(download_url)
     }
 
     pub fn fetch_release_history(
@@ -794,10 +794,7 @@ impl ArtifactWire {
                 "the artifact {id} of release {release_id} has no safe file name"
             )));
         };
-        if !matches!(
-            self.format.as_deref(),
-            Some("vpk") | Some("zip") | Some("rar") | Some("7z")
-        ) {
+        if !matches!(self.format.as_deref(), Some("vpk" | "zip" | "rar" | "7z")) {
             return Err(ApiError::Parse(format!(
                 "the artifact {id} of release {release_id} is a {:?} file, which Shiv cannot install",
                 self.format
@@ -835,14 +832,15 @@ impl ArtifactWire {
             size: self.size,
             sha256: self
                 .hashes
-                .and_then(|h| h.sha256)
+                .as_ref()
+                .and_then(|h| h.sha256.as_deref())
                 .and_then(valid_sha256_hex),
             resolver_url,
         })
     }
 }
 
-fn valid_sha256_hex(hex: String) -> Option<String> {
+fn valid_sha256_hex(hex: &str) -> Option<String> {
     let hex = hex.to_ascii_lowercase();
     (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
 }

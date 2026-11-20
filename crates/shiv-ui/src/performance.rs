@@ -889,7 +889,7 @@ impl Perf {
             )),
             option_index: option_index as i32,
             has_pending: pending.is_some(),
-            is_set: current.is_some() && !pending.as_ref().is_some_and(|p| p.value.is_none()),
+            is_set: current.is_some() && pending.as_ref().is_none_or(|p| p.value.is_some()),
             note: note.into(),
         };
         self.with_state(|s| s.set_editor(editor));
@@ -1241,7 +1241,7 @@ mod tests {
     #[test]
     fn numbers_follow_kind_and_step() {
         assert_eq!(format_number(3.6, ConvarKind::Int, None), "4");
-        assert_eq!(format_number(0.30000001, ConvarKind::Float, None), "0.3");
+        assert_eq!(format_number(0.300_000_01, ConvarKind::Float, None), "0.3");
         assert_eq!(format_number(0.26, ConvarKind::Float, Some(0.5)), "0.3");
         assert_eq!(format_number(12.0, ConvarKind::Float, Some(1.0)), "12");
         assert_eq!(format_number(-0.0001, ConvarKind::Float, None), "0");

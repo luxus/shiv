@@ -295,7 +295,7 @@ fn bbcode_tag(raw: &str, lower: &str, i: usize, out: &mut Out) -> Option<usize> 
             .iter()
             .take_while(|c| c.is_ascii_alphabetic())
             .count();
-        let name = &rest[1..1 + name_len];
+        let name = &rest[1..=name_len];
         if !BBCODE.contains(&name) || b.get(1 + name_len) != Some(&b'=') {
             return None;
         }

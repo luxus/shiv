@@ -459,7 +459,15 @@ pub fn export_into(
         let enabled = m.is_enabled();
         let remote = m.sidecar.as_ref().and_then(|s| remote_of(&s.mod_id));
         let primary_hash = files.first().and_then(|f| f.sha256.clone());
-        let entry = interchange_mod(m, &name, enabled, order, remote, primary_hash, files);
+        let entry = interchange_mod(
+            m,
+            &name,
+            enabled,
+            order,
+            remote,
+            primary_hash.as_deref(),
+            files,
+        );
         order += 1;
         entries.push(entry);
         report.exported.push(name);
@@ -510,11 +518,11 @@ fn interchange_mod(
     enabled: bool,
     order: i64,
     remote: Option<RemoteRef>,
-    primary_hash: Option<String>,
+    primary_hash: Option<&str>,
     files: Vec<InterchangeFile>,
 ) -> InterchangeMod {
     let sc = m.sidecar.as_ref();
-    let key = match (&remote, &primary_hash) {
+    let key = match (remote.as_ref(), primary_hash) {
         (Some(r), _) => format!(
             "gamebanana:{}:{}",
             if r.is_audio { "sound" } else { "mod" },

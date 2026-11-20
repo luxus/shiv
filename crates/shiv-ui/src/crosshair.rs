@@ -422,7 +422,7 @@ mod tests {
         let c = CrosshairConfig::default();
         assert_eq!(edited(c, CrosshairField::PipGap, 3.4).gap, 3.0);
         assert_eq!(edited(c, CrosshairField::PipGap, -99.0).gap, -20.0);
-        assert_eq!(edited(c, CrosshairField::PipWidth, 2.3000002).width, 2.3);
+        assert_eq!(edited(c, CrosshairField::PipWidth, 2.300_000_2).width, 2.3);
         assert_eq!(edited(c, CrosshairField::PipHeight, 400.0).height, 100.0);
         assert_eq!(edited(c, CrosshairField::PipOpacity, 0.34).pip_opacity, 0.3);
         assert_eq!(edited(c, CrosshairField::DotOpacity, -1.0).dot_opacity, 0.0);

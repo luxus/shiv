@@ -16,7 +16,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// slow downloads of large mods. Trade-off: a stalled connection can hold a
 /// download for up to the cap; the UI is expected to offer cancel. API JSON
 /// calls keep the 30 s budget.
-const DOWNLOAD_BODY_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+const DOWNLOAD_BODY_TIMEOUT: Duration = Duration::from_hours(6);
 /// Upper bound for buffered JSON bodies (catalog is a few MB).
 const JSON_LIMIT: u64 = 64 * 1024 * 1024;
 

@@ -176,7 +176,7 @@ pub fn install_with_limits(
     let staging = Staging::create(addons_dir)?;
     extract(format, archive, staging.path(), limits)?;
     let staged = collect_vpks(staging.path())?;
-    place_and_record(addons_dir, staged, meta, old)
+    place_and_record(addons_dir, &staged, meta, old)
 }
 
 /// Install several plain VPK files (already extracted, for example from an
@@ -215,7 +215,7 @@ pub fn install_files(
         tally_disk_write(copied);
     }
     let staged = collect_vpks(staging.path())?;
-    place_and_record(addons_dir, staged, meta, old)
+    place_and_record(addons_dir, &staged, meta, old)
 }
 
 /// The shared tail of the install paths: give the staged VPKs free pak
@@ -223,7 +223,7 @@ pub fn install_files(
 /// files of an earlier version of the same mod.
 fn place_and_record(
     addons_dir: &Path,
-    staged: Vec<StagedVpk>,
+    staged: &[StagedVpk],
     meta: ModMeta,
     old: Option<Sidecar>,
 ) -> Result<Sidecar, InstallError> {
@@ -427,11 +427,14 @@ fn remove_pak_files(dir: &Path, name: &str) -> Result<(), InstallError> {
 /// A single plain path component ending in `.vpk`: no separators, `..`, or absolute paths.
 fn is_plain_vpk_name(name: &str) -> bool {
     let mut comps = Path::new(name).components();
-    matches!(
+    let plain_component = matches!(
         (comps.next(), comps.next()),
         (Some(Component::Normal(c)), None) if c == name
-    ) && !name.contains('\\')
-        && name.ends_with(".vpk")
+    );
+    let vpk_extension = Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vpk"));
+    plain_component && !name.contains('\\') && vpk_extension
 }
 
 /// Remove staging dirs left by a crashed run: owned by another process and over an hour old.
@@ -1307,7 +1310,7 @@ fn backup_dir(addons_dir: &Path, id: &str) -> Result<PathBuf, InstallError> {
         let dir = root.join(name);
         match fs::create_dir(&dir) {
             Ok(()) => return Ok(dir),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(io_err(&dir)(e)),
         }
     }

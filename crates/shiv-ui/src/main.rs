@@ -540,11 +540,11 @@ mod tests {
             .and_then(|f| f.set_modified(later))
             .expect("touch");
         click(&app, "Re-scan");
-        let stale = run_until(&app, Duration::from_secs(60), move |a| {
+        let went_stale = run_until(&app, Duration::from_secs(60), move |a| {
             idle(a) && a.global::<RepairState>().get_stale()
         });
         assert!(
-            stale,
+            went_stale,
             "{:?} {:?} {} {:?}",
             status(&app),
             shiv_repair::overlay_state(&paths),
@@ -1178,11 +1178,11 @@ mod tests {
             }
         };
         // Launched `n` times and the game is up.
-        let launched = |n: usize| {
-            let l = launches.clone();
+        let game_up_after = |n: usize| {
+            let launch_count = launches.clone();
             move |a: &App| {
                 let s = a.global::<LaunchState>();
-                !s.get_busy() && s.get_running() && l.load(Ordering::SeqCst) == n
+                !s.get_busy() && s.get_running() && launch_count.load(Ordering::SeqCst) == n
             }
         };
         let dialog = |a: &App| a.global::<LaunchState>().get_dialog_open();
@@ -1228,7 +1228,7 @@ mod tests {
         // These findings are fresh: Launch anyway launches directly. The
         // status follows the game process: Running, then closed.
         click(&app, "Launch anyway");
-        assert!(run_until(&app, Duration::from_secs(20), launched(1)));
+        assert!(run_until(&app, Duration::from_secs(20), game_up_after(1)));
         assert_eq!(state.get_status_text().as_str(), launch::RUNNING_TEXT);
         assert!(!state.get_waiting());
         // Launch is refused while the game runs.
@@ -1240,7 +1240,7 @@ mod tests {
         // Review with unchanged findings: the re-check matches, so it launches.
         click(&app, "Review");
         click(&app, "Launch anyway");
-        assert!(run_until(&app, Duration::from_secs(20), launched(2)));
+        assert!(run_until(&app, Duration::from_secs(20), game_up_after(2)));
         assert!(!state.get_dialog_open());
         close_game(&app);
 
@@ -1252,14 +1252,14 @@ mod tests {
 
         // Clean: Launch goes straight through.
         click(&app, "Launch");
-        assert!(run_until(&app, Duration::from_secs(20), launched(3)));
+        assert!(run_until(&app, Duration::from_secs(20), game_up_after(3)));
         assert!(!state.get_dialog_open());
         close_game(&app);
 
         // Launch without mods: mods go off for the session and come back
         // when the game exits.
         click(&app, "Launch without mods");
-        assert!(run_until(&app, Duration::from_secs(20), launched(4)));
+        assert!(run_until(&app, Duration::from_secs(20), game_up_after(4)));
         assert_eq!(
             vanilla_log.lock().unwrap().iter().filter(|on| **on).count(),
             1
@@ -1473,7 +1473,7 @@ mod tests {
         let app = App::new().expect("app");
         let located = paths.clone();
         let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
-        let cache = browse::attach_with(&app, &url, locate.clone());
+        let cache = browse::attach_with(&app, &url, &locate);
         sources::attach_with(&app, locate.clone());
         installed::attach_with(
             &app,
@@ -2980,6 +2980,7 @@ mod tests {
     /// Install shows progress state; Cancel returns to idle at once and later
     /// worker updates are ignored; a failing install surfaces a readable banner.
     fn install_cancel_and_failure(api: &str) {
+        use browse::test_hooks as hooks;
         let app = App::new().expect("app");
         browse::attach(&app, api);
         downloads::attach(&app);
@@ -3002,7 +3003,6 @@ mod tests {
 
         // The Installed badge follows re-reads of the addons folder (Browse
         // shown, or an uninstall on Installed); a superseded read is ignored.
-        use browse::test_hooks as hooks;
         hooks::installed_read(&["m1"], false);
         assert_eq!(row_state(&app), Some(InstallState::Installed));
         hooks::installed_read(&[], true);
@@ -3204,6 +3204,11 @@ mod tests {
         use shiv_core::game::GamePaths;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+
+        fn ready(a: &App) -> bool {
+            let s = a.global::<ProfilesState>();
+            s.get_load_state() == LoadState::Ready && !s.get_busy()
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = GamePaths::from_root(dir.path().to_path_buf());
         std::fs::create_dir_all(&paths.addons).expect("addons");
@@ -3220,10 +3225,6 @@ mod tests {
         );
         app.show().expect("show");
         let state = app.global::<ProfilesState>();
-        fn ready(a: &App) -> bool {
-            let s = a.global::<ProfilesState>();
-            s.get_load_state() == LoadState::Ready && !s.get_busy()
-        }
         assert!(run_until(&app, Duration::from_secs(5), ready));
         assert!(!state.get_set_up());
         assert!(paths.addons.join("pak01_dir.vpk").is_file());

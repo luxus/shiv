@@ -147,7 +147,7 @@ fn cancel(weak: &Weak<App>) {
 fn swap(weak: Weak<App>) {
     let Some(offer) = claim_front() else { return };
     let ids: Vec<String> = offer.with.iter().map(|(id, _)| id.clone()).collect();
-    run(weak, "shiv-conflict-swap", move || {
+    run(&weak, "shiv-conflict-swap", move || {
         disable(&ids, offer.enable.as_deref())
     });
 }
@@ -155,7 +155,7 @@ fn swap(weak: Weak<App>) {
 /// Leave both mods on and put the new one first in the load order, so it wins.
 fn load_first(weak: Weak<App>) {
     let Some(offer) = claim_front() else { return };
-    run(weak, "shiv-conflict-first", move || {
+    run(&weak, "shiv-conflict-first", move || {
         enable_first(&offer.new_id, offer.enable.is_some())
     });
 }
@@ -181,7 +181,7 @@ fn claim_front() -> Option<Offer> {
 }
 
 fn run(
-    weak: Weak<App>,
+    weak: &Weak<App>,
     name: &'static str,
     work: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) {

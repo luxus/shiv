@@ -355,9 +355,8 @@ impl Tabs {
             return;
         }
         let now = now_epoch();
-        let fetched = match result {
-            Ok(f) => f,
-            Err(_) => return self.set_load(tab, TabLoad::Failed),
+        let Ok(fetched) = result else {
+            return self.set_load(tab, TabLoad::Failed);
         };
         match fetched {
             Fetched::Files(files) => self.files.set_vec(file_rows(&files, now)),

@@ -95,7 +95,7 @@ pub fn new_local_id(addons: &Path) -> String {
     reason = "the counter is bounded by u32, so an unused id exists"
 )]
 fn unused_local_id(dir: &Path, secs: u64) -> String {
-    (0u32..)
+    (0..u32::MAX)
         .map(|n| format!("{LOCAL_PREFIX}{secs}-{n}"))
         .find(|id| !dir.join(format!("{id}.json")).exists())
         .expect("an unused local id")
@@ -286,7 +286,7 @@ pub fn edit(
     notes: Option<String>,
 ) -> Result<Sidecar, SidecarError> {
     let mut sidecar = read(addons, mod_id)?.ok_or(SidecarError::NotAdoptable)?;
-    sidecar.name = name.trim().to_owned();
+    name.trim().clone_into(&mut sidecar.name);
     sidecar.notes = notes.filter(|n| !n.trim().is_empty());
     write(addons, &sidecar)?;
     Ok(sidecar)

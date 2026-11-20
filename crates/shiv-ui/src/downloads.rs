@@ -184,7 +184,7 @@ impl Downloads {
                 let instant = done.saturating_sub(item.sample.1) as f64 / elapsed.as_secs_f64();
                 // Smooth: half the previous value, half the new window.
                 item.speed = if item.speed > 0.0 {
-                    (item.speed + instant) / 2.0
+                    f64::midpoint(item.speed, instant)
                 } else {
                     instant
                 };

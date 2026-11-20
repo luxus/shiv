@@ -164,7 +164,7 @@ struct PosterWire {
 }
 
 /// `GameBanana` status 0 is a visible post; anything else is trashed or hidden.
-fn visible(status: &Option<serde_json::Value>) -> bool {
+fn visible(status: Option<&serde_json::Value>) -> bool {
     match status {
         None => true,
         Some(serde_json::Value::String(s)) => s == "0",
@@ -289,7 +289,7 @@ impl GameBananaClient {
         let items = env
             .records
             .into_iter()
-            .filter(|c| visible(&c.status))
+            .filter(|c| visible(c.status.as_ref()))
             .filter_map(|c| {
                 Some(Comment {
                     author: c.poster.and_then(|p| p.name).unwrap_or_default(),

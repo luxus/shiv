@@ -108,7 +108,6 @@ impl Sources {
             "shiv-load-sources",
             move || fetch_catalogs(&saved),
             move |result| {
-                let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     with_sources(|s| s.catalogs_loaded(result));
                 });
@@ -283,11 +282,11 @@ impl Sources {
 /// One registry's catalog, as Browse shows it — or why it did not load.
 type CatalogOutcome = (AddedSource, Result<Vec<NativeListing>, ApiError>);
 
-/// Every added registry's catalog, or the first failure as a message. A
-/// failed registry never takes the others down: its slot says why.
-pub(crate) fn fetch_catalogs(saved: &[AddedSource]) -> Result<Vec<CatalogOutcome>, String> {
+/// Every added registry's catalog. A failed registry never takes the others
+/// down: its slot says why.
+pub(crate) fn fetch_catalogs(saved: &[AddedSource]) -> Vec<CatalogOutcome> {
     let client = NativeSourceClient::new();
-    Ok(saved
+    saved
         .iter()
         .map(|source| {
             let outcome = client
@@ -295,7 +294,7 @@ pub(crate) fn fetch_catalogs(saved: &[AddedSource]) -> Result<Vec<CatalogOutcome
                 .and_then(|descriptor| client.fetch_catalog(&descriptor));
             (source.clone(), outcome)
         })
-        .collect())
+        .collect()
 }
 
 /// The catalogs Browse merges into its list: `(source, listings)` pairs.

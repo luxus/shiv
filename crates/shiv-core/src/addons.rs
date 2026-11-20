@@ -67,7 +67,10 @@ fn split_name(name: &str) -> Option<(&str, bool)> {
         Some(s) => (s, false),
         None => (name, true),
     };
-    (stem.ends_with(".vpk") && stem != ".vpk").then_some((stem, enabled))
+    let is_vpk = Path::new(stem)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vpk"));
+    is_vpk.then_some((stem, enabled))
 }
 
 /// List VPK files directly in `addons` (pak-named or hand-added); other entries are ignored.
@@ -173,7 +176,6 @@ pub fn set_enabled(vpk: &InstalledVpk, enabled: bool) -> Result<(), AddonsError>
             (off_path, on_path)
         };
         match (want.exists(), other.exists()) {
-            (true, false) => {}
             (true, true) => return Err(AddonsError::TargetExists { target: want }),
             (false, true) => renames.push((other, want)),
             (false, false) if i == 0 => {
@@ -182,7 +184,7 @@ pub fn set_enabled(vpk: &InstalledVpk, enabled: bool) -> Result<(), AddonsError>
                     source: io::Error::from(io::ErrorKind::NotFound),
                 });
             }
-            (false, false) => {}
+            (true, false) | (false, false) => {}
         }
     }
     let mut done: Vec<&(PathBuf, PathBuf)> = Vec::new();

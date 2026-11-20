@@ -525,7 +525,7 @@ impl Launch {
             move |result| {
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_launch(|l| l.checked(generation, purpose, result));
+                    with_launch(|l| l.checked(generation, &purpose, result));
                 });
             },
         );
@@ -538,7 +538,7 @@ impl Launch {
     fn checked(
         &self,
         generation: u64,
-        purpose: Purpose,
+        purpose: &Purpose,
         result: Result<(Vec<Finding>, bool, GamePaths, bool), String>,
     ) {
         if generation != self.generation.get() {
@@ -573,14 +573,14 @@ impl Launch {
             if self.watch.borrow().is_none() {
                 self.start_watch(None, false);
             }
-            if purpose != Purpose::Background {
-                self.with_state(|s| s.set_status_text(ALREADY_RUNNING_TEXT.into()));
-            } else {
+            if *purpose == Purpose::Background {
                 self.with_state(|s| s.set_status_text(RUNNING_TEXT.into()));
+            } else {
+                self.with_state(|s| s.set_status_text(ALREADY_RUNNING_TEXT.into()));
             }
             return;
         }
-        let launch_now = match &purpose {
+        let launch_now = match purpose {
             Purpose::Background => {
                 // Debug builds only: open the review dialog for startup findings
                 // (for screenshots); it never launches anything.
@@ -598,7 +598,7 @@ impl Launch {
             }
         };
         if launch_now {
-            self.start_watch(Some(paths), purpose == Purpose::Vanilla);
+            self.start_watch(Some(paths), *purpose == Purpose::Vanilla);
         } else {
             self.fresh_dialog.set(true);
             self.with_state(|s| s.set_dialog_open(true));

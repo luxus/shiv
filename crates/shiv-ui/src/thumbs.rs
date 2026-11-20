@@ -558,7 +558,7 @@ mod tests {
             let mut rgba = Vec::with_capacity((w * h * 4) as usize);
             for y in 0..h {
                 for x in 0..w {
-                    let v = if ((x + y) % 2 == 0) != invert { 255 } else { 0 };
+                    let v = if ((x + y) % 2 == 0) == invert { 0 } else { 255 };
                     rgba.extend_from_slice(&[v, v, v, 255]);
                 }
             }

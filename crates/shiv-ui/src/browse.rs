@@ -271,13 +271,16 @@ fn detail_info(m: &ModDto) -> ModDetail {
 }
 
 fn detail_info_at(m: &ModDto, now: i64) -> ModDetail {
-    fn non_empty(s: &Option<String>) -> Option<&str> {
-        s.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    fn non_empty(s: Option<&str>) -> Option<&str> {
+        s.map(str::trim).filter(|s| !s.is_empty())
     }
-    let kind: Vec<&str> = [non_empty(&m.category), non_empty(&m.hero)]
-        .into_iter()
-        .flatten()
-        .collect();
+    let kind: Vec<&str> = [
+        non_empty(m.category.as_deref()),
+        non_empty(m.hero.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let tags: Vec<&str> = m
         .tags
         .iter()
@@ -288,7 +291,7 @@ fn detail_info_at(m: &ModDto, now: i64) -> ModDetail {
     ModDetail {
         id: m.id.as_str().into(),
         name: m.name.as_str().into(),
-        author: non_empty(&m.author).unwrap_or_default().into(),
+        author: non_empty(m.author.as_deref()).unwrap_or_default().into(),
         kind: kind.join(" \u{b7} ").into(),
         tags: tags.join(", ").into(),
         downloads: fmt_count(m.download_count).into(),
@@ -310,7 +313,10 @@ fn detail_info_at(m: &ModDto, now: i64) -> ModDetail {
             .as_deref()
             .is_some_and(shiv_core::link::is_web_link),
         nsfw: m.is_nsfw,
-        author_id: match (non_empty(&m.author), non_empty(&m.mod_author_id)) {
+        author_id: match (
+            non_empty(m.author.as_deref()),
+            non_empty(m.mod_author_id.as_deref()),
+        ) {
             (Some(_), Some(id)) => id.into(),
             _ => Default::default(),
         },
@@ -358,7 +364,7 @@ pub(crate) fn install_error_text(e: &InstallError) -> String {
 pub(crate) fn game_error_text(e: &GameError) -> String {
     match e {
         GameError::NotFound => "Deadlock was not found in any Steam library.".into(),
-        other => other.to_string(),
+        steam @ GameError::Steam(_) => steam.to_string(),
     }
 }
 
@@ -422,8 +428,8 @@ struct ThumbLoader {
 
 impl ThumbLoader {
     fn start(
-        cache: Arc<thumbs::Cache>,
-        weak: Weak<App>,
+        cache: &Arc<thumbs::Cache>,
+        weak: &Weak<App>,
         name: &str,
         workers: usize,
         queue: usize,
@@ -905,13 +911,13 @@ fn resolve_registry_download(
         .url
         .filter(|u| !u.trim().is_empty())
         .ok_or("the download resolver served no URL")?;
-    let resolved = shiv_api::resolve_url(&resolver_url, &fresh);
-    if !shiv_api::origin_allowed(&resolved, download_origins) {
+    let download_url = shiv_api::resolve_url(&resolver_url, &fresh);
+    if !shiv_api::origin_allowed(&download_url, download_origins) {
         return Err(format!(
-            "the resolved download is outside the source's download origins: {resolved}"
+            "the resolved download is outside the source's download origins: {download_url}"
         ));
     }
-    Ok(resolved)
+    Ok(download_url)
 }
 
 enum Update {
@@ -968,7 +974,7 @@ fn run_install(
         download_url =
             resolve_registry_download(client, &resolver, &task.api_origins, &task.download_origins)
                 .map_err(msg)?;
-        task.file.url = download_url.clone();
+        task.file.url.clone_from(&download_url);
     }
     let fetched = client.fetch_cancellable(&download_url, &dest, cancel, |done, total| {
         let total = total.or(size_hint).filter(|t| *t > 0);
@@ -1267,12 +1273,13 @@ struct Detail {
 
 /// Wire the Browse screen to `app` and start loading the catalog.
 pub fn attach(app: &App, api_url: &str) -> Arc<thumbs::Cache> {
-    attach_with(app, api_url, Arc::new(crate::locate_game))
+    let locate: Locate = Arc::new(crate::locate_game);
+    attach_with(app, api_url, &locate)
 }
 
 /// [`attach`] with an injectable game location, so tests install into a
 /// throwaway folder instead of the real one.
-pub(crate) fn attach_with(app: &App, api_url: &str, locate: Locate) -> Arc<thumbs::Cache> {
+pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thumbs::Cache> {
     let weak = app.as_weak();
     let cache = Arc::new(thumbs::Cache::new(THUMB_BUDGET));
     let list = Rc::new(ModList {
@@ -1283,8 +1290,8 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: Locate) -> Arc<thumb
         installed: RefCell::new(HashSet::new()),
         installed_since: RefCell::new(HashSet::new()),
         loader: ThumbLoader::start(
-            cache.clone(),
-            weak.clone(),
+            &cache,
+            &weak,
             "shiv-thumb",
             THUMB_WORKERS,
             THUMB_QUEUE,
@@ -1330,8 +1337,8 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: Locate) -> Arc<thumb
         this: RefCell::new(RcWeak::new()),
         detail: RefCell::new(None),
         gallery: ThumbLoader::start(
-            gallery_cache.clone(),
-            weak.clone(),
+            &gallery_cache,
+            &weak,
             "shiv-gallery",
             GALLERY_WORKERS,
             GALLERY_QUEUE,
@@ -1686,7 +1693,7 @@ impl Browse {
         if let Some(registry) = entry.registry.clone() {
             let generation = self.next_job.get() + 1;
             self.next_job.set(generation);
-            self.start_registry_job(id, entry, &registry, generation);
+            self.start_registry_job(id, &entry, &registry, generation);
             return;
         }
         let generation = self.next_job.get() + 1;
@@ -1787,7 +1794,7 @@ impl Browse {
     fn start_registry_job(
         &self,
         id: &str,
-        entry: Entry,
+        entry: &Entry,
         registry: &RegistryInstall,
         generation: u64,
     ) {

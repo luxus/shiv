@@ -136,8 +136,7 @@ pub(crate) fn update_available(installed: Option<&str>, catalog: Option<&str>) -
 /// mod with no recorded flag and no catalog to ask is blurred (fail closed).
 pub(crate) fn is_nsfw(recorded: Option<bool>, catalog: Option<bool>) -> bool {
     match (recorded, catalog) {
-        (Some(true), _) | (_, Some(true)) => true,
-        (None, None) => true,
+        (Some(true), _) | (_, Some(true)) | (None, None) => true,
         (Some(false), _) | (None, Some(false)) => false,
     }
 }
@@ -1246,7 +1245,7 @@ impl Installed {
             };
             (mods.clone(), index, mods[index].clone(), pak_to_set)
         };
-        let (mods, index, mod_, pak_to_set) = job;
+        let (mods, index, target_mod, pak_to_set) = job;
         s.set_busy(true);
         s.set_error_text("".into());
         self.set_flags(None, Some(true));
@@ -1264,7 +1263,7 @@ impl Installed {
                 // The sidecar edit runs first: it is idempotent, so a failed
                 // `set_pak` after it can be retried without renaming twice.
                 let done = if adopt {
-                    sidecar::adopt(&paths.addons, &mod_, &name, notes)
+                    sidecar::adopt(&paths.addons, &target_mod, &name, notes)
                 } else {
                     sidecar::edit(&paths.addons, &id, &name, notes)
                 };
@@ -1588,7 +1587,7 @@ impl Installed {
 
     /// Whether any of the Installed dialogs is open, or an install conflict
     /// is being offered: dropped files queue behind all of them.
-    fn dialog_open(&self, app: &App) -> bool {
+    fn dialog_open(app: &App) -> bool {
         app.global::<ModEditState>().get_open()
             || app.global::<LocalInstallState>().get_open()
             || app.global::<UpdateFileState>().get_open()
@@ -1761,7 +1760,7 @@ impl Installed {
             return;
         };
         // A dialog, a re-read or an action in flight holds the queue.
-        if self.dialog_open(&app) || !self.idle() {
+        if Self::dialog_open(&app) || !self.idle() {
             return;
         }
         let Some(path) = self.pending.borrow_mut().pop_front() else {
@@ -1792,7 +1791,7 @@ impl Installed {
             move |result| {
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.inspected(path_for_result, result));
+                    with_installed(|i| i.inspected(&path_for_result, result));
                 });
             },
         );
@@ -1807,7 +1806,7 @@ impl Installed {
 
     fn inspected(
         &self,
-        path: PathBuf,
+        path: &Path,
         result: Result<Option<(String, String, MatchReason)>, String>,
     ) {
         self.stepping.set(false);
@@ -1825,7 +1824,7 @@ impl Installed {
                     Some((id, name, reason)) => {
                         self.show_update(&id, &name, &shown, reason_text(reason), true)
                     }
-                    None => self.show_local_install(&path),
+                    None => self.show_local_install(path),
                 }
                 // The dialog holds the queue: it resumes when the dialog
                 // closes (success refreshes and `loaded` steps again) or is
@@ -1861,7 +1860,7 @@ impl Installed {
             pending.extend(files);
             pending.len()
         };
-        let held = self.dialog_open(&app) || !self.idle() || self.stepping.get();
+        let held = Self::dialog_open(&app) || !self.idle() || self.stepping.get();
         let mut parts: Vec<String> = Vec::new();
         if !skipped.is_empty() {
             let n = skipped.len();
