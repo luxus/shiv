@@ -81,6 +81,11 @@ fn without_mounts(text: &str) -> Option<String> {
 
 /// Write the vanilla `gameinfo.gi`, keeping the original in [`backup_path`].
 /// Does nothing when a session is already active.
+///
+/// # Errors
+///
+/// The io error from reading or writing `gameinfo` or its backup; a failed
+/// replacement removes the backup again.
 pub fn enable(paths: &GamePaths) -> io::Result<()> {
     if is_active(paths) {
         return Ok(());
@@ -100,6 +105,11 @@ pub fn enable(paths: &GamePaths) -> io::Result<()> {
 
 /// Put the original `gameinfo.gi` back. If the file changed since [`enable`]
 /// (a Steam update rewrote it), the newer file wins and the backup is dropped.
+///
+/// # Errors
+///
+/// The io error from reading the backup or writing the file back; a missing
+/// backup succeeds.
 pub fn restore(paths: &GamePaths) -> io::Result<()> {
     let backup = backup_path(paths);
     let original = match fs::read_to_string(&backup) {

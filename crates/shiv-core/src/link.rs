@@ -59,11 +59,21 @@ pub fn command(url: &str) -> Command {
 }
 
 /// Open `url` in the browser. Blocks for up to 10 s; call it from a worker.
+///
+/// # Errors
+///
+/// As [`open_web_link_with`].
 pub fn open_web_link(url: &str) -> Result<(), LinkError> {
     open_web_link_with(url, |cmd| launch::run_opener(cmd, OPENER_WAIT))
 }
 
 /// [`open_web_link`] with an injectable runner, so tests open nothing.
+///
+/// # Errors
+///
+/// [`LinkError::NotHttps`] for a non-https URL; [`LinkError::Spawn`] when
+/// the opener cannot be started; [`LinkError::OpenerFailed`] when it exits
+/// reporting failure.
 pub fn open_web_link_with(
     url: &str,
     run: impl FnOnce(Command) -> io::Result<OpenerOutcome>,

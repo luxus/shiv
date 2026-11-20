@@ -44,6 +44,14 @@ impl NativeSourceClient {
         Self { agent }
     }
 
+    /// Fetch and validate a registry descriptor: it must parse, and its URLs
+    /// must stay inside the origins it declares.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`] for a non-2xx answer, [`ApiError::Network`] on a
+    /// transport failure, [`ApiError::Parse`] when the descriptor is not the
+    /// JSON shape expected or declares itself outside its own origins.
     pub fn fetch_descriptor(&self, url: &str) -> Result<SourceDescriptor, ApiError> {
         let wire: DescriptorWire = self.get_json(url)?;
         let descriptor = wire.into_descriptor(url)?;
@@ -51,6 +59,14 @@ impl NativeSourceClient {
         Ok(descriptor)
     }
 
+    /// The source's listings, through whichever catalog kind its descriptor
+    /// names.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`], [`ApiError::Network`] or [`ApiError::Parse`] as
+    /// for [`NativeSourceClient::fetch_descriptor`]; a listing that fails to
+    /// parse is a [`ApiError::Parse`] naming it.
     pub fn fetch_catalog(&self, source: &SourceDescriptor) -> Result<Vec<NativeListing>, ApiError> {
         match &source.catalog {
             CatalogConfig::Static { index_url } => self.fetch_static_catalog(source, index_url),
@@ -61,6 +77,13 @@ impl NativeSourceClient {
     /// Where the artifact downloads from: its direct URL, or the fresh one
     /// its resolver serves — which must still be on a declared download
     /// origin, or the registry is trying to send Shiv elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Parse`] when the resolver sits outside the source's API
+    /// origins, serves no URL, or resolves to a URL outside the source's
+    /// download origins; [`ApiError::Http`]/[`ApiError::Network`] when the
+    /// resolver request itself fails.
     pub fn resolve_artifact_url(
         &self,
         source: &SourceDescriptor,
@@ -90,6 +113,15 @@ impl NativeSourceClient {
         Ok(download_url)
     }
 
+    /// The listing's release history, following the source's cursor pages.
+    /// A listing without a history URL has none.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Parse`] when a history page sits outside the source's API
+    /// origins, the history exceeds its page or release limit, or a release
+    /// row is not in the shape Shiv can install; [`ApiError::Http`] and
+    /// [`ApiError::Network`] when a page request fails.
     pub fn fetch_release_history(
         &self,
         source: &SourceDescriptor,
@@ -743,6 +775,11 @@ pub struct ResolvedDownload {
 }
 
 /// Parse a resolver answer from its bytes.
+///
+/// # Errors
+///
+/// A one-line message saying the bytes are not the JSON shape a resolver
+/// answer must have.
 pub fn from_json_bytes(bytes: &[u8]) -> Result<ResolvedDownload, String> {
     serde_json::from_slice(bytes)
         .map_err(|e| format!("the resolver response could not be read: {e}"))

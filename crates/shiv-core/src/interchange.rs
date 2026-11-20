@@ -210,6 +210,11 @@ pub struct InterchangeCrosshair {
 
 /// The folder holding the manifest of the bundle `path` points at (the
 /// folder itself, or the folder holding a `mod-interchange.json`).
+///
+/// # Errors
+///
+/// [`InterchangeError::NotABundle`] when `path` is neither a bundle folder
+/// nor a manifest file inside one.
 pub fn bundle_dir(path: &Path) -> Result<PathBuf, InterchangeError> {
     let dir = if path.is_file() {
         let parent = path.parent();
@@ -227,6 +232,13 @@ pub fn bundle_dir(path: &Path) -> Result<PathBuf, InterchangeError> {
 }
 
 /// Read and validate the manifest of the bundle `path` points at.
+///
+/// # Errors
+///
+/// [`InterchangeError::NotABundle`] as for [`bundle_dir`];
+/// [`InterchangeError::Io`] when the manifest cannot be read;
+/// [`InterchangeError::Parse`] when it is not the JSON shape the format
+/// defines, or names a file outside the bundle.
 pub fn read_manifest(path: &Path) -> Result<(PathBuf, Document), InterchangeError> {
     let dir = bundle_dir(path)?;
     let manifest = dir.join(MANIFEST);
@@ -345,6 +357,13 @@ fn unique_folder(root: PathBuf) -> PathBuf {
 /// submission (the loaded catalog knows it); a mod without one is exported
 /// as a local mod keyed by the hash of its primary VPK, which stays stable
 /// across exports. Source files are copied, never moved.
+///
+/// # Errors
+///
+/// [`InterchangeError::DestinationExists`] when the new bundle folder
+/// already holds a manifest; [`InterchangeError::Io`] when the folder or a
+/// copy fails. Mods that cannot be exported are skipped into the report,
+/// not errors.
 pub fn export(
     addons: &Path,
     dest: &Path,
@@ -363,6 +382,10 @@ pub fn export(
 }
 
 /// [`export`] into `root`, a folder that exists and holds no bundle yet.
+///
+/// # Errors
+///
+/// As [`export`].
 pub fn export_into(
     addons: &Path,
     root: &Path,
@@ -658,6 +681,13 @@ fn write_ledger(addons: &Path, ledger: &BTreeMap<String, String>) -> Result<(), 
 /// after the mods already there, keeping the bundle's relative order.
 /// One broken or unknown entry costs that entry only; the report says why
 /// each skip happened.
+///
+/// # Errors
+///
+/// The manifest errors as for [`read_manifest`]; [`InterchangeError::Install`]
+/// carrying [`install::InstallError::GameRunning`] before anything is
+/// touched; [`InterchangeError::Io`] for a failure that stops the whole
+/// import. Broken entries are skips in the report, not errors.
 pub fn import(
     path: &Path,
     paths: &GamePaths,

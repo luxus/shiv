@@ -48,6 +48,11 @@ fn find_in(steam: &SteamDir) -> Result<Option<PathBuf>, GameError> {
 }
 
 /// Find Deadlock via steamlocate, falling back to well-known Steam directories.
+///
+/// # Errors
+///
+/// [`GameError::NotFound`] when no Steam library holds the game;
+/// [`GameError::Steam`] when the Steam libraries themselves cannot be read.
 pub fn locate() -> Result<GamePaths, GameError> {
     locate_with(
         || find_in(&SteamDir::locate()?),

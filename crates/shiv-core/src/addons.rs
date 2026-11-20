@@ -76,6 +76,11 @@ fn split_name(name: &str) -> Option<(&str, bool)> {
 /// List VPK files directly in `addons` (pak-named or hand-added); other entries are ignored.
 /// Chunk files are folded into their `pakNN_dir` entry; a chunk without a dir file stays
 /// as an unknown row. A missing directory is empty.
+///
+/// # Errors
+///
+/// [`AddonsError::Io`] when the directory cannot be read for a reason other
+/// than not existing.
 pub fn list(addons: &Path) -> Result<Vec<InstalledVpk>, AddonsError> {
     let io_err = |source| AddonsError::Io {
         path: addons.to_path_buf(),
@@ -137,6 +142,13 @@ pub fn list(addons: &Path) -> Result<Vec<InstalledVpk>, AddonsError> {
 /// The decision is made from what is on disk, not from `vpk.enabled`, so a stale
 /// caller flag cannot cause a wrong rename. Every target is checked before the first
 /// rename and renames already done are undone if a later one fails.
+///
+/// # Errors
+///
+/// [`AddonsError::NotAPak`] when the file has no readable name,
+/// [`AddonsError::TargetExists`] when the enabled or disabled form of any
+/// chunk already exists, [`AddonsError::Io`] when a check or rename fails.
+/// Nothing has been renamed when an error returns.
 pub fn set_enabled(vpk: &InstalledVpk, enabled: bool) -> Result<(), AddonsError> {
     let name = vpk
         .file
@@ -343,6 +355,11 @@ pub(crate) fn used_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
 /// `pakNN_dir.vpk` per search path. The old app uses shard directories `addons`,
 /// `addons2` ..= `addons10` (`MAX_SHARDS` = 10), numbering from 01 in each shard. A full
 /// directory returns [`AddonsError::Full`] and the caller moves to the next shard.
+///
+/// # Errors
+///
+/// [`AddonsError::Io`] when the directory cannot be listed; [`AddonsError::Full`]
+/// when every number 01..=99 is taken.
 pub fn next_pak(addons: &Path) -> Result<u32, AddonsError> {
     let used = used_pak_numbers(addons)?;
     (1..=PAK_CAPACITY)

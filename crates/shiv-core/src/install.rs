@@ -137,10 +137,20 @@ impl Default for Limits {
     }
 }
 
+/// Install an archive ([`install_with`] with the real running-game check).
+///
+/// # Errors
+///
+/// As [`install_with_limits`].
 pub fn install(archive: &Path, meta: ModMeta, paths: &GamePaths) -> Result<Sidecar, InstallError> {
     install_with(archive, meta, paths, game::is_running)
 }
 
+/// [`install`] with an injectable running-game check.
+///
+/// # Errors
+///
+/// As [`install_with_limits`].
 pub fn install_with(
     archive: &Path,
     meta: ModMeta,
@@ -150,6 +160,18 @@ pub fn install_with(
     install_with_limits(archive, meta, paths, game_running, Limits::default())
 }
 
+/// [`install_with`] with explicit extraction limits. Nothing is written
+/// while the game runs; a refusal leaves the disk untouched.
+///
+/// # Errors
+///
+/// [`InstallError::GameRunning`] before anything is written;
+/// [`InstallError::UnsupportedArchive`] when the file is no recognised
+/// archive; [`InstallError::NoVpk`] when it holds no VPK;
+/// [`InstallError::UnsafePath`] for an archive entry that escapes staging;
+/// [`InstallError::TooLarge`] beyond `limits`; [`InstallError::AddonsFull`]
+/// when every pak number is taken; the archive, io, addons and sidecar
+/// errors for their respective failures.
 pub fn install_with_limits(
     archive: &Path,
     meta: ModMeta,
@@ -184,6 +206,12 @@ pub fn install_with_limits(
 /// archive step: the files are copied into staging under their own names,
 /// so a pak-named VPK keeps its chunks (its `pakNN_<digits>.vpk` siblings
 /// must be in `files` too).
+///
+/// # Errors
+///
+/// [`InstallError::GameRunning`] before anything is written;
+/// [`InstallError::NoVpk`] when no file is a VPK; the io, addons and
+/// sidecar errors as for [`install_with_limits`].
 pub fn install_files(
     files: &[PathBuf],
     meta: ModMeta,
@@ -293,11 +321,19 @@ fn place_and_record(
 /// a local mod named `name` (see [`sidecar::LOCAL_PREFIX`]). The source file
 /// is copied or extracted, never moved or changed; it gets free pak slots
 /// exactly like a catalog download.
+///
+/// # Errors
+///
+/// As [`install_with_limits`].
 pub fn install_local(file: &Path, name: &str, paths: &GamePaths) -> Result<Sidecar, InstallError> {
     install_local_with(file, name, paths, game::is_running)
 }
 
 /// [`install_local`] with an injectable running-game check.
+///
+/// # Errors
+///
+/// As [`install_with_limits`].
 pub fn install_local_with(
     file: &Path,
     name: &str,
@@ -333,11 +369,20 @@ pub fn install_local_with(
 
 /// Remove all of a mod's VPK files (including disabled forms and chunk files when it
 /// has a sidecar) and its sidecar. A mod without a sidecar loses only its own VPK files.
+///
+/// # Errors
+///
+/// [`InstallError::GameRunning`] before anything is removed;
+/// [`InstallError::Io`] when a removal fails.
 pub fn uninstall(m: &InstalledMod) -> Result<(), InstallError> {
     uninstall_with(m, game::is_running)
 }
 
 /// [`uninstall`] with an injectable running-game check; refuses before touching anything.
+///
+/// # Errors
+///
+/// As [`uninstall`].
 pub fn uninstall_with(
     m: &InstalledMod,
     game_running: impl Fn() -> bool,
@@ -1014,6 +1059,13 @@ pub const OVERLAP_THRESHOLD: f64 = 0.5;
 
 /// Extract `file` into a scratch dir and read what it holds. Nothing in
 /// `addons` changes (the scratch dir is removed again).
+///
+/// # Errors
+///
+/// [`InstallError::UnsupportedArchive`] when the file is no recognised
+/// archive; [`InstallError::NoVpk`] when it holds no VPK;
+/// [`InstallError::UnsafePath`] and [`InstallError::TooLarge`] as for
+/// extraction; [`InstallError::Io`] for read failures.
 pub fn inspect(file: &Path, paths: &GamePaths) -> Result<Inspected, InstallError> {
     let addons_dir = paths.addons.as_path();
     clean_stale_staging(addons_dir);
@@ -1134,6 +1186,12 @@ pub struct Replaced {
 /// of the old one it replaces, so the load order does not change. The name
 /// and notes stay; a hand-added pak gets a sidecar named after the file. The
 /// old files are moved to `<addons>/.shiv/backup/<stamp>-<id>/`, not deleted.
+///
+/// # Errors
+///
+/// [`InstallError::GameRunning`] and [`InstallError::NotLocal`] before
+/// anything is touched; the extraction errors as for [`inspect`]; the io,
+/// addons and sidecar errors while moving and recording.
 pub fn replace_local(
     file: &Path,
     target: &InstalledMod,
@@ -1143,6 +1201,10 @@ pub fn replace_local(
 }
 
 /// [`replace_local`] with an injectable running-game check.
+///
+/// # Errors
+///
+/// As [`replace_local`].
 pub fn replace_local_with(
     file: &Path,
     target: &InstalledMod,

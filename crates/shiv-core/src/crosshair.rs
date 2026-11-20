@@ -269,6 +269,11 @@ fn read_crosshair(s: &HeroSettings<'_>) -> Result<Option<CrosshairConfig>, ()> {
 // Steam
 
 /// The Steam installation: steamlocate first, then the usual folders.
+///
+/// # Errors
+///
+/// [`CrosshairError::SteamNotFound`] when no Steam install with a
+/// `userdata` folder is found.
 pub fn locate_steam() -> Result<PathBuf, CrosshairError> {
     if let Ok(steam) = steamlocate::SteamDir::locate() {
         return Ok(steam.path().to_path_buf());
@@ -350,6 +355,11 @@ fn remembered_accounts(steam: &Path) -> Vec<Remembered> {
 ///
 /// When `loginusers.vdf` is missing or lists nobody, the account whose
 /// Deadlock settings file changed last is used.
+///
+/// # Errors
+///
+/// [`CrosshairError::NoSteamAccount`] when `userdata` holds no account with
+/// a Deadlock settings file.
 pub fn user_dir(steam: &Path) -> Result<PathBuf, CrosshairError> {
     let userdata = steam.join("userdata");
     let app_dir = |id: u32| userdata.join(id.to_string()).join(DEADLOCK_APP_ID);
@@ -492,6 +502,12 @@ fn read_settings(path: &Path) -> Result<(Option<String>, String), CrosshairError
 /// The crosshair in the signed-in account's settings (`user_dir` is its
 /// `userdata/<account>/1422450`), or in the game's copy when Steam has none.
 /// `None` when the file has no crosshair keys.
+///
+/// # Errors
+///
+/// [`CrosshairError::NotText`] or [`CrosshairError::InvalidSettings`] when
+/// the file exists but cannot be read as a crosshair settings file,
+/// [`CrosshairError::Io`] when it cannot be read at all.
 pub fn load(paths: &GamePaths, user_dir: &Path) -> Result<Option<CrosshairConfig>, CrosshairError> {
     let mut path = resolve(&user_settings_path(user_dir))?;
     if !path.exists() {
@@ -614,6 +630,13 @@ fn restore(change: &Change) -> Result<(), CrosshairError> {
 ///
 /// This does not check for a running game: the caller decides (the UI
 /// refuses while Deadlock runs, as the old app did).
+///
+/// # Errors
+///
+/// [`CrosshairError::NotText`] or [`CrosshairError::InvalidSettings`] when
+/// a file cannot be parsed — with nothing written; [`CrosshairError::Io`]
+/// (or its rollback variant) when a write fails, after putting back the
+/// files already written.
 pub fn apply(
     paths: &GamePaths,
     user_dir: &Path,

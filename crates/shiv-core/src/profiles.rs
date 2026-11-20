@@ -186,6 +186,12 @@ pub fn mod_count(paths: &GamePaths, id: &str) -> usize {
 
 /// The profiles, setting profiles up on first use: a real `addons` folder
 /// becomes the "Default" profile and `addons` turns into a link to it.
+///
+/// # Errors
+///
+/// [`ProfileError::Unsupported`] on a filesystem without usable symlinks;
+/// [`ProfileError::ForeignLink`] when `addons` is a link Shiv did not
+/// create; [`ProfileError::Io`] when the setup writes fail.
 pub fn load(paths: &GamePaths) -> Result<Profiles, ProfileError> {
     if !supported() {
         return Err(ProfileError::Unsupported);
@@ -295,6 +301,12 @@ fn check_free(profiles: &Profiles, name: &str, except: Option<&str>) -> Result<(
 }
 
 /// A new, empty profile.
+///
+/// # Errors
+///
+/// [`ProfileError::BadName`] for an unusable name; [`ProfileError::NameTaken`]
+/// when one like it exists; [`ProfileError::Io`] when the folder or index
+/// write fails.
 pub fn create(paths: &GamePaths, name: &str) -> Result<Profile, ProfileError> {
     let name = clean_name(name)?;
     let profiles = load(paths)?;
@@ -314,6 +326,11 @@ fn add(paths: &GamePaths, profile: Profile) -> Result<Profile, ProfileError> {
 /// A new profile holding a copy of `id`'s mods. Files are copied (on
 /// copy-on-write filesystems this costs no extra space) and never linked,
 /// because repairs rewrite VPKs in place.
+///
+/// # Errors
+///
+/// [`ProfileError::Unknown`] when `id` matches no profile; the name and io
+/// errors as for [`create`].
 pub fn duplicate(paths: &GamePaths, id: &str, name: &str) -> Result<Profile, ProfileError> {
     let name = clean_name(name)?;
     let profiles = load(paths)?;
@@ -343,6 +360,13 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Rename a profile in place.
+///
+/// # Errors
+///
+/// [`ProfileError::Unknown`] when `id` matches no profile;
+/// [`ProfileError::BadName`] and [`ProfileError::NameTaken`] as for
+/// [`create`]; [`ProfileError::Io`] when the index write fails.
 pub fn rename(paths: &GamePaths, id: &str, name: &str) -> Result<(), ProfileError> {
     let name = clean_name(name)?;
     let profiles = load(paths)?;
@@ -356,6 +380,12 @@ pub fn rename(paths: &GamePaths, id: &str, name: &str) -> Result<(), ProfileErro
 }
 
 /// Delete a profile and its mods. The active profile cannot be deleted.
+///
+/// # Errors
+///
+/// [`ProfileError::Unknown`] when `id` matches no profile;
+/// [`ProfileError::DeleteActive`] when it is the active one;
+/// [`ProfileError::Io`] when the removal or index write fails.
 pub fn delete(paths: &GamePaths, id: &str) -> Result<(), ProfileError> {
     let profiles = load(paths)?;
     find(&profiles, id)?;
@@ -369,6 +399,11 @@ pub fn delete(paths: &GamePaths, id: &str) -> Result<(), ProfileError> {
 }
 
 /// Make `id` the active profile. The game must not be running.
+///
+/// # Errors
+///
+/// [`ProfileError::Unknown`] when `id` matches no profile;
+/// [`ProfileError::Io`] when the `addons` link cannot be replaced.
 pub fn switch(paths: &GamePaths, id: &str) -> Result<(), ProfileError> {
     let profiles = load(paths)?;
     find(&profiles, id)?;

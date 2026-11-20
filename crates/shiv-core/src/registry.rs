@@ -126,6 +126,12 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// The reviewed sources, or an empty registry when none are saved yet.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::Parse`] when the saved list is not the JSON shape
+    /// expected; [`RegistryError::Io`] when it cannot be read.
     pub fn load(paths: &GamePaths) -> Result<Self, RegistryError> {
         let path = paths.root.join("shiv-sources.json");
         let sources = match fs::read(&path) {
@@ -159,6 +165,11 @@ impl Registry {
     /// Remember a reviewed source. The origin of its descriptor plus the
     /// declared `sourceId` is its identity: the same pair twice is a
     /// duplicate, whatever URL it was reviewed from.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::Refused`] naming the existing entry when the pair is
+    /// already added; [`RegistryError::Io`] when the list cannot be saved.
     pub fn add(&mut self, source: AddedSource) -> Result<(), RegistryError> {
         if let Some(existing) = self.find(&source.origin, &source.source_id) {
             return Err(RegistryError::Refused(format!(
@@ -175,6 +186,11 @@ impl Registry {
         self.save()
     }
 
+    /// Forget a reviewed source; removing one that is not there succeeds.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::Io`] when the list cannot be saved.
     pub fn remove(&mut self, origin: &str, source_id: &str) -> Result<(), RegistryError> {
         let before = self.sources.len();
         self.sources
@@ -227,6 +243,12 @@ pub fn revision_is_newer(installed: Option<&str>, current: &str) -> bool {
 /// Where a downloaded registry artifact waits for its hash check: a
 /// published checksum the bytes must match, or the download is deleted
 /// and refused. `None` published means unverifiable, which passes.
+///
+/// # Errors
+///
+/// [`RegistryError::Refused`] when the bytes do not match the published
+/// checksum — the download is deleted then; [`RegistryError::Io`] when it
+/// cannot be read.
 pub fn verify_download(
     downloaded: &Path,
     published_sha256: Option<&str>,
@@ -259,6 +281,12 @@ fn sha256_hex_of(path: &Path) -> Result<String, RegistryError> {
 /// revision, and the file name the download came under becomes the
 /// `source`, so a hand-pulled copy of the same release is recognised as
 /// the same mod.
+///
+/// # Errors
+///
+/// [`RegistryError::Install`] carrying the install failures (a running
+/// game, a full addons folder, an unreadable archive); [`RegistryError::Io`]
+/// when the sidecar cannot be recorded.
 #[allow(clippy::too_many_arguments)]
 pub fn install_registry_mod(
     paths: &GamePaths,

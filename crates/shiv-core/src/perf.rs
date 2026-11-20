@@ -277,6 +277,11 @@ pub struct Catalog {
 impl Catalog {
     /// Parse the API's catalog JSON. The schema version is checked before the
     /// rest, so a newer catalog is reported as such rather than as malformed.
+    ///
+    /// # Errors
+    ///
+    /// [`PerfError::SchemaVersion`] when the catalog needs a newer Shiv;
+    /// [`PerfError::InvalidCatalog`] when the JSON is not the catalog shape.
     pub fn parse(bytes: &[u8]) -> Result<Catalog, PerfError> {
         let invalid = |e: serde_json::Error| PerfError::InvalidCatalog(e.to_string());
         let probe: SchemaProbe = serde_json::from_slice(bytes).map_err(invalid)?;
@@ -422,6 +427,10 @@ impl Catalog {
     }
 
     /// `Err(reason)` when the rules forbid writing `path`.
+    ///
+    /// # Errors
+    ///
+    /// The denial reason, as the catalog states it.
     pub fn writable(&self, path: &[String]) -> Result<(), String> {
         if let Some(section) = self
             .rules
@@ -515,6 +524,12 @@ impl CatalogCache {
     }
 
     /// Parse `bytes` and, only when valid, keep them with `etag`.
+    ///
+    /// # Errors
+    ///
+    /// [`PerfError::InvalidCatalog`] or [`PerfError::SchemaVersion`] from
+    /// [`Catalog::parse`] — nothing is kept then; [`PerfError::Io`] when the
+    /// cache files cannot be written.
     pub fn store(&self, etag: &str, bytes: &[u8]) -> Result<Catalog, PerfError> {
         let catalog = Catalog::parse(bytes)?;
         self.save(etag, bytes)?;
@@ -522,6 +537,10 @@ impl CatalogCache {
     }
 
     /// Keep `bytes` with `etag`; the caller has already parsed them.
+    ///
+    /// # Errors
+    ///
+    /// [`PerfError::Io`] when the cache files cannot be written.
     pub fn save(&self, etag: &str, bytes: &[u8]) -> Result<(), PerfError> {
         fs::create_dir_all(&self.dir).map_err(io_err("create", &self.dir))?;
         // Drop the old ETag first: a stale one beside a new body would be
@@ -583,6 +602,12 @@ fn rel(site: &SourceSite) -> Option<&[String]> {
 /// rewrites it). Paths are below the `GameInfo` root; a key set more than
 /// once reads as its last value, at its first position. `FileSystem` is not
 /// a setting and is left out.
+///
+/// # Errors
+///
+/// [`PerfError::NotText`] when the file is not UTF-8; [`PerfError::Unparsable`]
+/// when it is not a KeyValues document; [`PerfError::Io`] when it cannot be
+/// read.
 pub fn read_current(paths: &GamePaths) -> Result<Vec<ConfigEntry>, PerfError> {
     let path = resolve(&paths.gameinfo)?;
     let text = read_text(&path)?;
@@ -619,6 +644,13 @@ pub fn read_current(paths: &GamePaths) -> Result<Vec<ConfigEntry>, PerfError> {
 /// the file through a temp file, keeping its permissions. A read-only file,
 /// a file Shiv can't parse, or an entry it can't write safely fails without
 /// touching anything. Applying values the file already has writes nothing.
+///
+/// # Errors
+///
+/// [`PerfError::ReadOnly`], [`PerfError::NotText`] or [`PerfError::Unparsable`]
+/// for a file Shiv cannot safely edit — with nothing touched;
+/// [`PerfError::Entry`] when a requested path cannot be written as asked;
+/// [`PerfError::Io`] when the backup or replacement fails.
 pub fn apply(paths: &GamePaths, entries: &[ConfigEntry]) -> Result<(), PerfError> {
     let path = resolve(&paths.gameinfo)?;
     let text = read_text(&path)?;

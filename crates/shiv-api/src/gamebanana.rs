@@ -215,6 +215,12 @@ impl GameBananaClient {
     }
 
     /// The mod's current files, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`] when `GameBanana` answers a non-2xx status,
+    /// [`ApiError::Network`] on a transport failure, [`ApiError::Parse`]
+    /// when the page is not the JSON shape expected.
     pub fn files(&self, remote_id: &str, audio: bool) -> Result<Vec<ModFile>, ApiError> {
         let url = format!("{}/ProfilePage", self.item(remote_id, audio)?);
         let profile: ProfileWire = self.get(&url)?;
@@ -237,6 +243,11 @@ impl GameBananaClient {
     }
 
     /// One page (1-based) of the changelog, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`], [`ApiError::Network`] or [`ApiError::Parse`], as
+    /// [`GameBananaClient::files`].
     pub fn changelog(
         &self,
         remote_id: &str,
@@ -277,6 +288,11 @@ impl GameBananaClient {
 
     /// One page (1-based) of comments, or [`Comments::Hidden`] when the
     /// author turned them off.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`], [`ApiError::Network`] or [`ApiError::Parse`], as
+    /// [`GameBananaClient::files`].
     pub fn comments(&self, remote_id: &str, audio: bool, page: u32) -> Result<Comments, ApiError> {
         let url = format!(
             "{}/Posts?_nPage={}&_nPerpage={PER_PAGE}",

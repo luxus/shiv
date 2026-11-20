@@ -224,12 +224,24 @@ fn read_file(path: &Path) -> Result<Option<Sidecar>, SidecarError> {
 }
 
 /// Read the sidecar for `mod_id`. Missing is `Ok(None)`; corrupt is an error.
+///
+/// # Errors
+///
+/// [`SidecarError::BadId`] when the id cannot name a file;
+/// [`SidecarError::Parse`] when the sidecar exists but is not valid JSON
+/// for a sidecar; [`SidecarError::Io`] when it cannot be read.
 pub fn read(addons: &Path, mod_id: &str) -> Result<Option<Sidecar>, SidecarError> {
     validate(mod_id)?;
     read_file(&path_for(addons, mod_id))
 }
 
 /// Write the sidecar atomically (temp file in the same directory, then rename).
+///
+/// # Errors
+///
+/// [`SidecarError::BadId`] when the id cannot name a file;
+/// [`SidecarError::Io`] when the temp file cannot be written or renamed —
+/// the temp file is removed then.
 pub fn write(addons: &Path, sidecar: &Sidecar) -> Result<(), SidecarError> {
     validate(&sidecar.mod_id)?;
     let dir = addons.join(DIR);
@@ -254,6 +266,11 @@ pub fn write(addons: &Path, sidecar: &Sidecar) -> Result<(), SidecarError> {
 /// Record a mod Shiv did not install (no sidecar) as a local mod named
 /// `name`, so it can be named, noted and kept together. Only a sidecar is
 /// written: the mod's files are not moved, renamed or changed.
+///
+/// # Errors
+///
+/// [`SidecarError::NotAdoptable`] when the mod already has a sidecar or has
+/// no VPK files; the write errors as for [`write`].
 pub fn adopt(
     addons: &Path,
     m: &InstalledMod,
@@ -284,6 +301,11 @@ pub fn adopt(
 
 /// Change the display name and notes of the mod `mod_id`. Only its sidecar
 /// is rewritten; an empty name falls back to the id on screen.
+///
+/// # Errors
+///
+/// [`SidecarError::NotAdoptable`] when there is no sidecar to edit; the
+/// read and write errors as for [`read`] and [`write`].
 pub fn edit(
     addons: &Path,
     mod_id: &str,
@@ -388,6 +410,12 @@ pub enum Move {
 /// Mods without a pak number (hand-added under another name) cannot move and
 /// are not counted. Moving past either end does nothing. If recording the
 /// new names fails, the file renames are undone.
+///
+/// # Errors
+///
+/// [`SidecarError::Addons`] when the renumbering plan cannot be built or a
+/// rename fails — renames already done are undone; [`SidecarError::Io`]
+/// when a sidecar cannot be rewritten.
 pub fn move_mod(
     addons: &Path,
     mods: &[InstalledMod],
@@ -442,6 +470,14 @@ pub fn move_mod(
 /// `mods` must come from [`group`], which never puts two VPKs on one pak
 /// number; a slice that does is refused with [`SidecarError::DuplicatePak`]
 /// instead of planning a rename that would overwrite a file.
+///
+/// # Errors
+///
+/// [`SidecarError::BadPak`] for a number outside `01..=99`;
+/// [`SidecarError::PakPush`] when the move would push another VPK past 99;
+/// [`SidecarError::DuplicatePak`] for a `mods` slice `group` did not build;
+/// the rename and sidecar errors as for [`move_mod`]. Every refusal happens
+/// before the first rename.
 pub fn set_pak(
     addons: &Path,
     mods: &[InstalledMod],

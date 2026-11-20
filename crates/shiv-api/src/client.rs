@@ -89,6 +89,12 @@ impl Client {
     /// The whole catalog (`GET /v2/mods` takes no parameters). Use
     /// [`crate::apply_query`] for search, sort and paging. Rows that fail to
     /// deserialize (missing id/remoteId/name, null in a required field) are skipped.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`] when the server answers a non-2xx status,
+    /// [`ApiError::Network`] when the transport fails, [`ApiError::Parse`]
+    /// when the body is not the JSON shape expected.
     pub fn list_mods(&self) -> Result<Vec<ModDto>, ApiError> {
         let rows: Vec<Row> = self.get_json(&format!("{}/v2/mods", self.base))?;
         Ok(rows
@@ -102,6 +108,11 @@ impl Client {
 
     /// Download files for a mod, with URLs exactly as the API returns them
     /// (possibly mirrored).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`], [`ApiError::Network`] or [`ApiError::Parse`], as
+    /// [`Client::list_mods`].
     pub fn downloads(&self, id: &str) -> Result<Vec<DownloadFile>, ApiError> {
         let url = format!("{}/v2/mods/{}/downloads", self.base, encode_segment(id));
         Ok(self.get_json::<DownloadsResponse>(&url)?.downloads)
@@ -109,6 +120,11 @@ impl Client {
 
     /// `Ok(None)` when the server answers 304 for `etag`; otherwise the new
     /// `ETag` (empty if the server sent none) and the raw body.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`] for a non-2xx answer other than 304,
+    /// [`ApiError::Network`] when the transport or body read fails.
     pub fn perf_catalog(&self, etag: Option<&str>) -> Result<Option<(String, Vec<u8>)>, ApiError> {
         let url = format!("{}/v2/perf-catalog", self.base);
         let mut req = self.api.get(&url);
@@ -137,6 +153,11 @@ impl Client {
     /// Stream `url` to `dest` via `<dest>.part`, renaming on success. The
     /// partial file is removed on any error. `progress(done, total)` is called
     /// after each chunk; `total` is the Content-Length when known.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::fetch_cancellable`]; this variant never returns
+    /// [`ApiError::Cancelled`].
     pub fn fetch(
         &self,
         url: &str,
@@ -148,6 +169,11 @@ impl Client {
 
     /// A small JSON GET, bounded like the API calls; a download resolver's
     /// answer is one URL.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Http`] when the server answers a non-2xx status,
+    /// [`ApiError::Network`] when the transport or body read fails.
     pub fn fetch_json_bytes(&self, url: &str) -> Result<Vec<u8>, ApiError> {
         let mut resp = self.api.get(url).call().map_err(|e| map_err(e, url))?;
         resp.body_mut()
@@ -161,6 +187,14 @@ impl Client {
     /// is set. The flag is checked between chunks, so a stalled read returns
     /// only when its next chunk arrives or the body timeout fires; callers
     /// should stop waiting on the result as soon as they set the flag.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Cancelled`] once the flag is seen; [`ApiError::Http`] for
+    /// a non-2xx answer; [`ApiError::Network`] for a transport failure;
+    /// [`ApiError::Io`] when the partial file cannot be written or renamed;
+    /// [`ApiError::EmptyDownload`] and [`ApiError::Incomplete`] when the body
+    /// contradicts its Content-Length. Any error removes the partial file.
     pub fn fetch_cancellable(
         &self,
         url: &str,

@@ -67,12 +67,20 @@ pub fn command() -> Command {
 
 /// Open the Steam URI for Deadlock and report whether the opener accepted it.
 /// Blocks for up to [`OPENER_WAIT`]; call it from a worker thread.
+///
+/// # Errors
+///
+/// As [`launch_with`]; this variant never returns [`LaunchError::Cancelled`].
 pub fn launch(paths: &GamePaths) -> Result<(), LaunchError> {
     launch_cancellable(paths, &AtomicBool::new(false))
 }
 
 /// [`launch`] that stops early when `cancel` is set, terminating the opener
 /// if it still runs ([`LaunchError::Cancelled`]).
+///
+/// # Errors
+///
+/// As [`launch_with`], plus [`LaunchError::Cancelled`] once the flag is seen.
 pub fn launch_cancellable(paths: &GamePaths, cancel: &AtomicBool) -> Result<(), LaunchError> {
     launch_with(paths, |cmd| {
         run_opener_cancellable(cmd, OPENER_WAIT, cancel)
@@ -80,6 +88,13 @@ pub fn launch_cancellable(paths: &GamePaths, cancel: &AtomicBool) -> Result<(), 
 }
 
 /// [`launch`] with an injectable runner, so tests never start Steam.
+///
+/// # Errors
+///
+/// [`LaunchError::GameMissing`] when the install folder is gone;
+/// [`LaunchError::Spawn`] when the opener cannot be started;
+/// [`LaunchError::OpenerFailed`] when it exits reporting failure;
+/// [`LaunchError::Cancelled`] as the runner reports it.
 pub fn launch_with(
     paths: &GamePaths,
     run: impl FnOnce(Command) -> io::Result<OpenerOutcome>,
@@ -106,12 +121,21 @@ pub fn launch_with(
 
 /// Spawn `cmd` and wait up to `wait` for it to exit. A child still running
 /// after that is reaped on a helper thread so it never lingers as a zombie.
+///
+/// # Errors
+///
+/// The io error from spawning `cmd`.
 pub fn run_opener(cmd: Command, wait: Duration) -> io::Result<OpenerOutcome> {
     run_opener_cancellable(cmd, wait, &AtomicBool::new(false))
 }
 
 /// [`run_opener`] that terminates and reaps the opener when `cancel` is set.
 /// Only the opener itself is stopped: a Steam client it started keeps running.
+///
+/// # Errors
+///
+/// The io error from spawning `cmd`; the outcome says whether it was
+/// cancelled or how it exited.
 pub fn run_opener_cancellable(
     mut cmd: Command,
     wait: Duration,
