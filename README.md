@@ -9,12 +9,58 @@
   <img alt="Platform: Linux and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-c9a84c?labelColor=121110">
 </p>
 
-**Shiv** is a small, native mod manager for [Deadlock](https://store.steampowered.com/app/1422450/Deadlock/).
-It has no webview and no Electron or Tauri layer, so it stays light on memory and
-scrolls smoothly on Linux and Windows.
+**Shiv** is a native mod manager for
+[Deadlock](https://store.steampowered.com/app/1422450/Deadlock/) on Linux and
+Windows: no webview, no Electron or Tauri layer.
 
-It exists because the standard manager renders through a web engine and idles at
-gigabytes of RAM. Shiv does the essentials and nothing else.
+It exists because the standard manager renders its UI through a web engine and
+idles in the gigabytes. Shiv does not aim to tie with the webview managers. The
+target is the gap, not the tie: a measured margin in idle memory, cold start,
+scroll frame budget, install wall clock and binary size. Every dimension has a
+gate, every recorded number carries its date, machine and command, and the law
+is that a regression which closes the margin fails the build. The gates and the
+method are [docs/proof-plan.md](docs/proof-plan.md); the numbers Shiv holds
+today are [below](#performance) and in [docs/perf-results.md](docs/perf-results.md).
+
+## Performance
+
+The [proof plan](docs/proof-plan.md#what-best-means-measured) defines eight
+measured dimensions. The table lists each gate and the number recorded so
+far; the reference machine is **lea** (NixOS, Linux, 8 cores, 60 GiB RAM,
+Wayland), the linked run 2026-11-20, the Nix flake package at
+`main @ 81ea837`, with the measurement commands recorded beside the results.
+
+| Dimension | Gate | Measured | Run |
+|---|---|---|---|
+| Memory — idle, catalog loaded | < 150 MB RSS | 114.5 MB | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Memory — idle, 60 s later | no leak while idle (±10 %) | 114.5 MB, no growth | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Battery — idle CPU | 0 ticks in 10 min | 0 ticks over 60 s | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Start-up — process start → first activity | < 1.5 s cold, < 600 ms warm | ~40 ms (5 runs: 39–43 ms) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Binary — size | AppImage < 25 MB | 45 MB store path (binary ~34 MiB) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Memory — 60 s full-list scroll | post-scroll within 10 % of loaded | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
+| Scroll — frame budget while flinging | no frame > 16 ms at 144 Hz | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
+| Search — keystroke → list updated | < 16 ms on 10k mods | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
+| Install — 100 MB archive | extraction > 60 % of disk-read speed; cancel responds < 50 ms | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
+
+The scroll, search and install gates, and the AppImage size from a release
+build, are what [issue #1](https://github.com/luxus/shiv/issues/1) is still
+recording on lea; the 45 MB above is the Nix store path, not the AppImage.
+Two core paths are also held by criterion benches, recorded 2026-11-20 on the
+dev workstation (Apple M1 Pro, macOS — not lea, which records its own when
+the suites run there):
+
+- **Load order.** `move_mod` and `set_pak`, worst case (every VPK renames):
+  294–308 µs per mod, flat from 25 to 99 movable mods — 99 is the engine's
+  pak capacity, the whole realizable domain. The list build the UI runs
+  before every move: 17.3–20.9 µs per mod at 100 to 1000 rows
+  ([run](docs/perf-results.md#reorder-shiv-corebenchesreorderrs)).
+- **Catalog parse.** `list_mods` over a 10,000-row catalog on the real
+  HTTP-body-plus-serde path: 239 MiB/s, second consecutive run 211 MiB/s;
+  the baseline to hold is ≥ 200 MiB/s on that machine
+  ([run](docs/perf-results.md#catalog-shiv-apibenchescatalogrs)).
+
+To verify any number: its commands are recorded beside it in
+[docs/perf-results.md](docs/perf-results.md) — re-run them and compare.
 
 ## Features
 
@@ -30,7 +76,7 @@ gigabytes of RAM. Shiv does the essentials and nothing else.
 - **Install** mods from zip, rar, 7z and multi-VPK archives, with a file picker when a mod offers
   several downloads, and a **Downloads** screen with progress, speed, cancel and retry.
 - **Install local files and links** the same way: a `.vpk` or archive from disk, a dropped file —
-  several at once — or a pasted download link, all as cleanly managed mods.
+  several at once — or a pasted download link, managed like any other mod.
 - **Move your library** between mod managers with the Deadlock Mod Interchange format: export an
   interchange bundle from Installed, and import one back — duplicate mods are recognised, files
   already in the game folder are adopted in place, and nothing of the source bundle is touched.
@@ -39,8 +85,8 @@ gigabytes of RAM. Shiv does the essentials and nothing else.
   renumbers around it.
 - **Profiles.** Keep separate sets of mods (a "sweaty" setup, a "just for fun" one) and switch
   between them from the sidebar. Each profile has its own addons folder, so nothing leaks between them.
-- **Launch** the game through Steam, or **Launch without mods** for a clean session; your mods
-  come back when the game closes.
+- **Launch** the game through Steam, or **Launch without mods**; your mods come back when the
+  game closes.
 - **Fix broken mods.** A health check finds truncated, partial or duplicate VPKs, and a
   repair step fixes mods broken by game updates, with a preview before anything changes.
 - **Crosshairs** with a live preview, applied as `citadel_crosshair_*` values.
@@ -48,9 +94,36 @@ gigabytes of RAM. Shiv does the essentials and nothing else.
   written to the game's `GameInfo` file.
 - NSFW mods are blurred until you turn them on, and that setting resets every session.
 
-Notes on the toolkit choice, the repair port and the coding rules this
-repository enforces (no panics in the libraries, invariants over examples)
-are in [`docs/`](docs/).
+## Quality
+
+The rules are enforced by the build, not by review:
+
+- **No panics in the libraries or on the event loop.** `shiv-core`, `shiv-api`
+  and `shiv-ui` deny `clippy::unwrap_used` and `clippy::expect_used` at the
+  crate root; the few `expect`s that cannot fail carry a scoped `#[allow]`
+  naming the reason.
+- **Nothing blocks the event loop; no worker polls.**
+  [`crates/shiv-ui/tests/guards.rs`](crates/shiv-ui/tests/guards.rs) reads the
+  controller sources and fails the suite on file, network, dialog or sleep
+  calls outside `spawn_worker`, and on a queue re-checked on a sleep timer
+  instead of parking on its condvar.
+- **Tests assert invariants, not hand-computed examples.** The `set_pak`
+  property test generates 120 random configurations and asserts uniqueness,
+  preserved order, sidecar integrity and byte-identical refusals
+  ([`crates/shiv-core/tests/sidecar.rs`](crates/shiv-core/tests/sidecar.rs));
+  the install test counts bytes written and fails on a double write.
+- **Every push to main and every pull request runs the gates.**
+  `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo test --workspace` on Ubuntu
+  ([ci.yml](.github/workflows/ci.yml)). `nix flake check` builds the package
+  and runs the workspace tests that need no windowing environment beside it.
+
+Every rule traces to the bug that created it —
+[docs/code-quality.md](docs/code-quality.md). The measurement law (a decision
+without a measurement is an opinion) is
+[docs/proof-plan.md](docs/proof-plan.md). The toolkit notes and the repair
+port story are in [docs/](docs/).
 
 ## Install
 
@@ -120,10 +193,12 @@ environment.systemPackages = [ inputs.shiv.packages.${system}.default ];
 home.packages = [ inputs.shiv.packages.${system}.default ];
 ```
 
-The package builds with the toolchain pinned in `rust-toolchain.toml`,
-links the system `zstd`, and runs the workspace tests inside the build —
-so an installed Shiv is a tested Shiv, and `nix flake check` builds exactly
-what CI builds.
+The package builds with the toolchain pinned in `rust-toolchain.toml` and
+links the system `zstd`. Tests do not run inside the build — the Nix sandbox
+has no `$HOME` or runtime directory for the one integration test that starts
+the Slint platform — so `nix flake check` runs them beside the package
+instead: every workspace test that needs no windowing environment. The
+GitHub CI runs the full suite, that test included.
 
 **Developers:** `nix develop` gives you the pinned toolchain, the Wayland
 and fontconfig libraries Slint renders with, and a `pkg-config` that finds
