@@ -2695,7 +2695,7 @@ mod tests {
         let m = ModDto {
             images: vec![
                 gb.into(),
-                "".into(),
+                String::new(),
                 "file:///etc/passwd".into(),
                 gb.into(),
                 "http://x.test/b.png".into(),
@@ -2722,7 +2722,7 @@ mod tests {
             ..ModDto::default()
         };
         assert_eq!(gallery_images(&only_thumb).len(), 1);
-        assert!(gallery_images(&ModDto::default()).is_empty());
+        assert_eq!(gallery_images(&ModDto::default()), [] as [GalleryImage; 0]);
         let many = ModDto {
             images: (0..100)
                 .map(|i| format!("https://x.test/{i}.png"))
@@ -2740,7 +2740,7 @@ mod tests {
             author: Some(" ".into()),
             category: Some("Skins".into()),
             hero: Some("Haze".into()),
-            tags: vec!["a".into(), "".into(), "b".into()],
+            tags: vec!["a".into(), String::new(), "b".into()],
             likes: 1500,
             remote_added_at: Some("2026-01-02T00:00:00Z".into()),
             files_updated_at: Some("2026-03-04T00:00:00Z".into()),

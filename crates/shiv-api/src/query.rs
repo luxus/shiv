@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(names(&[]), ["a", "b", "c", "d"]);
         assert_eq!(names(&["haze"]), ["a"]);
         assert_eq!(names(&["HAZE", "seven"]), ["a", "d"]);
-        assert!(names(&["Nobody"]).is_empty());
+        assert_eq!(names(&["Nobody"]), [] as [String; 0]);
     }
 
     fn m(name: &str, author: &str, cat: &str, dl: u64, likes: u64, added: &str) -> ModDto {
@@ -298,10 +298,10 @@ mod tests {
         let p1 = apply_query(&sample(), &q(1));
         assert_eq!(names(&p1), ["Charlie Sound"]);
         let p9 = apply_query(&sample(), &q(9));
-        assert!(p9.items.is_empty());
+        assert_eq!(p9.items, [] as [ModDto; 0]);
         assert_eq!((p9.total, p9.page, p9.page_count), (3, 9, 2));
         let huge = apply_query(&sample(), &q(usize::MAX));
-        assert!(huge.items.is_empty());
+        assert_eq!(huge.items, [] as [ModDto; 0]);
     }
 
     #[test]
