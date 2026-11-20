@@ -43,3 +43,8 @@ sevenz-rust2 = { version = "0.21.4", default-features = false, features = [
 vpkmanager = { path = "../vpkmanager" }
 tempfile = "3"
 crc32fast = "1"
+# Builds the 7z fixtures the install tests read back; resolver 3 keeps the
+# encoder out of the shipped binary, which only reads archives.
+sevenz-rust2 = { version = "0.21.4", default-features = false, features = [
+    "compress",
+] }
