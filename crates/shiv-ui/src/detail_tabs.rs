@@ -44,14 +44,28 @@ enum Fetched {
 struct Tabs {
     weak: Weak<App>,
     client: Arc<GameBananaClient>,
-    /// The open mod: GameBanana id and whether it is a sound.
-    target: RefCell<Option<(String, bool)>>,
+    /// The open mod: its GameBanana page, or the release history its
+    /// registry publishes.
+    target: RefCell<Option<Target>>,
     generation: Cell<u64>,
     files: Rc<VecModel<TextRow>>,
     changes: Rc<VecModel<TextRow>>,
     comments: Rc<VecModel<TextRow>>,
     changes_page: Cell<u32>,
     comments_page: Cell<u32>,
+}
+
+/// What the open detail page reads its tabs from.
+#[derive(Clone)]
+enum Target {
+    GameBanana {
+        remote_id: String,
+        audio: bool,
+    },
+    Registry {
+        source: Box<shiv_core::registry::AddedSource>,
+        listing: Box<shiv_api::NativeListing>,
+    },
 }
 
 thread_local! {
@@ -93,7 +107,26 @@ pub(crate) fn attach_with(app: &App, client: GameBananaClient) {
 
 /// A mod's page opened: start from the Description tab with nothing loaded.
 pub(crate) fn open(remote_id: &str, audio: bool) {
-    with_tabs(|t| t.reset(Some((remote_id.to_owned(), audio))));
+    with_tabs(|t| {
+        t.reset(Some(Target::GameBanana {
+            remote_id: remote_id.to_owned(),
+            audio,
+        }))
+    });
+}
+
+/// A registry mod's page opened: its Changelog tab reads the release
+/// history its registry publishes.
+pub(crate) fn open_registry(
+    source: shiv_core::registry::AddedSource,
+    listing: shiv_api::NativeListing,
+) {
+    with_tabs(|t| {
+        t.reset(Some(Target::Registry {
+            source: Box::new(source),
+            listing: Box::new(listing),
+        }))
+    });
 }
 
 /// Developer probe: switch the open page to a tab.
@@ -114,7 +147,7 @@ impl Tabs {
         }
     }
 
-    fn reset(&self, target: Option<(String, bool)>) {
+    fn reset(&self, target: Option<Target>) {
         self.generation.set(self.generation.get() + 1);
         *self.target.borrow_mut() = target;
         self.files.set_vec(Vec::new());
@@ -130,6 +163,90 @@ impl Tabs {
             s.set_changes_more(false);
             s.set_comments_more(false);
         });
+    }
+
+    /// A registry mod's Changelog tab: the release history its registry
+    /// publishes, newest first, with no pages to load beyond it. The Files
+    /// and Comments tabs stay empty — a registry offers no such extras.
+    fn fetch_registry_changelog(&self, target: &Target) {
+        let Target::Registry { source, listing } = target else {
+            return;
+        };
+        let (source, listing) = ((**source).clone(), (**listing).clone());
+        self.set_load(Tab::Changelog, TabLoad::Loading);
+        let generation = self.generation.get();
+        let weak = self.weak.clone();
+        let source = source.clone();
+        let listing = listing.clone();
+        let started = crate::spawn_worker(
+            "shiv-registry-history",
+            move || -> Result<Vec<TextRow>, String> {
+                let client = shiv_api::NativeSourceClient::new();
+                let descriptor = client
+                    .fetch_descriptor(&source.descriptor_url)
+                    .map_err(|e| e.to_string())?;
+                let releases = client
+                    .fetch_release_history(&descriptor, &listing)
+                    .map_err(|e| e.to_string())?;
+                Ok(releases
+                    .into_iter()
+                    .map(|release| {
+                        let heading = match &release.version {
+                            Some(version) if !version.trim().is_empty() => {
+                                format!("Version {version}")
+                            }
+                            _ => format!("Release {}", release.id),
+                        };
+                        let mut body = release.changelog.clone().unwrap_or_default();
+                        let published = release
+                            .published_at
+                            .as_deref()
+                            .and_then(|at| crate::browse::short_date(at))
+                            .map(|date| format!(" {date}"))
+                            .unwrap_or_default();
+                        if body.len() > MAX_BODY {
+                            body.truncate(MAX_BODY);
+                        }
+                        TextRow {
+                            title: format!("{heading}{published}").into(),
+                            body: body.into(),
+                            ..TextRow::default()
+                        }
+                    })
+                    .collect())
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_tabs(|t| t.registry_history_loaded(generation, result));
+                });
+            },
+        );
+        if !started {
+            self.registry_history_loaded(
+                generation,
+                Err("Could not start a background thread.".into()),
+            );
+        }
+    }
+
+    fn registry_history_loaded(&self, generation: u64, result: Result<Vec<TextRow>, String>) {
+        if generation != self.generation.get() {
+            return;
+        }
+        match result {
+            Ok(rows) => {
+                self.changes.set_vec(rows);
+                self.changes_page.set(u32::MAX);
+                self.with_state(|s| {
+                    s.set_changes_load(TabLoad::Ready);
+                    s.set_changes_more(false);
+                });
+            }
+            Err(_) => {
+                self.with_state(|s| s.set_changes_load(TabLoad::Failed));
+            }
+        }
     }
 
     fn load_state(&self, tab: Tab) -> TabLoad {
@@ -188,7 +305,14 @@ impl Tabs {
     }
 
     fn fetch(&self, tab: Tab, page: u32) {
-        let Some((remote_id, audio)) = self.target.borrow().clone() else {
+        let Some(target) = self.target.borrow().clone() else {
+            return;
+        };
+        if matches!(target, Target::Registry { .. }) {
+            self.fetch_registry_changelog(&target);
+            return;
+        }
+        let Target::GameBanana { remote_id, audio } = target else {
             return;
         };
         self.set_load(tab, TabLoad::Loading);

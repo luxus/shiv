@@ -296,3 +296,108 @@ fn stub_origin_of(req: &tiny_http::Request) -> String {
         .unwrap_or_default();
     format!("http://{host}")
 }
+
+/// A resolver is pinned to the API origins and its answer to the download
+/// origins: neither may send Shiv anywhere else.
+#[test]
+fn a_resolver_cannot_send_the_download_elsewhere() {
+    let origin = origin_stub(move |origin, req| match req.url() {
+        url if url.ends_with("/d.json") => json(descriptor(origin, "static", "indexUrl")),
+        url if url.ends_with("/catalog.json") => json(
+            r#"{"snapshotId":"s1","items":[{"id":"x","availability":"available",
+            "detailUrl":"./x.json"}]}"#,
+        ),
+        url if url.ends_with("/x.json") => json(
+            r#"{"id":"x","title":"Resolved","availability":"available",
+            "release":{"id":"r1","contentRevision":"rev-1",
+            "artifacts":[{"id":"a1","filename":"x.vpk","format":"vpk",
+            "download":{"resolverUrl":"./resolve"}}]}}"#,
+        ),
+        url if url.ends_with("/resolve") => json(r#"{"url":"https://evil.test/x.vpk"}"#),
+        other => panic!("unexpected {other}"),
+    });
+    let client = NativeSourceClient::new();
+    let source = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let listings = client.fetch_catalog(&source).unwrap();
+    let artifact = listings[0].release.as_ref().unwrap().artifacts[0].clone();
+    let refused = client
+        .resolve_artifact_url(&source, &artifact)
+        .map_err(|e| e.to_string())
+        .expect_err("a resolver outside the download origins");
+    assert!(refused.contains("download origins"), "{refused}");
+}
+
+/// The resolver's fresh URL lands on a declared origin and the artifact
+/// keeps the direct one out of the way.
+#[test]
+fn a_resolver_serves_a_fresh_url_on_a_declared_origin() {
+    let origin = origin_stub(move |origin, req| match req.url() {
+        url if url.ends_with("/d.json") => json(descriptor(origin, "static", "indexUrl")),
+        url if url.ends_with("/catalog.json") => json(
+            r#"{"snapshotId":"s1","items":[{"id":"x","availability":"available",
+            "detailUrl":"./x.json"}]}"#,
+        ),
+        url if url.ends_with("/x.json") => json(
+            r#"{"id":"x","title":"Resolved","availability":"available",
+            "release":{"id":"r1","contentRevision":"rev-1",
+            "artifacts":[{"id":"a1","filename":"x.vpk","format":"vpk",
+            "download":{"resolverUrl":"../files/resolve"}}]}}"#,
+        ),
+        url if url.ends_with("/files/resolve") => {
+            json(format!(r#"{{"url":"{origin}/files/x.vpk"}}"#))
+        }
+        other => panic!("unexpected {other}"),
+    });
+    let client = NativeSourceClient::new();
+    let source = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let listings = client.fetch_catalog(&source).unwrap();
+    let artifact = listings[0].release.as_ref().unwrap().artifacts[0].clone();
+    assert_eq!(artifact.url, "", "a resolver artifact has no direct URL");
+    let resolved = client
+        .resolve_artifact_url(&source, &artifact)
+        .expect("a fresh URL on the download origin");
+    assert!(resolved.ends_with("/files/x.vpk"), "{resolved}");
+}
+
+#[test]
+fn a_release_history_page_parses_into_rows() {
+    let origin = origin_stub(move |origin, req| match req.url() {
+        url if url.ends_with("/d.json") => json(descriptor(origin, "static", "indexUrl")),
+        url if url.ends_with("/catalog.json") => json(
+            r#"{"snapshotId":"s1","items":[{"id":"x","availability":"available",
+            "detailUrl":"./x.json"}]}"#,
+        ),
+        url if url.ends_with("/x.json") => json(
+            r#"{"id":"x","title":"Hist","availability":"available",
+            "releaseHistoryUrl":"./history.json",
+            "release":{"id":"r1","contentRevision":"rev-1",
+            "artifacts":[{"id":"a1","filename":"x.vpk","format":"vpk",
+            "download":{"url":"../files/x.vpk"}}]}}"#,
+        ),
+        url if url.ends_with("/history.json") => json(
+            r#"{"items":[{"id":"release-1","contentRevision":"revision-1",
+            "version":"1.0.0","publishedAt":"2026-11-01T12:00:00Z",
+            "changelog":"First release.",
+            "artifacts":[{"id":"a1","filename":"x.vpk","format":"vpk",
+            "download":{"url":"../files/x.vpk"}}],
+            "installation":{"mode":"manual"}}],
+            "nextCursor":null}"#,
+        ),
+        other => panic!("unexpected {other}"),
+    });
+    let client = NativeSourceClient::new();
+    let source = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let listings = client.fetch_catalog(&source).unwrap();
+    let history = client
+        .fetch_release_history(&source, &listings[0])
+        .expect("the history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].version.as_deref(), Some("1.0.0"));
+    assert_eq!(history[0].changelog.as_deref(), Some("First release."));
+}

@@ -145,6 +145,17 @@ impl Client {
         self.fetch_cancellable(url, dest, &AtomicBool::new(false), progress)
     }
 
+    /// A small JSON GET, bounded like the API calls; a download resolver's
+    /// answer is one URL.
+    pub fn fetch_json_bytes(&self, url: &str) -> Result<Vec<u8>, ApiError> {
+        let mut resp = self.api.get(url).call().map_err(|e| map_err(e, url))?;
+        resp.body_mut()
+            .with_config()
+            .limit(JSON_LIMIT)
+            .read_to_vec()
+            .map_err(|e| ApiError::Network(e.to_string()))
+    }
+
     /// [`Client::fetch`] that stops with [`ApiError::Cancelled`] once `cancel`
     /// is set. The flag is checked between chunks, so a stalled read returns
     /// only when its next chunk arrives or the body timeout fires; callers

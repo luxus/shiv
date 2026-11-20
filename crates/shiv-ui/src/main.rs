@@ -1412,11 +1412,13 @@ mod tests {
             r#"{"format":"dmm-source","protocolVersion":"1.0",
                "sourceId":"my-community","name":"Example Community","gameId":"deadlock",
                "catalog":{"kind":"static","indexUrl":"./catalog.json"},
-               "networkOrigins":{"api":["ORIGIN"],"downloads":["ORIGIN"],"media":[]}}"#,
+               "networkOrigins":{"api":["ORIGIN"],"downloads":["ORIGIN"],"media":["ORIGIN"]}}"#,
             r#"{"snapshotId":"s1","items":[{"id":"example","availability":"available",
                "detailUrl":"./mods/example.json"}]}"#,
             r#"{"id":"example","title":"Harmless Example","availability":"available",
                "isNsfw":false,"author":"Example Community","description":"One VPK.",
+               "images":["../files/shot.png"],
+               "releaseHistoryUrl":"../history.json",
                "release":{"id":"release-1","contentRevision":"revision-1","version":"1.0.0",
                "artifacts":[{"id":"example-vpk","filename":"example.vpk","format":"vpk",
                "download":{"url":"../files/example.vpk"},"size":141}],
@@ -1425,6 +1427,7 @@ mod tests {
         );
         let api_catalog = r#"[{"id":"catalog","remoteId":"1","name":"Catalog Mod"}]"#;
         let (d, c, i) = (descriptor.to_owned(), catalog.to_owned(), detail.to_owned());
+        let shot = stub_png();
         let server = tiny_http::Server::http("127.0.0.1:0").expect("stub server");
         let url = format!("http://{}", server.server_addr().to_ip().expect("ip"));
         let origin = url.clone();
@@ -1432,6 +1435,23 @@ mod tests {
             for req in server.incoming_requests() {
                 if req.url() == "/files/example.vpk" {
                     let _ = req.respond(tiny_http::Response::from_data(artifact.clone()));
+                    continue;
+                }
+                if req.url() == "/files/shot.png" {
+                    let _ = req.respond(tiny_http::Response::from_data(shot.clone()));
+                    continue;
+                }
+                if req.url() == "/history.json" {
+                    let _ = req.respond(tiny_http::Response::from_string(
+                        r#"{"items":[{"id":"release-1","contentRevision":"revision-1",
+                        "version":"1.0.0","publishedAt":"2026-11-01T12:00:00Z",
+                        "changelog":"First release.",
+                        "artifacts":[{"id":"example-vpk","filename":"example.vpk",
+                        "format":"vpk","download":{"url":"../files/example.vpk"}}],
+                        "installation":{"mode":"manual"}}],
+                        "nextCursor":null}"#
+                            .to_owned(),
+                    ));
                     continue;
                 }
                 let (body, status) = match req.url() {
@@ -1479,7 +1499,8 @@ mod tests {
             a.global::<crate::SourcesState>().get_rows().row_count() == 1
         }));
 
-        // The catalog loaded and Browse lists the registry's mod beside it.
+        // The catalog loaded and Browse lists the registry's mod beside it,
+        // with the screenshot its registry published as the thumbnail.
         assert!(run_until(&app, Duration::from_secs(10), |a| {
             a.global::<BrowseState>().get_mods().row_count() == 2
         }));
@@ -1490,6 +1511,15 @@ mod tests {
             .expect("the registry row");
         assert_eq!(registry_row.name.as_str(), "Harmless Example");
         assert_eq!(registry_row.state, InstallState::Idle);
+        assert!(
+            run_until(&app, Duration::from_secs(10), |a| {
+                let mods = a.global::<BrowseState>().get_mods();
+                (0..mods.row_count())
+                    .filter_map(|i| mods.row_data(i))
+                    .any(|r| r.id.as_str() == "src-my_2dcommunity-example" && r.has_thumb)
+            }),
+            "the registry's screenshot becomes the row's thumbnail"
+        );
 
         // Installing downloads the artifact, verifies it and records the
         // content revision as the mod's version.
@@ -1504,6 +1534,24 @@ mod tests {
         assert!(row.managed);
         assert_eq!(row.id.as_str(), "src-my_2dcommunity-example");
         assert!(row.detail.contains("revision-1"), "{}", row.detail);
+
+        // The registry mod's page opens too, and its Changelog tab reads
+        // the release history its registry publishes.
+        app.global::<BrowseState>()
+            .invoke_open_detail("src-my_2dcommunity-example".into());
+        let detail = app.global::<BrowseState>();
+        assert!(run_until(&app, Duration::from_secs(10), |a| a
+            .global::<BrowseState>()
+            .get_detail_open()));
+        detail.invoke_detail_tab_selected(2);
+        assert!(run_until(&app, Duration::from_secs(10), |a| {
+            let s = a.global::<BrowseState>();
+            s.get_changes_load() == TabLoad::Ready && s.get_changes().row_count() == 1
+        }));
+        let change = detail.get_changes().row_data(0).expect("the release");
+        assert_eq!(change.title.as_str(), "Version 1.0.0 2026-11-01");
+        assert_eq!(change.body.as_str(), "First release.");
+        detail.invoke_close_detail();
 
         // The store remembers the source; re-loading it finds the same one.
         let reloaded = Registry::load(&GamePaths::from_root(game_root)).expect("registry");

@@ -239,6 +239,8 @@ impl Sources {
             origin,
             source_id: descriptor.source_id,
             name: descriptor.name,
+            api_origins: descriptor.api_origins,
+            download_origins: descriptor.download_origins,
         };
         let outcome = self.registry().and_then(|mut r| r.add(source));
         match outcome {

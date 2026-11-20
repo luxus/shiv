@@ -20,6 +20,8 @@ fn source(origin: &str, id: &str) -> AddedSource {
         origin: origin.into(),
         source_id: id.into(),
         name: format!("Source {id}"),
+        api_origins: vec![format!("https://{origin}")],
+        download_origins: vec![format!("https://{origin}")],
     }
 }
 

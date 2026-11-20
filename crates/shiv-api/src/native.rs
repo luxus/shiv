@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use ureq::Agent;
 
 use crate::error::ApiError;
@@ -55,6 +55,38 @@ impl NativeSourceClient {
             CatalogConfig::Static { index_url } => self.fetch_static_catalog(source, index_url),
             CatalogConfig::Api { list_url } => self.fetch_api_catalog(source, list_url),
         }
+    }
+
+    /// Where the artifact downloads from: its direct URL, or the fresh one
+    /// its resolver serves — which must still be on a declared download
+    /// origin, or the registry is trying to send Shiv elsewhere.
+    pub fn resolve_artifact_url(
+        &self,
+        source: &SourceDescriptor,
+        artifact: &NativeArtifact,
+    ) -> Result<String, ApiError> {
+        let Some(resolver) = &artifact.resolver_url else {
+            return Ok(artifact.url.clone());
+        };
+        let resolver_url = resolve_url(&source.descriptor_url, resolver);
+        if !origin_allowed(&resolver_url, &source.api_origins) {
+            return Err(ApiError::Parse(format!(
+                "the download resolver is outside the source's API origins: {resolver_url}"
+            )));
+        }
+        let served: ResolvedUrl = self.get_json(&resolver_url)?;
+        let Some(fresh) = served.url.filter(|u| !u.trim().is_empty()) else {
+            return Err(ApiError::Parse(
+                "the download resolver served no URL".into(),
+            ));
+        };
+        let resolved = resolve_url(&resolver_url, &fresh);
+        if !origin_allowed(&resolved, &source.download_origins) {
+            return Err(ApiError::Parse(format!(
+                "the resolved download is outside the source's download origins: {resolved}"
+            )));
+        }
+        Ok(resolved)
     }
 
     pub fn fetch_release_history(
@@ -416,6 +448,21 @@ pub struct NativeArtifact {
     pub url: String,
     pub size: Option<u64>,
     pub sha256: Option<String>,
+    /// A registry that rotates its download URLs serves a fresh one from
+    /// here (a JSON `{"url": ...}` document on an API origin).
+    pub resolver_url: Option<String>,
+}
+
+impl NativeArtifact {
+    /// The URL to try first: the direct download when there is one, else
+    /// the resolver's.
+    pub fn download_url(&self) -> String {
+        if self.url.is_empty() {
+            self.resolver_url.clone().unwrap_or_default()
+        } else {
+            self.url.clone()
+        }
+    }
 }
 
 impl NativeListing {
@@ -661,6 +708,8 @@ struct ArtifactWire {
 struct DownloadWire {
     #[serde(default)]
     url: Option<String>,
+    #[serde(default, rename = "resolverUrl")]
+    resolver_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -675,6 +724,24 @@ struct HistoryPage {
     items: Vec<ReleaseWire>,
     #[serde(default, rename = "nextCursor")]
     next_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResolvedUrl {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// A download resolver's answer: `{"url": "..."}`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResolvedDownload {
+    pub url: Option<String>,
+}
+
+/// Parse a resolver answer from its bytes.
+pub fn from_json_bytes(bytes: &[u8]) -> Result<ResolvedDownload, String> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| format!("the resolver response could not be read: {e}"))
 }
 
 impl ReleaseWire {
@@ -736,17 +803,31 @@ impl ArtifactWire {
                 self.format
             )));
         }
-        let Some(download) = self.download.and_then(|d| d.url) else {
+        let Some(download) = self.download else {
             return Err(ApiError::Parse(format!(
-                "the artifact {id} of release {release_id} has no direct download URL"
+                "the artifact {id} of release {release_id} has no download"
             )));
         };
-        let url = resolve_url(document_url, &download);
-        if !origin_allowed(&url, &source.download_origins) {
-            return Err(ApiError::Parse(format!(
-                "the download of artifact {id} is outside the source's download origins: {url}"
-            )));
-        }
+        let (url, resolver_url) = match (download.url, download.resolver_url) {
+            (Some(direct), None) => (direct, None),
+            (None, Some(resolver)) => (String::new(), Some(resolver)),
+            _ => {
+                return Err(ApiError::Parse(format!(
+                    "the artifact {id} of release {release_id} must have exactly one of a direct download URL or a resolver URL"
+                )));
+            }
+        };
+        let url = if url.is_empty() {
+            String::new()
+        } else {
+            let resolved = resolve_url(document_url, &url);
+            if !origin_allowed(&resolved, &source.download_origins) {
+                return Err(ApiError::Parse(format!(
+                    "the download of artifact {id} is outside the source's download origins: {resolved}"
+                )));
+            }
+            resolved
+        };
         Ok(NativeArtifact {
             id,
             filename,
@@ -756,6 +837,7 @@ impl ArtifactWire {
                 .hashes
                 .and_then(|h| h.sha256)
                 .and_then(valid_sha256_hex),
+            resolver_url,
         })
     }
 }

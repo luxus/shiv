@@ -91,9 +91,22 @@ pub struct AddedSource {
     pub origin: String,
     pub source_id: String,
     pub name: String,
+    /// The origins the reviewed descriptor declared, kept with the saved
+    /// source so an install can check a resolver's answer against exactly
+    /// what the user reviewed.
+    pub api_origins: Vec<String>,
+    pub download_origins: Vec<String>,
 }
 
 impl AddedSource {
+    pub fn api_origins(&self) -> Vec<String> {
+        self.api_origins.clone()
+    }
+
+    pub fn download_origins(&self) -> Vec<String> {
+        self.download_origins.clone()
+    }
+
     pub fn mod_id_of(&self, listing_id: &str) -> String {
         format!(
             "{ID_PREFIX}{}-{}",

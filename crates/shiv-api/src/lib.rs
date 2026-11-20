@@ -19,7 +19,7 @@ pub use error::ApiError;
 pub use gamebanana::{ChangelogEntry, Comment, Comments, GameBananaClient, ModFile, Page};
 pub use native::{
     CatalogConfig, NativeArtifact, NativeListing, NativeRelease, NativeSourceClient,
-    SourceDescriptor, is_https_or_loopback, is_safe_basename, origin_allowed, origin_of,
-    resolve_url,
+    ResolvedDownload, SourceDescriptor, from_json_bytes, is_https_or_loopback, is_safe_basename,
+    origin_allowed, origin_of, resolve_url,
 };
 pub use query::{ModPage, ModQuery, SortKey, apply_query};

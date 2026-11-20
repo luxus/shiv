@@ -817,6 +817,12 @@ struct InstallTask {
     /// A registry install records the artifact's published checksum, which
     /// the download must match before anything reaches the addons folder.
     published_sha256: Option<String>,
+    /// A registry whose artifact URLs expire resolves a fresh one at
+    /// download time from here, on the declared API origin.
+    resolver: Option<String>,
+    /// The registry's declared origins, for the resolver's answer.
+    api_origins: Vec<String>,
+    download_origins: Vec<String>,
 }
 
 impl InstallTask {
@@ -837,6 +843,9 @@ impl InstallTask {
             category: entry.category.clone(),
             kinds,
             published_sha256: None,
+            resolver: None,
+            api_origins: Vec::new(),
+            download_origins: Vec::new(),
         }
     }
 
@@ -847,7 +856,7 @@ impl InstallTask {
         artifact: &shiv_api::NativeArtifact,
     ) -> Self {
         let file = DownloadFile {
-            url: artifact.url.clone(),
+            url: artifact.download_url(),
             name: artifact.filename.clone(),
             size: artifact.size,
             md5_checksum: None,
@@ -863,8 +872,46 @@ impl InstallTask {
             category: listing.content_type.clone(),
             kinds: HashMap::new(),
             published_sha256: artifact.sha256.clone(),
+            resolver: artifact.resolver_url.clone(),
+            api_origins: source.api_origins(),
+            download_origins: source.download_origins(),
         }
     }
+}
+
+/// A registry whose artifact URLs expire resolves a fresh one at download
+/// time: the resolver document must be a `{"url": ...}` on an API origin,
+/// and the URL it names must be on a download origin. The artifact's
+/// published checksum still gates the bytes, so a lying resolver cannot
+/// smuggle different content in.
+fn resolve_registry_download(
+    client: &Client,
+    resolver: &str,
+    api_origins: &[String],
+    download_origins: &[String],
+) -> Result<String, String> {
+    let resolver_url = shiv_api::resolve_url(resolver, resolver);
+    if !shiv_api::origin_allowed(&resolver_url, api_origins) {
+        return Err(format!(
+            "the download resolver is outside the source's API origins: {resolver_url}"
+        ));
+    }
+    let served: shiv_api::ResolvedDownload = shiv_api::from_json_bytes(
+        &client
+            .fetch_json_bytes(&resolver_url)
+            .map_err(|e| e.to_string())?,
+    )?;
+    let fresh = served
+        .url
+        .filter(|u| !u.trim().is_empty())
+        .ok_or("the download resolver served no URL")?;
+    let resolved = shiv_api::resolve_url(&resolver_url, &fresh);
+    if !shiv_api::origin_allowed(&resolved, download_origins) {
+        return Err(format!(
+            "the resolved download is outside the source's download origins: {resolved}"
+        ));
+    }
+    Ok(resolved)
 }
 
 enum Update {
@@ -905,7 +952,7 @@ fn run_install(
     if game::is_running() {
         return Err(msg(install_error_text(&InstallError::GameRunning)));
     }
-    let file = task.file;
+    let file = task.file.clone();
     let dir = tempfile::Builder::new()
         .prefix("shiv-download-")
         .tempdir()
@@ -913,7 +960,17 @@ fn run_install(
     let dest = dir.path().join("archive");
     let size_hint = file.size.filter(|s| *s > 0);
     let mut last_step = u64::MAX;
-    let fetched = client.fetch_cancellable(&file.url, &dest, cancel, |done, total| {
+    let mut download_url = file.url.clone();
+    if let Some(resolver) = task.resolver.take() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Failure::Cancelled);
+        }
+        download_url =
+            resolve_registry_download(client, &resolver, &task.api_origins, &task.download_origins)
+                .map_err(msg)?;
+        task.file.url = download_url.clone();
+    }
+    let fetched = client.fetch_cancellable(&download_url, &dest, cancel, |done, total| {
         let total = total.or(size_hint).filter(|t| *t > 0);
         // Percent steps when the size is known, otherwise one per MB.
         let step = match total {
@@ -1947,6 +2004,13 @@ impl Browse {
     /// Open the detail page for `id` (from the loaded catalog; no network
     /// needed for the text). The list stays as it is underneath.
     fn open_detail(&self, id: &str) {
+        // A registry row has a page too: its listing, with the release
+        // history its registry publishes as the Changelog tab.
+        let registry_row = self.list.find(id).and_then(|e| e.registry.clone());
+        if let Some(install) = registry_row {
+            self.open_registry_detail(&install);
+            return;
+        }
         let catalog = self.catalog.borrow().clone();
         let Some(m) = catalog.iter().find(|m| m.id == id) else {
             // A registry row has no catalog page; the Installed screen
@@ -1977,6 +2041,84 @@ impl Browse {
         });
         crate::detail_tabs::open(&m.remote_id, m.is_audio);
         let info = detail_info(m);
+        self.with_state(|s| {
+            s.set_detail(info);
+            s.set_gallery_count(count);
+            s.set_gallery_thumbs(ModelRc::from(thumbs));
+            s.set_detail_open(true);
+        });
+        self.refresh_strip();
+        self.show_image(0);
+    }
+
+    /// A registry mod's page: the listing its registry published, with its
+    /// screenshots as the gallery and the release history as the Changelog
+    /// tab. No GameBanana extras exist for it.
+    fn open_registry_detail(&self, install: &RegistryInstall) {
+        self.drop_gallery();
+        let entry = self
+            .list
+            .find(&install.source.mod_id_of(&install.listing.id))
+            .or_else(|| registry_entry(&install.source, install.listing.clone()));
+        let Some(entry) = entry else {
+            return;
+        };
+        let listing = install.listing.clone();
+        let images: Vec<GalleryImage> = listing
+            .images
+            .iter()
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+            .map(|url| GalleryImage {
+                full: url.clone(),
+                small: url.clone(),
+            })
+            .collect();
+        let thumbs = Rc::new(VecModel::from(vec![GalleryThumb::default(); images.len()]));
+        let count = images.len() as i32;
+        *self.list.detail.borrow_mut() = Some(entry.clone());
+        self.list.detail_notify.reset();
+        *self.detail.borrow_mut() = Some(Detail {
+            nsfw: listing.nsfw.unwrap_or(false),
+            images,
+            index: 0,
+            link: None,
+            donation: None,
+            thumbs: thumbs.clone(),
+            obscured: HashMap::new(),
+        });
+        crate::detail_tabs::open_registry(install.source.clone(), listing.clone());
+        let kind: Vec<&str> = [
+            Some(install.source.name.as_str()),
+            listing
+                .author
+                .as_deref()
+                .map(str::trim)
+                .filter(|a| !a.is_empty()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let info = ModDetail {
+            id: entry.id.as_str().into(),
+            name: entry.name.as_str().into(),
+            author: listing.author.as_deref().unwrap_or_default().into(),
+            kind: kind.join(" \u{b7} ").into(),
+            tags: listing.tags.join(", ").into(),
+            downloads: entry.stats.clone(),
+            likes: SharedString::new(),
+            added: SharedString::new(),
+            updated: entry.updated.clone(),
+            description: listing
+                .description
+                .as_deref()
+                .map(crate::describe::to_plain_text)
+                .unwrap_or_default()
+                .into(),
+            has_link: false,
+            nsfw: listing.nsfw.unwrap_or(false),
+            author_id: SharedString::new(),
+            donation_label: SharedString::new(),
+        };
         self.with_state(|s| {
             s.set_detail(info);
             s.set_gallery_count(count);
