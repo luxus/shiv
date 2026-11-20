@@ -210,3 +210,42 @@ run-to-run spread is loopback scheduling, not parse).
 Not yet built (see issue #4): interchange import peak-RSS probe,
 Downloads model-storm `row_changed` count, and the CI job that gates
 these baselines on every push (`perf.yml`).
+
+## Allocation ceilings — 2026-11-21, the dev workstation (issue #6)
+
+Machine: Apple M1 Pro (arm64, 10 cores), 16 GB RAM, macOS 27.3 — the
+same machine as the criterion baselines above, **not lea**; lea records
+its own when the suite runs there. Profile: debug, the profile
+`cargo test` (and so CI) runs. Harness:
+`shiv_core::alloc_count::CountingAlloc`, declared `#[global_allocator]`
+in `shiv-core/tests/alloc_ceilings.rs`, counts **total bytes handed
+out** (frees are not subtracted: free timing varies between runs,
+totals do not). Each flow runs once unmeasured — a warmup priming lazy
+statics, so the ceiling measures the flow, not first-time setup — then
+three measured runs on fresh fixtures; the worst run is compared.
+Flows and fixtures follow the flow tests (tests/local.rs,
+tests/sidecar.rs, tests/interchange.rs), not synthetic loops. Catalog
+parse stays with the criterion baseline above (issue #4, shiv-api).
+
+Command (the numbers print only on failure; rerun with a lowered const
+to observe):
+
+```sh
+cargo test -p shiv-core --test alloc_ceilings
+```
+
+| Flow | Fixture | Worst of 3 | Ceiling |
+|---|---|---|---|
+| `install_local_with` | one-VPK zip (18-byte VPK) | 70,691 B | 96,000 B |
+| `set_pak` | 25 movable mods, last mod → pak 1 (worst case: every file renames, every sidecar rewrites) | 57,957 B | 80,000 B |
+| `interchange::export` | 3-mod library, one mod disabled | 26,162 B | 36,000 B |
+| `interchange::import` | the exported 3-mod bundle into a fresh library | 53,464 B | 72,000 B |
+
+Run-to-run spread on this machine: ±14 B on the install flow, the other
+three byte-identical across runs. The ~35 % slack covers cross-machine
+fixture variance — temp-path lengths differ (`/tmp` on CI against a
+~50-char macOS `TMPDIR`; every path-derived allocation pays its length)
+— and small toolchain drift. A regression beyond the slack fails
+`cargo test --workspace` in CI with the observed number in the message;
+the author removes the allocation or raises the ceiling with a written
+reason (what the bytes are, why the flow needs them).

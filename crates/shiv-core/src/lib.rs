@@ -9,6 +9,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod addons;
+pub mod alloc_count;
 pub mod crosshair;
 pub mod game;
 pub mod health;
