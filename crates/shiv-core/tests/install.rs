@@ -640,3 +640,67 @@ fn fresh_foreign_staging_is_left_alone() {
     assert!(fresh.exists());
     assert!(own_old.exists());
 }
+
+#[test]
+fn install_writes_each_archive_byte_once() {
+    let e = env();
+    let skin = vec![7u8; 512 * 1024];
+    let chunk = vec![11u8; 128 * 1024];
+    let a = zip_in(
+        &e,
+        &[
+            ("pak07_dir.vpk", &skin),
+            ("pak07_000.vpk", &chunk),
+            ("readme.txt", b"not a vpk, never extracted"),
+        ],
+    );
+    install::reset_disk_bytes_written();
+    let sc = run(&e, &a, "m1").unwrap();
+    assert_eq!(sc.vpks, vec!["pak01_dir.vpk"]);
+    let expected = (skin.len() + chunk.len()) as u64;
+    assert_eq!(install::disk_bytes_written(), expected);
+    let installed: u64 = ["pak01_dir.vpk", "pak01_000.vpk"]
+        .iter()
+        .map(|n| fs::metadata(e.paths.addons.join(n)).unwrap().len())
+        .sum();
+    assert_eq!(installed, expected);
+}
+
+fn install_module_source() -> String {
+    fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/install.rs")).unwrap()
+}
+
+#[test]
+fn install_writes_are_counted_and_placement_renames() {
+    let source = install_module_source();
+    let lines: Vec<&str> = source.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let writes = [
+            "fs::copy(",
+            "io::copy(",
+            "extract_to(",
+            "fs::write(",
+            "write_all(",
+        ];
+        if !writes.into_iter().any(|w| line.contains(w)) {
+            continue;
+        }
+        let following = &lines[i + 1..(i + 13).min(lines.len())];
+        assert!(
+            following.iter().any(|l| l.contains("tally_disk_write")),
+            "src/install.rs:{} writes to disk outside tally_disk_write: {line}",
+            i + 1
+        );
+    }
+    let placement = lines
+        .iter()
+        .position(|l| l.starts_with("fn move_into_place"))
+        .unwrap();
+    let body: String = lines[placement..]
+        .iter()
+        .copied()
+        .take_while(|l| *l != "}")
+        .collect();
+    assert!(body.contains("fs::rename"), "{body}");
+    assert!(!body.contains("fs::copy"), "{body}");
+}

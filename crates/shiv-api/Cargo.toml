@@ -17,3 +17,12 @@ ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 tiny_http = "0.12.0"
+# The catalog bench (docs/perf-results.md, issue #4); plotters/rayon stay
+# out — the console numbers and saved baselines are all the suite needs.
+criterion = { version = "0.8", default-features = false, features = [
+    "cargo_bench_support",
+] }
+
+[[bench]]
+name = "catalog"
+harness = false

@@ -122,3 +122,91 @@ Release switched from `panic = "abort"` to `panic = "unwind"` so worker panics a
 - Scroll feel on both monitors; X11.
 - RSS with a real, full Deadlock install in Repair (the per-check transient grows with the game VPKs and the mods checked; the 79 MB history no longer stays resident).
 - Real downloads/installs during the run (install path not exercised here).
+
+## Bench baselines (criterion) — 2026-11-20, the dev workstation (issue #4)
+
+Machine: Apple M1 Pro (arm64, 10 cores), 16 GB RAM, macOS 27.3, APFS
+system disk. **Not lea** — these numbers hold on this machine only; lea
+records its own when the suites run there. Benches build with the
+workspace `bench` profile (inherits `release`: LTO, codegen-units 1).
+
+Commands (second consecutive run of each; the first run after a build
+measures up to ~1.8× higher on reorder — cold tempdirs — and is not
+representative):
+
+```sh
+cargo bench -p shiv-core --bench reorder -- --warm-up-time 1 --measurement-time 2
+cargo bench -p shiv-api --bench catalog -- --warm-up-time 1 --measurement-time 3
+```
+
+### reorder (`shiv-core/benches/reorder.rs`)
+
+`move_mod` moves the last mod to the top; `set_pak` gives the last mod
+pak 1. Both are the worst case: every VPK file renames and every
+sidecar rewrites. Sizes are **25/50/99 movable mods, not the
+100/500/1000 of the issue**: the engine mounts at most 99 paks per
+search path (`addons::PAK_CAPACITY`) and every movable mod needs its
+own `pakNN_dir.vpk`, so a 100th movable mod cannot exist — install
+#100 is refused with `AddonsFull`. 99 is the full-capacity worst case.
+
+| Bench | 25 | 50 | 99 |
+|---|---|---|---|
+| move_mod (worst case) | 7.34 ms | 14.89 ms | 30.28 ms |
+| move_mod per mod | 294 µs | 298 µs | 306 µs |
+| set_pak (worst case) | 7.42 ms | 14.86 ms | 30.51 ms |
+| set_pak per mod | 297 µs | 297 µs | 308 µs |
+
+Per-mod cost is flat: 4× the mods for +4 % per mod (move_mod), +3 %
+(set_pak). The claim "O(n log n), not O(n²)" holds over the whole
+realizable domain (1..=99); at these sizes the cost is file metadata
+I/O (two rename phases plus sidecar rewrites), and the O(n²) scans
+(`apply_moves`' collision check, `apply_plan`'s name lookup) are noise
+beside it.
+
+`group` (the list build the UI runs before every move) covers the
+issue's larger sizes honestly: the dir holds the 99 movable mods at
+pak capacity plus hand-added VPKs inside managed mods, to `n` list
+rows.
+
+| Bench | 100 | 500 | 1000 |
+|---|---|---|---|
+| group | 1.73 ms | 9.72 ms | 20.93 ms |
+| group per mod | 17.3 µs | 19.4 µs | 20.9 µs |
+
+10× the mods for +21 % per mod: flat within the O(n log n) budget
+(a pure log factor allows +50 % over that range; the sidecar parse
+and `read_dir` dominate).
+
+### catalog (`shiv-api/benches/catalog.rs`)
+
+`list_mods` over a 10,000-row synthetic catalog (deterministic LCG,
+realistic field mix, unknown fields present), 7,798,180 bytes of JSON
+served from a temp file by a loopback `tiny_http` stub — the app's
+real path: HTTP body read plus one-pass serde parse plus the skip-row
+filter. Two consecutive runs:
+
+| Run | Median | Throughput |
+|---|---|---|
+| 1 | 31.0 ms | 239 MiB/s (251 MB/s) |
+| 2 | 35.3 ms | 211 MiB/s (221 MB/s) |
+
+Baseline to hold: **≥ 200 MiB/s** on this machine (the ~12 %
+run-to-run spread is loopback scheduling, not parse).
+
+### Pinned by tests (assertions, not numbers)
+
+- `install_writes_each_archive_byte_once` (shiv-core tests/install.rs):
+  the install path's own `disk_bytes_written` counter equals the
+  archive's VPK content exactly — staging extraction writes each byte
+  once, `move_into_place` renames, a copy+recopy would count double and
+  fail. `install_writes_are_counted_and_placement_renames` scans
+  src/install.rs so a new write site outside `tally_disk_write` or a
+  copy in the placement fails loudly.
+- `a_large_source_lands_in_the_cache_at_display_bytes` (shiv-ui
+  thumbs.rs): a 2000×1500 source decodes to 240×135 (fill) / 720×540
+  (fit) RGBA — `width × height × 4` bytes in the cache, never the
+  12 MB source bitmap.
+
+Not yet built (see issue #4): interchange import peak-RSS probe,
+Downloads model-storm `row_changed` count, and the CI job that gates
+these baselines on every push (`perf.yml`).

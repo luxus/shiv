@@ -6,6 +6,7 @@
 //! staged VPKs are renamed to free `pakNN_dir.vpk` slots, and the sidecar is written
 //! last. Entry-path validation is adapted from the old manager's `archive_extractor.rs`.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -33,6 +34,32 @@ const TMP_DIR: &str = "tmp";
 /// path that renames `pakNN_*` files or allocates numbers must take it
 /// first; `docs/code-quality.md` pins the rule.
 pub static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    static DISK_BYTES_WRITTEN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Bytes the install paths have written to disk on the calling thread
+/// since the last [`reset_disk_bytes_written`]: staged extraction of an
+/// archive and copied source files each add exactly what they wrote.
+/// Files move into place with renames, which write nothing, so an
+/// install that extracts an archive once counts each of its bytes
+/// exactly once. `install_writes_each_archive_byte_once` pins that
+/// number, and `install_writes_are_counted_and_placement_renames`
+/// scans this module's source so a write site outside
+/// `tally_disk_write` cannot appear unnoticed.
+pub fn disk_bytes_written() -> u64 {
+    DISK_BYTES_WRITTEN.with(Cell::get)
+}
+
+/// Zero the calling thread's [`disk_bytes_written`] counter.
+pub fn reset_disk_bytes_written() {
+    DISK_BYTES_WRITTEN.with(|c| c.set(0));
+}
+
+fn tally_disk_write(bytes: u64) {
+    DISK_BYTES_WRITTEN.with(|c| c.set(c.get() + bytes));
+}
 
 /// Default cap on total extracted bytes (decompression-bomb guard).
 pub const MAX_EXTRACTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -184,7 +211,8 @@ pub fn install_files(
         if !is_plain_vpk_name(name) {
             return Err(InstallError::UnsupportedArchive);
         }
-        fs::copy(file, staging.path().join(name)).map_err(io_err(file))?;
+        let copied = fs::copy(file, staging.path().join(name)).map_err(io_err(file))?;
+        tally_disk_write(copied);
     }
     let staged = collect_vpks(staging.path())?;
     place_and_record(addons_dir, staged, meta, old)
@@ -599,7 +627,10 @@ fn write_entry(reader: impl Read, dest: &Path, budget: &mut Budget) -> Result<()
         budget,
     };
     match io::copy(&mut limited, &mut out) {
-        Ok(_) => Ok(()),
+        Ok(written) => {
+            tally_disk_write(written);
+            Ok(())
+        }
         Err(_) if limited.budget.exceeded => Err(InstallError::TooLarge),
         Err(e) => Err(io_err(dest)(e)),
     }
@@ -684,7 +715,8 @@ fn copy_vpk(file: &Path, dest: &Path, budget: &mut Budget) -> Result<(), Install
         let len = fs::metadata(&from).map_err(io_err(&from))?.len();
         budget.charge(len)?;
         let to = dest.join(&n);
-        fs::copy(&from, &to).map_err(io_err(&to))?;
+        let copied = fs::copy(&from, &to).map_err(io_err(&to))?;
+        tally_disk_write(copied);
     }
     Ok(())
 }
@@ -839,6 +871,7 @@ fn extract_rar(
                 )));
             }
             budget.charge(meta.len())?;
+            tally_disk_write(meta.len());
             next
         } else {
             header.skip()?

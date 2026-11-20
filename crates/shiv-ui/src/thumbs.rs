@@ -427,6 +427,23 @@ mod tests {
         assert_eq!(&img.rgba()[..4], &[200, 100, 50, 255]);
     }
 
+    #[test]
+    fn a_large_source_lands_in_the_cache_at_display_bytes() {
+        let cache = Cache::with_fetcher(THUMB_BYTES, |_| Some(png(2000, 1500, [60, 120, 200])));
+        let thumb = cache.get_or_fetch("large").expect("decoded image");
+        assert_eq!((thumb.width(), thumb.height()), (DISPLAY_W, DISPLAY_H));
+        assert_eq!(thumb.rgba().len(), THUMB_BYTES);
+        assert_eq!(cache.usage(), (THUMB_BYTES, 1));
+
+        let fitted_bytes = (720 * 540 * 4) as usize;
+        let gallery = Cache::with_fetcher(fitted_bytes, |_| Some(png(2000, 1500, [60, 120, 200])))
+            .shaped(Shape::Fit(960, 540));
+        let fitted = gallery.get_or_fetch("large").expect("decoded image");
+        assert_eq!((fitted.width(), fitted.height()), (720, 540));
+        assert_eq!(fitted.rgba().len(), fitted_bytes);
+        assert_eq!(gallery.usage(), (fitted_bytes, 1));
+    }
+
     /// Two pictures with the same colours but different fine detail (a
     /// one-pixel checkerboard against its inverse, i.e. "text" vs. its
     /// negative) come out the same: the detail does not survive.
