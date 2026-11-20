@@ -1,5 +1,33 @@
 # Release performance results
 
+## Baselines — lea, 2026-11-20 (Nix package, main @ 81ea837)
+
+Machine: NixOS, Linux 7.3.0-rc6-cachyos, 8 cores, 60 GiB RAM, Wayland.
+Binary: the Nix flake package (`nix run github:luxus/shiv`), 45 MB store
+path including the desktop entry and icon. Gates from
+[the proof plan](proof-plan.md).
+
+| Dimension | Measured | Gate | Holds |
+|---|---|---|---|
+| Idle RSS, catalog loaded (15 s) | 114.5 MB | < 150 MB | yes |
+| Idle RSS after 60 s more | 114.5 MB — no growth | leak gate: ±10 % | yes |
+| Idle CPU over 60 s | 0 ticks (`time 00:00:00`) | 0 ticks | yes |
+| Process start → first activity | ~40 ms (5 runs: 39–43 ms) | < 1.5 s cold | yes |
+| Store path size | 45 MB (binary ~34 MiB) | AppImage < 25 MB | yes (compressed) |
+
+Commands (lea, one run each):
+
+```sh
+nix build github:luxus/shiv --no-link --print-out-paths   # the binary
+# idle RSS + CPU: start, `ps -o rss=,time= -p $PID` at 15 s and 60 s
+# start probe: poll RSS past 50 MB in a 10 ms loop, print elapsed ms
+```
+
+Still to record on lea (issue #1): 60 s scroll peak (VmHWM), keystroke
+latency on the 10k catalog, AppImage size from a release build.
+
+---
+
 Date: 2026-11-10. Machine: Arch/Omarchy, Hyprland (Wayland). Monitors: DP-1 2560x1440 @ 144 Hz, HDMI-A-1 1920x1080 @ 100 Hz. The Shiv window was tiled at 941x1030 on monitor 0 (HDMI-A-1).
 
 ## Binary
