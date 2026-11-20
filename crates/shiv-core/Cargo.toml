@@ -17,9 +17,26 @@ thiserror = "2"
 sha2 = "0.10"
 kv-parser = { path = "../kv-parser" }
 vpk-parser = { path = "../vpk-parser" }
-zip = "6.0.0"
+# Reading mod archives only: no zopfli/lzma encoders, no zip AES (there is
+# no password UI), no zip timestamps, no zstd/xz-in-zip. deflate arrives via
+# flate2/zlib-rs; deflate64, bzip2, lzma and ppmd cover what 7-Zip and
+# WinRAR can put in a zip.
+zip = { version = "6.0.0", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+    "deflate64",
+    "bzip2",
+    "lzma",
+    "ppmd",
+] }
 unrar = "0.5.8"
-sevenz-rust2 = "0.21.4"
+# Reading only: `compress` is the lzma encoder and `util` the
+# extract-to-path helpers; `aes256` cannot help without a password UI
+# (Password::empty()). LZMA/LZMA2 decode is core; bzip2 and ppmd are the
+# methods a 7-Zip writer can pick.
+sevenz-rust2 = { version = "0.21.4", default-features = false, features = [
+    "bzip2",
+    "ppmd",
+] }
 
 [dev-dependencies]
 # Writes real VPKs (with inner paths) for the update-matching tests.

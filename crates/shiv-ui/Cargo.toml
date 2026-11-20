@@ -31,8 +31,13 @@ slint = { version = "1.18.1", default-features = false, features = [
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 tempfile = "3.27.0"
-# System file dialog for installing a mod from a local file (XDG portal on Linux).
-rfd = "0.18"
+# System file dialog for installing a mod from a local file. Pinned to the
+# audited Linux backends (rfd's default): the freedesktop portal plus the
+# native Wayland dialog, no GTK.
+rfd = { version = "0.18", default-features = false, features = [
+    "xdg-portal",
+    "wayland",
+] }
 
 # malloc_trim and mallopt: hand freed memory (Performance, Repair, thumbnails) back to the OS.
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
