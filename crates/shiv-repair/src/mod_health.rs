@@ -6,8 +6,8 @@ use crate::localization_overlay::asset_compatibility::{
 use crate::localization_overlay::vdata_compatibility::{
     RepairKind as DataRepairKind, WarningKind as DataWarningKind,
 };
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use shiv_core::timestamp::rfc3339_utc_now;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -332,7 +332,7 @@ impl ModFindings {
         mod_id: &str,
         choice: CompatibilityChoice,
         game_build: Option<u32>,
-        checked_at: DateTime<Utc>,
+        checked_at: &str,
         source: ModHealthSource,
     ) -> ModHealth {
         ModHealth {
@@ -348,7 +348,7 @@ impl ModFindings {
             repairs: self.repairs,
             warnings: self.warnings,
             game_build,
-            checked_at: checked_at.to_rfc3339(),
+            checked_at: checked_at.to_owned(),
             source,
         }
     }
@@ -419,7 +419,7 @@ impl HealthKey {
 pub struct CachedModHealth {
     key: HealthKey,
     findings: ModFindings,
-    checked_at: DateTime<Utc>,
+    checked_at: String,
     source: ModHealthSource,
 }
 
@@ -428,7 +428,7 @@ impl CachedModHealth {
         Self {
             key,
             findings,
-            checked_at: Utc::now(),
+            checked_at: rfc3339_utc_now(),
             source,
         }
     }
@@ -476,7 +476,7 @@ impl ProfileHealth {
                     mod_id,
                     choice,
                     entry.key.game_build,
-                    entry.checked_at,
+                    &entry.checked_at,
                     entry.source,
                 ))
             })

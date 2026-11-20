@@ -6,6 +6,7 @@
 
 use crate::error::RepairError as Error;
 use serde::{Deserialize, Serialize};
+use shiv_core::timestamp::compact_utc_now;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -93,10 +94,7 @@ fn write_backup(
     new_dirs: &[&Path],
 ) -> Result<PathBuf, Error> {
     fs::create_dir_all(directory)?;
-    let name = format!(
-        "{REPAIR_BACKUP_PREFIX}{}",
-        chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ")
-    );
+    let name = format!("{REPAIR_BACKUP_PREFIX}{}", compact_utc_now());
     let staging = tempfile::Builder::new()
         .prefix(".repair-")
         .tempdir_in(directory)?;

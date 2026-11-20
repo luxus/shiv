@@ -45,6 +45,7 @@ use sha2::{Digest, Sha256};
 use shiv_core::addons::{self, InstalledVpk};
 use shiv_core::game::{self, GamePaths};
 use shiv_core::sidecar;
+use shiv_core::timestamp::rfc3339_utc_now;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -649,7 +650,7 @@ pub fn analyze(paths: &GamePaths, build_id: u64) -> Vec<ModHealth> {
     // Decoded once for all mods here and freed when the check returns.
     let _embedded = VdataHistoryIndex::embedded();
     let mut recorded = BTreeSet::new();
-    let checked_at = chrono::Utc::now();
+    let checked_at = rfc3339_utc_now();
     let mut out = Vec::with_capacity(installed.len());
     for m in &installed {
         match check_mod(&game, m, &mut observed, version, &mut recorded) {
@@ -663,7 +664,7 @@ pub fn analyze(paths: &GamePaths, build_id: u64) -> Vec<ModHealth> {
                     &m.id,
                     choice,
                     version,
-                    checked_at,
+                    &checked_at,
                     ModHealthSource::Standalone,
                 );
                 out.push(describe(m, detail, changes));

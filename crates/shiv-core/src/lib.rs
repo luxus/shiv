@@ -22,4 +22,5 @@ mod platform;
 pub mod profiles;
 pub mod registry;
 pub mod sidecar;
+pub mod timestamp;
 pub mod vanilla;
