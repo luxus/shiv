@@ -2,7 +2,7 @@
 //! `gameinfo.gi`. Nothing here writes, renames or deletes; repair is separate.
 //!
 //! Search-path detection follows the old manager's `gameinfo_search_paths.rs`
-//! (KeyValues sites under `GameInfo/FileSystem/SearchPaths`, conditions resolved
+//! (`KeyValues` sites under `GameInfo/FileSystem/SearchPaths`, conditions resolved
 //! for the Windows game client) without its editing logic.
 
 use std::collections::BTreeMap;

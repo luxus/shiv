@@ -1,5 +1,5 @@
 //! Performance screen controller: loads the perf catalog (API, with the last
-//! good copy cached on disk by ETag), lists every setting with its value in
+//! good copy cached on disk by `ETag`), lists every setting with its value in
 //! `gameinfo.gi`, stages presets and single edits as pending changes, and
 //! writes them with `shiv_core::perf::apply`.
 //!
@@ -228,7 +228,7 @@ enum Origin {
 }
 
 type CatalogLoad = Result<(Arc<Catalog>, Origin), String>;
-/// The file's ConVars (`lowercase name -> (name, value)`), or why it could
+/// The file's `ConVars` (`lowercase name -> (name, value)`), or why it could
 /// not be read, and whether the game runs.
 type FileLoad = (Result<HashMap<String, (String, String)>, String>, bool);
 
@@ -278,7 +278,7 @@ fn load_file(deps: &Deps) -> FileLoad {
 }
 
 /// `Err((text, game_running))`.
-/// What a successful apply returns: the file's ConVars as now written, and
+/// What a successful apply returns: the file's `ConVars` as now written, and
 /// where the copy from before Shiv's first change is kept.
 type Written = (HashMap<String, (String, String)>, std::path::PathBuf);
 
@@ -307,7 +307,7 @@ struct Perf {
     deps: Deps,
     catalog: RefCell<Option<Arc<Catalog>>>,
     origin: RefCell<Origin>,
-    /// `lowercase name -> (name, value)` for the file's ConVars.
+    /// `lowercase name -> (name, value)` for the file's `ConVars`.
     current: RefCell<HashMap<String, (String, String)>>,
     file_error: RefCell<Option<String>>,
     items: RefCell<Vec<Item>>,
@@ -436,7 +436,7 @@ impl Perf {
 
     /// The screen was left: drop the catalog and the list (several MB) and
     /// keep only the pending edits, the selection and the query. Showing the
-    /// screen again reloads the catalog through the cache's ETag.
+    /// screen again reloads the catalog through the cache's `ETag`.
     fn hidden(&self) {
         if !self.on_screen.replace(false) {
             return;
@@ -612,7 +612,7 @@ impl Perf {
         self.with_state(|s| s.set_tiers(ModelRc::new(VecModel::from(tiers))));
     }
 
-    /// Every catalog convar the game still has, plus any ConVars key the file
+    /// Every catalog convar the game still has, plus any `ConVars` key the file
     /// sets that the catalog doesn't know.
     fn rebuild_items(&self) {
         let Some(catalog) = self.catalog() else {

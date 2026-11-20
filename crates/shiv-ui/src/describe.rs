@@ -1,8 +1,8 @@
 //! Mod descriptions to readable plain text.
 //!
-//! The catalog's descriptions are GameBanana HTML (`<br>`, lists, links,
+//! The catalog's descriptions are `GameBanana` HTML (`<br>`, lists, links,
 //! spans, headings, embedded videos), a few are plain text with newlines and
-//! a handful carry BBCode. The detail page shows text only: tags are dropped,
+//! a handful carry `BBCode`. The detail page shows text only: tags are dropped,
 //! block elements become line breaks or paragraphs, list items get a bullet,
 //! entities are decoded, and scripts, styles, embeds and images disappear with
 //! their content. Link targets are never shown; the link text stays.
@@ -22,14 +22,14 @@ const LINE_BREAK: [&str; 11] = [
 ];
 /// Elements that stand as their own paragraph.
 const PARAGRAPH: [&str; 9] = ["p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "hr"];
-/// Longest BBCode `=` value looked for (`[url=...]`, `[color=...]`). Values
+/// Longest `BBCode` `=` value looked for (`[url=...]`, `[color=...]`). Values
 /// beyond this (very long URLs) are dropped up to their `]` or first space.
 const BB_VALUE_MAX: usize = 256;
-/// Bytes searched for a BBCode tag's `]`: `[`, `/`, a name, `=`, the value, `]`.
+/// Bytes searched for a `BBCode` tag's `]`: `[`, `/`, a name, `=`, the value, `]`.
 const BB_WINDOW: usize = 1 + 1 + 8 + 1 + BB_VALUE_MAX + 1;
 /// Bytes searched for an entity's `;` (`&thinsp;`, `&#x10FFFF;`).
 const ENTITY_WINDOW: usize = 12;
-/// BBCode tags that are recognised (others, like `[WIP]`, stay as text).
+/// `BBCode` tags that are recognised (others, like `[WIP]`, stay as text).
 const BBCODE: [&str; 17] = [
     "b", "i", "u", "s", "url", "img", "list", "*", "quote", "size", "color", "center", "left",
     "right", "spoiler", "code", "font",
@@ -268,7 +268,7 @@ fn tag_end(tag: &str) -> Option<usize> {
     None
 }
 
-/// Handle a known BBCode tag at `i` (a `[`). `[img]...[/img]` drops its URL.
+/// Handle a known `BBCode` tag at `i` (a `[`). `[img]...[/img]` drops its URL.
 /// Every search is bounded or consumes what it scanned, so the whole
 /// conversion stays linear however many `[` the text has.
 fn bbcode_tag(raw: &str, lower: &str, i: usize, out: &mut Out) -> Option<usize> {

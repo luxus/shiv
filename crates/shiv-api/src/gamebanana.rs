@@ -1,9 +1,9 @@
-//! GameBanana reads the Deadlock Mods API does not offer: a mod's files,
+//! `GameBanana` reads the Deadlock Mods API does not offer: a mod's files,
 //! changelog and comments (`https://gamebanana.com/apiv11`).
 //!
 //! Every field is optional on the wire and parsed leniently, so a change on
-//! GameBanana's side degrades one tab instead of breaking the page. Text
-//! (`text`) is the HTML GameBanana sends; the UI converts it to plain text.
+//! `GameBanana`'s side degrades one tab instead of breaking the page. Text
+//! (`text`) is the HTML `GameBanana` sends; the UI converts it to plain text.
 
 use std::time::Duration;
 
@@ -163,7 +163,7 @@ struct PosterWire {
     name: Option<String>,
 }
 
-/// GameBanana status 0 is a visible post; anything else is trashed or hidden.
+/// `GameBanana` status 0 is a visible post; anything else is trashed or hidden.
 fn visible(status: &Option<serde_json::Value>) -> bool {
     match status {
         None => true,

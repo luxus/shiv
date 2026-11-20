@@ -1,4 +1,4 @@
-//! Open a web page (a mod's GameBanana page) in the user's browser.
+//! Open a web page (a mod's `GameBanana` page) in the user's browser.
 //!
 //! Only `https://` links are opened: the URL comes from the mod catalog, and a
 //! `file:`, `steam:` or custom-scheme link handed to the system opener could

@@ -194,7 +194,7 @@ pub(crate) fn now_epoch() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-/// Thumbnail URL for a mod. GameBanana screenshots are rewritten to their
+/// Thumbnail URL for a mod. `GameBanana` screenshots are rewritten to their
 /// 530 px variant, which is a fraction of the full image's size.
 fn thumb_url(m: &ModDto) -> Option<String> {
     let raw = m
@@ -206,7 +206,7 @@ fn thumb_url(m: &ModDto) -> Option<String> {
     Some(small_variant(raw))
 }
 
-/// The 530 px variant of a GameBanana screenshot; other URLs unchanged.
+/// The 530 px variant of a `GameBanana` screenshot; other URLs unchanged.
 fn small_variant(raw: &str) -> String {
     if let Some(file) = raw.strip_prefix(GAMEBANANA_SS)
         && !file.is_empty()
@@ -228,7 +228,7 @@ struct GalleryImage {
 
 impl GalleryImage {
     /// The strip's source: the small variant, or the full image when the
-    /// small one failed (GameBanana only generates it for some screenshots).
+    /// small one failed (`GameBanana` only generates it for some screenshots).
     fn strip_url(&self, cache: &thumbs::Cache) -> &str {
         if cache.has_failed(&self.small) {
             &self.full
@@ -1157,7 +1157,7 @@ pub(crate) fn catalog_kind(id: &str) -> Option<(Option<String>, Option<String>)>
     out
 }
 
-/// The catalog's GameBanana `(submission id, is a Sound)` of `id`, for the
+/// The catalog's `GameBanana` `(submission id, is a Sound)` of `id`, for the
 /// interchange keys of an export and a duplicate check of an import.
 pub(crate) fn catalog_remote(id: &str) -> Option<(String, bool)> {
     let mut out = None;
@@ -1173,7 +1173,7 @@ pub(crate) fn catalog_remote(id: &str) -> Option<(String, bool)> {
     out
 }
 
-/// The Shiv mod id of the catalog mod whose GameBanana submission is
+/// The Shiv mod id of the catalog mod whose `GameBanana` submission is
 /// `submission`, so an interchange key can be told apart from an installed
 /// mod (the inverse of `catalog_remote`).
 pub(crate) fn catalog_remote_of_submission(submission: &str) -> Option<String> {
@@ -2053,7 +2053,7 @@ impl Browse {
 
     /// A registry mod's page: the listing its registry published, with its
     /// screenshots as the gallery and the release history as the Changelog
-    /// tab. No GameBanana extras exist for it.
+    /// tab. No `GameBanana` extras exist for it.
     fn open_registry_detail(&self, install: &RegistryInstall) {
         self.drop_gallery();
         let entry = self

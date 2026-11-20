@@ -204,7 +204,7 @@ pub struct Preset {
 pub struct DeniedRule {
     #[serde(default)]
     pub path: Option<Vec<String>>,
-    /// Regex matched against a ConVars key.
+    /// Regex matched against a `ConVars` key.
     #[serde(default)]
     pub pattern: Option<String>,
     pub reason: String,
@@ -363,9 +363,9 @@ impl Catalog {
         )
     }
 
-    /// The entries Shiv writes for `tier`'s preset: its ConVars edits, minus
-    /// what the catalog rules deny and convars the game blocks. Edits in engine sections (SceneSystem,
-    /// RenderSystem, ...) are left out, as the old app leaves them out by
+    /// The entries Shiv writes for `tier`'s preset: its `ConVars` edits, minus
+    /// what the catalog rules deny and convars the game blocks. Edits in engine sections (`SceneSystem`,
+    /// `RenderSystem`, ...) are left out, as the old app leaves them out by
     /// default: those are the sections Valve's matchmaking warning lists.
     /// Empty when the catalog has no preset for the tier.
     pub fn preset(&self, tier: Tier) -> Vec<ConfigEntry> {
@@ -470,7 +470,7 @@ fn normalize(value: &str) -> String {
 // ---------------------------------------------------------------------------
 // Catalog cache
 
-/// The last good catalog from the API and its ETag, on disk.
+/// The last good catalog from the API and its `ETag`, on disk.
 #[derive(Debug, Clone)]
 pub struct CatalogCache {
     dir: PathBuf,
@@ -486,7 +486,7 @@ impl CatalogCache {
         platform::cache_dir().map(|d| d.join("shiv"))
     }
 
-    /// The cached catalog and its ETag; `None` when missing or no longer
+    /// The cached catalog and its `ETag`; `None` when missing or no longer
     /// valid (a cache written by another version is ignored).
     pub fn load(&self) -> Option<(Option<String>, Catalog)> {
         let bytes = fs::read(self.dir.join(CACHE_FILE)).ok()?;

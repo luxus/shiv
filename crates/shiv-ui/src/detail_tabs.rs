@@ -1,6 +1,6 @@
 //! The detail page's Files, Changelog and Comments tabs.
 //!
-//! They load from GameBanana the first time a tab is opened (and page by page
+//! They load from `GameBanana` the first time a tab is opened (and page by page
 //! for the two long lists), never while the page merely opens. Results that
 //! arrive after the page was closed or another mod opened are dropped.
 
@@ -44,7 +44,7 @@ enum Fetched {
 struct Tabs {
     weak: Weak<App>,
     client: Arc<GameBananaClient>,
-    /// The open mod: its GameBanana page, or the release history its
+    /// The open mod: its `GameBanana` page, or the release history its
     /// registry publishes.
     target: RefCell<Option<Target>>,
     generation: Cell<u64>,
@@ -78,7 +78,7 @@ fn with_tabs(f: impl FnOnce(&Rc<Tabs>)) {
     }
 }
 
-/// Wire the tabs to `app`, reading GameBanana's public API.
+/// Wire the tabs to `app`, reading `GameBanana`'s public API.
 pub fn attach(app: &App) {
     attach_with(app, GameBananaClient::default());
 }

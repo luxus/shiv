@@ -293,7 +293,7 @@ fn sha256_of(path: &Path) -> Result<String, InterchangeError> {
 
 // ---- export ----
 
-/// A GameBanana reference the exporting side can supply for a mod Shiv
+/// A `GameBanana` reference the exporting side can supply for a mod Shiv
 /// installed from the catalog: the submission id and whether it is a Sound.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteRef {
@@ -340,7 +340,7 @@ fn unique_folder(root: PathBuf) -> PathBuf {
 
 /// Write the installed library of `addons` (the active profile's state:
 /// enabled and load order) into a new bundle under `dest`, which must not
-/// hold one yet. `remote_of` maps a sidecar's mod id to the GameBanana
+/// hold one yet. `remote_of` maps a sidecar's mod id to the `GameBanana`
 /// submission (the loaded catalog knows it); a mod without one is exported
 /// as a local mod keyed by the hash of its primary VPK, which stays stable
 /// across exports. Source files are copied, never moved.
@@ -499,7 +499,7 @@ pub fn export_into(
     Ok(report)
 }
 
-/// The entry for one installed mod: the key from its GameBanana reference
+/// The entry for one installed mod: the key from its `GameBanana` reference
 /// when known, else `local:sha256:<hash>` of its primary VPK, so the same
 /// mod gets the same key in every export and importers can spot a
 /// re-import.
@@ -641,7 +641,7 @@ fn write_ledger(addons: &Path, ledger: &BTreeMap<String, String>) -> Result<(), 
 /// Import the bundle `path` points at (its folder, or its manifest) into
 /// the active profile. `known` maps an interchange key to a Shiv mod id
 /// that already exists (usually through the loaded catalog), so a
-/// GameBanana mod the user already has is recognised without the ledger.
+/// `GameBanana` mod the user already has is recognised without the ledger.
 ///
 /// Following the format's rules, nothing here deletes or moves source
 /// files: a mod whose VPKs are already in the addons folder byte for byte

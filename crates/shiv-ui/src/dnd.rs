@@ -5,7 +5,7 @@
 //! winit 0.30 reports file drops on X11, Windows and macOS but not on
 //! Wayland, so under Wayland Shiv listens itself (`wayland.rs`). Shiv runs
 //! natively under Wayland when `WAYLAND_DISPLAY` is set; `SHIV_X11=1` forces
-//! X11 (XWayland) instead, where winit's own drop events are used.
+//! X11 (`XWayland`) instead, where winit's own drop events are used.
 
 #[cfg(all(unix, not(target_vendor = "apple")))]
 mod wayland;

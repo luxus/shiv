@@ -107,7 +107,7 @@ impl Client {
     }
 
     /// `Ok(None)` when the server answers 304 for `etag`; otherwise the new
-    /// ETag (empty if the server sent none) and the raw body.
+    /// `ETag` (empty if the server sent none) and the raw body.
     pub fn perf_catalog(&self, etag: Option<&str>) -> Result<Option<(String, Vec<u8>)>, ApiError> {
         let url = format!("{}/v2/perf-catalog", self.base);
         let mut req = self.api.get(&url);

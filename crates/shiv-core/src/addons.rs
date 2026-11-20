@@ -339,7 +339,7 @@ pub(crate) fn used_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
 ///
 /// Overflow rule (as in the old manager's shard.rs): the engine loads at most 99
 /// `pakNN_dir.vpk` per search path. The old app uses shard directories `addons`,
-/// `addons2` ..= `addons10` (MAX_SHARDS = 10), numbering from 01 in each shard. A full
+/// `addons2` ..= `addons10` (`MAX_SHARDS` = 10), numbering from 01 in each shard. A full
 /// directory returns [`AddonsError::Full`] and the caller moves to the next shard.
 pub fn next_pak(addons: &Path) -> Result<u32, AddonsError> {
     let used = used_pak_numbers(addons)?;
