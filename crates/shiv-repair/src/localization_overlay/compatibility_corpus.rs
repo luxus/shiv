@@ -39,7 +39,7 @@ fn assert_camera_model_preserved(
             .unwrap();
     let case = cases.iter().find(|case| case.id == id).unwrap();
     assert_eq!(
-        hex::encode(Sha256::digest(fs::read(&case.archive).unwrap())),
+        format!("{:x}", Sha256::digest(fs::read(&case.archive).unwrap())),
         case.sha256
     );
     let input = LocalizationModInput {
@@ -217,7 +217,7 @@ fn exporter_root_drift_skin_repairs_every_camera_mesh_without_rebinding() {
             .unwrap();
     let case = cases.iter().find(|case| case.id == 653713).unwrap();
     assert_eq!(
-        hex::encode(Sha256::digest(fs::read(&case.archive).unwrap())),
+        format!("{:x}", Sha256::digest(fs::read(&case.archive).unwrap())),
         case.sha256
     );
     let input = LocalizationModInput {
@@ -973,7 +973,7 @@ fn mixed_corpus_respects_per_mod_selection_and_load_order() {
         .iter()
         .map(|case| {
             assert_eq!(
-                hex::encode(Sha256::digest(fs::read(&case.archive).unwrap())),
+                format!("{:x}", Sha256::digest(fs::read(&case.archive).unwrap())),
                 case.sha256
             );
             LocalizationModInput {
@@ -1377,7 +1377,7 @@ fn run_obsolete_mod_corpus() {
     let game = Arc::new(GameIndex::open(&citadel).unwrap());
     for case in cases {
         assert_eq!(
-            hex::encode(Sha256::digest(fs::read(&case.archive).unwrap())),
+            format!("{:x}", Sha256::digest(fs::read(&case.archive).unwrap())),
             case.sha256,
             "download checksum: {}",
             case.name
@@ -2158,7 +2158,7 @@ fn toon_bebop_repair_is_stable_with_unrelated_animation_overrides() {
             .unwrap();
     let case = cases.iter().find(|case| case.id == 670722).unwrap();
     assert_eq!(
-        hex::encode(Sha256::digest(fs::read(&case.archive).unwrap())),
+        format!("{:x}", Sha256::digest(fs::read(&case.archive).unwrap())),
         case.sha256
     );
     let source_hashes: Vec<_> = case
@@ -2460,7 +2460,7 @@ fn legacy_sound_empty_slots_preserve_the_real_authored_model() {
             .unwrap();
     let case = cases.iter().find(|case| case.id == 699464).unwrap();
     assert_eq!(
-        hex::encode(Sha256::digest(fs::read(&case.archive).unwrap())),
+        format!("{:x}", Sha256::digest(fs::read(&case.archive).unwrap())),
         case.sha256
     );
     let input = LocalizationModInput {

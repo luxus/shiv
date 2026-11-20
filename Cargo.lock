@@ -4469,7 +4469,6 @@ name = "shiv-repair"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "hex",
  "keyvalues-parser",
  "kv-parser",
  "log",

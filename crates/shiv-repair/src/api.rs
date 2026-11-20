@@ -294,7 +294,7 @@ fn digest(path: &Path) -> io::Result<Option<String>> {
         }
         hasher.update(&buffer[..length]);
     }
-    Ok(Some(hex::encode(hasher.finalize())))
+    Ok(Some(format!("{:x}", hasher.finalize())))
 }
 
 fn load_receipt(dir: &Path) -> Option<Receipt> {

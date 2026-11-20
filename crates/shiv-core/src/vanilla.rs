@@ -11,24 +11,44 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
-
-use regex::Regex;
 
 use crate::game::GamePaths;
 
-/// The pattern of a search-path line that mounts mods: a fixed literal,
-/// pinned by the tests below, that `Regex::new` cannot fail on.
-#[allow(
-    clippy::expect_used,
-    reason = "a fixed literal covered by the tests below"
-)]
-fn mod_mount_pattern() -> Regex {
-    Regex::new(r"(?i)^\s*Game\s+citadel/(addons|shiv_repair)/?\s*(//.*)?$").expect("valid regex")
+/// Whether one `gameinfo.gi` line mounts mods: the `Game` keyword, blanks,
+/// then `citadel/addons` or `citadel/shiv_repair`, optionally with a
+/// trailing slash or `//` comment. The shape is fixed by the format's own
+/// grammar — pinned by the tests below.
+fn is_mod_mount(line: &str) -> bool {
+    matches!(mount_path_of(line), Some("addons" | "shiv_repair"))
 }
 
-/// Search-path lines that mount mods.
-static MOD_MOUNT: LazyLock<Regex> = LazyLock::new(mod_mount_pattern);
+/// The search path a `gameinfo.gi` line mounts: the segment after the
+/// `Game` keyword, without a trailing slash or `//` comment. `None` for
+/// lines with no path to mount.
+fn mount_path_of(line: &str) -> Option<&str> {
+    let path = after_keyword(line.trim_start(), "Game")?.trim_start();
+    let path = before_comment(path).trim_end();
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let (root, rest) = path.split_once('/')?;
+    root.eq_ignore_ascii_case("citadel").then_some(rest)
+}
+
+/// The part of `text` before its `//` comment, or all of it.
+fn before_comment(text: &str) -> &str {
+    match text.find("//") {
+        Some(at) => &text[..at],
+        None => text,
+    }
+}
+
+/// `Some(rest)` when `line` starts with `keyword` (case-insensitive)
+/// followed by at least one blank, else `None`.
+fn after_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
+    let head = line.get(..keyword.len())?;
+    head.eq_ignore_ascii_case(keyword)
+        .then_some(&line[keyword.len()..])
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+}
 
 /// Where the original `gameinfo.gi` is kept while mods are off.
 pub fn backup_path(paths: &GamePaths) -> PathBuf {
@@ -49,7 +69,7 @@ fn without_mounts(text: &str) -> Option<String> {
     let out: String = text
         .split_inclusive('\n')
         .filter(|line| {
-            let hit = MOD_MOUNT.is_match(line.trim_end_matches(['\r', '\n']));
+            let hit = is_mod_mount(line);
             found |= hit;
             !hit
         })
@@ -109,14 +129,6 @@ mod tests {
 
     const GI: &str = "GameInfo\r\n{\r\n\tFileSystem\r\n\t{\r\n\t\tSearchPaths\r\n\t\t{\r\n\t\t\tGame                citadel/dmm_localization_default\r\n\t\t\tGame                citadel/shiv_repair\r\n\t\t\tGame                citadel/addons\r\n\t\t\tMod                 citadel\r\n\t\t\tGame                citadel\r\n\t\t}\r\n\t}\r\n}\r\n";
 
-    fn setup(text: &str) -> (tempfile::TempDir, GamePaths) {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = GamePaths::from_root(dir.path().to_path_buf());
-        fs::create_dir_all(paths.gameinfo.parent().unwrap()).unwrap();
-        fs::write(&paths.gameinfo, text).unwrap();
-        (dir, paths)
-    }
-
     #[test]
     fn strips_only_the_mod_mounts_and_keeps_line_endings() {
         let out = without_mounts(GI).unwrap();
@@ -161,5 +173,13 @@ mod tests {
         let (_dir, paths) = setup("Game citadel\n");
         enable(&paths).unwrap();
         assert!(!is_active(&paths));
+    }
+
+    fn setup(text: &str) -> (tempfile::TempDir, GamePaths) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = GamePaths::from_root(dir.path().to_path_buf());
+        fs::create_dir_all(paths.gameinfo.parent().unwrap()).unwrap();
+        fs::write(&paths.gameinfo, text).unwrap();
+        (dir, paths)
     }
 }
