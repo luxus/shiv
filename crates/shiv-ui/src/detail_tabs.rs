@@ -111,7 +111,7 @@ pub(crate) fn open(remote_id: &str, audio: bool) {
         t.reset(Some(Target::GameBanana {
             remote_id: remote_id.to_owned(),
             audio,
-        }))
+        }));
     });
 }
 
@@ -125,7 +125,7 @@ pub(crate) fn open_registry(
         t.reset(Some(Target::Registry {
             source: Box::new(source),
             listing: Box::new(listing),
-        }))
+        }));
     });
 }
 

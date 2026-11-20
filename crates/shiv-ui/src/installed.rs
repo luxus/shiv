@@ -1485,7 +1485,7 @@ impl Installed {
             let job_id = job_id.clone();
             let _ = weak.clone().upgrade_in_event_loop(move |_| match update {
                 LinkUpdate::Progress { done, total } => {
-                    crate::downloads::progress(&job_id, done, total)
+                    crate::downloads::progress(&job_id, done, total);
                 }
                 LinkUpdate::Installing => crate::downloads::installing(&job_id),
             });
@@ -1579,7 +1579,7 @@ impl Installed {
             Err(LinkFailure::Failed(text)) => {
                 crate::downloads::finished(id, crate::downloads::Outcome::Failed(text.clone()));
                 self.with_state(|s| {
-                    s.set_banner_text(format!("Could not install {name}. {text}").into())
+                    s.set_banner_text(format!("Could not install {name}. {text}").into());
                 });
             }
         }
@@ -1822,7 +1822,7 @@ impl Installed {
                 let shown = path.to_string_lossy().into_owned();
                 match found {
                     Some((id, name, reason)) => {
-                        self.show_update(&id, &name, &shown, reason_text(reason), true)
+                        self.show_update(&id, &name, &shown, reason_text(reason), true);
                     }
                     None => self.show_local_install(path),
                 }

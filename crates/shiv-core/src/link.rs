@@ -33,6 +33,7 @@ pub enum LinkError {
 
 /// True for an `https://` URL with a host and no whitespace or control
 /// characters (nothing an opener could read as a second argument or option).
+#[must_use]
 pub fn is_web_link(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
@@ -45,6 +46,7 @@ pub fn is_web_link(url: &str) -> bool {
 }
 
 /// The opener command for `url`, not yet spawned.
+#[must_use]
 pub fn command(url: &str) -> Command {
     let (program, args) = platform::uri_opener();
     let mut cmd = Command::new(program);

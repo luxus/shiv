@@ -98,6 +98,7 @@ impl Tier {
     /// Prettiest to fastest.
     pub const ALL: [Tier; 4] = [Tier::Pretty, Tier::Balanced, Tier::Sweaty, Tier::Potato];
 
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Tier::Pretty => "Pretty",
@@ -169,6 +170,7 @@ pub struct ConvarMeta {
 
 impl ConvarMeta {
     /// Help text: the catalog's `help`, else its `description`.
+    #[must_use]
     pub fn help_text(&self) -> Option<&str> {
         self.help
             .as_deref()
@@ -317,18 +319,22 @@ impl Catalog {
     }
 
     /// Sortable revision, e.g. `2026.11.07-1`.
+    #[must_use]
     pub fn version(&self) -> &str {
         &self.version
     }
 
+    #[must_use]
     pub fn generated_at(&self) -> &str {
         &self.generated_at
     }
 
+    #[must_use]
     pub fn categories(&self) -> &[Category] {
         &self.categories
     }
 
+    #[must_use]
     pub fn category_label<'a>(&'a self, id: &'a str) -> &'a str {
         self.categories
             .iter()
@@ -336,22 +342,26 @@ impl Catalog {
             .map_or(id, |c| c.label.as_str())
     }
 
+    #[must_use]
     pub fn convars(&self) -> &[ConvarMeta] {
         &self.convars
     }
 
     /// Case-insensitive lookup by convar name.
+    #[must_use]
     pub fn convar(&self, name: &str) -> Option<&ConvarMeta> {
         self.index
             .get(&name.to_ascii_lowercase())
             .map(|&i| &self.convars[i])
     }
 
+    #[must_use]
     pub fn rules(&self) -> &Rules {
         &self.rules
     }
 
     /// The preset shown for `tier`: the recommended one, else the first.
+    #[must_use]
     pub fn preset_info(&self, tier: Tier) -> Option<&Preset> {
         let mut of_tier = self.presets.iter().filter(|p| p.tier == tier);
         let first = of_tier.next()?;
@@ -368,6 +378,7 @@ impl Catalog {
     /// `RenderSystem`, ...) are left out, as the old app leaves them out by
     /// default: those are the sections Valve's matchmaking warning lists.
     /// Empty when the catalog has no preset for the tier.
+    #[must_use]
     pub fn preset(&self, tier: Tier) -> Vec<ConfigEntry> {
         let Some(preset) = self.preset_info(tier) else {
             return Vec::new();
@@ -393,6 +404,7 @@ impl Catalog {
     }
 
     /// Why the catalog rules refuse to write `path`, if they do.
+    #[must_use]
     pub fn denied_reason(&self, path: &[String]) -> Option<&str> {
         for rule in &self.rules.denied {
             if rule.path.as_deref().is_some_and(|p| path_eq(p, path)) {
@@ -449,6 +461,7 @@ fn path_key(path: &[String]) -> String {
 
 /// Whether two values read the same to the engine: booleans as `1`/`0`,
 /// numbers by value, anything else exactly.
+#[must_use]
 pub fn values_equal(a: &str, b: &str) -> bool {
     normalize(a) == normalize(b)
 }
@@ -477,17 +490,20 @@ pub struct CatalogCache {
 }
 
 impl CatalogCache {
+    #[must_use]
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
 
     /// `<user cache dir>/shiv`, if the platform has one.
+    #[must_use]
     pub fn default_dir() -> Option<PathBuf> {
         platform::cache_dir().map(|d| d.join("shiv"))
     }
 
     /// The cached catalog and its `ETag`; `None` when missing or no longer
     /// valid (a cache written by another version is ignored).
+    #[must_use]
     pub fn load(&self) -> Option<(Option<String>, Catalog)> {
         let bytes = fs::read(self.dir.join(CACHE_FILE)).ok()?;
         let catalog = Catalog::parse(&bytes).ok()?;
@@ -642,6 +658,7 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Where `apply` keeps `gameinfo.gi` as it was before Shiv first changed it.
+#[must_use]
 pub fn original_backup_path(paths: &GamePaths) -> PathBuf {
     sibling(&paths.gameinfo, ORIGINAL_SUFFIX)
 }
@@ -769,6 +786,7 @@ fn is_reserved(text: &str) -> bool {
 
 /// Whether `value` can be written between quotes without changing how
 /// gameinfo.gi parses.
+#[must_use]
 pub fn is_writable_value(value: &str) -> bool {
     !value
         .chars()

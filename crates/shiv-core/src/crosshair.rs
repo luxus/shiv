@@ -104,6 +104,7 @@ impl Default for CrosshairConfig {
 impl CrosshairConfig {
     /// Distance in game pixels from the centre to the middle of each pip
     /// (`calculateGap` for the default hero).
+    #[must_use]
     pub fn gap_px(&self) -> f32 {
         if self.pip_gap_static {
             return STATIC_GAP_BASE + self.gap;
@@ -159,6 +160,7 @@ fn js_number(v: f32) -> String {
 }
 
 /// The console commands for `c`, byte for byte as `generateConfigString`.
+#[must_use]
 pub fn to_commands(c: &CrosshairConfig) -> String {
     format!(
         "citadel_crosshair_color_r {}; citadel_crosshair_color_g {}; citadel_crosshair_color_b {}; \
@@ -393,11 +395,13 @@ pub fn user_dir(steam: &Path) -> Result<PathBuf, CrosshairError> {
 }
 
 /// The settings file in a `userdata/<account>/1422450` folder.
+#[must_use]
 pub fn user_settings_path(user_dir: &Path) -> PathBuf {
     user_dir.join("remote").join("cfg").join(SETTINGS_FILE)
 }
 
 /// The settings file in the game's `cfg` folder.
+#[must_use]
 pub fn game_settings_path(paths: &GamePaths) -> PathBuf {
     paths
         .root

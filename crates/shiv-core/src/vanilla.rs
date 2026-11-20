@@ -51,6 +51,7 @@ fn after_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
 }
 
 /// Where the original `gameinfo.gi` is kept while mods are off.
+#[must_use]
 pub fn backup_path(paths: &GamePaths) -> PathBuf {
     let mut name = paths.gameinfo.as_os_str().to_owned();
     name.push(".shiv-vanilla");
@@ -58,6 +59,7 @@ pub fn backup_path(paths: &GamePaths) -> PathBuf {
 }
 
 /// Whether a vanilla session is in progress (its backup exists).
+#[must_use]
 pub fn is_active(paths: &GamePaths) -> bool {
     backup_path(paths).is_file()
 }

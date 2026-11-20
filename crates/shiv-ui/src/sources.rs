@@ -76,7 +76,7 @@ pub(crate) fn attach_with(app: &App, locate: Locate) {
     state.on_dismiss_banner(|| {
         with_sources(|s| {
             s.with_state(|s| s.set_banner_text("".into()));
-        })
+        });
     });
 }
 

@@ -53,6 +53,7 @@ pub enum OpenerOutcome {
 }
 
 /// The opener command for [`STEAM_URI`], not yet spawned.
+#[must_use]
 pub fn command() -> Command {
     let (program, args) = platform::uri_opener();
     let mut cmd = Command::new(program);

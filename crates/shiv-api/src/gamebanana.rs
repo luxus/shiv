@@ -174,6 +174,7 @@ fn visible(status: Option<&serde_json::Value>) -> bool {
 }
 
 impl GameBananaClient {
+    #[must_use]
     pub fn new(base_url: &str) -> Self {
         let agent: Agent = Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(10)))

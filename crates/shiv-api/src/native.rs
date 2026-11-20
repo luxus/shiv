@@ -33,6 +33,7 @@ impl Default for NativeSourceClient {
 }
 
 impl NativeSourceClient {
+    #[must_use]
     pub fn new() -> Self {
         let agent: Agent = Agent::config_builder()
             .timeout_connect(Some(CONNECT_TIMEOUT))
@@ -436,6 +437,7 @@ pub struct NativeRelease {
 }
 
 impl NativeRelease {
+    #[must_use]
     pub fn manual(&self) -> bool {
         !self.artifacts.is_empty()
     }
@@ -456,6 +458,7 @@ pub struct NativeArtifact {
 impl NativeArtifact {
     /// The URL to try first: the direct download when there is one, else
     /// the resolver's.
+    #[must_use]
     pub fn download_url(&self) -> String {
         if self.url.is_empty() {
             self.resolver_url.clone().unwrap_or_default()
@@ -466,6 +469,7 @@ impl NativeArtifact {
 }
 
 impl NativeListing {
+    #[must_use]
     pub fn installable(&self) -> bool {
         self.available
             && !self.removed
@@ -847,6 +851,7 @@ fn valid_sha256_hex(hex: &str) -> Option<String> {
 
 // ---- URLs ----
 
+#[must_use]
 pub fn resolve_url(base: &str, href: &str) -> String {
     if href.starts_with("https://") || href.starts_with("http://") {
         return href.to_owned();
@@ -894,6 +899,7 @@ fn normalize_path(path: &str) -> String {
     format!("/{}{trailing}", segments.join("/"))
 }
 
+#[must_use]
 pub fn origin_of(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
     if !matches!(scheme, "http" | "https") {
@@ -906,10 +912,12 @@ pub fn origin_of(url: &str) -> Option<String> {
     Some(format!("{scheme}://{host_port}"))
 }
 
+#[must_use]
 pub fn origin_allowed(url: &str, origins: &[String]) -> bool {
     origin_of(url).is_some_and(|origin| origins.iter().any(|o| o == &origin))
 }
 
+#[must_use]
 pub fn is_https_or_loopback(url: &str) -> bool {
     let Some(origin) = origin_of(url) else {
         return false;
@@ -926,6 +934,7 @@ pub fn is_https_or_loopback(url: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
+#[must_use]
 pub fn is_safe_basename(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255

@@ -77,11 +77,13 @@ pub const LOCAL_PREFIX: &str = "local-";
 
 /// Whether `mod_id` names a local mod (see [`LOCAL_PREFIX`]), which has no
 /// catalog entry, detail page or updates.
+#[must_use]
 pub fn is_local(mod_id: &str) -> bool {
     mod_id.starts_with(LOCAL_PREFIX)
 }
 
 /// A fresh local mod id (`local-<unix seconds>-<n>`) no sidecar in `addons` uses.
+#[must_use]
 pub fn new_local_id(addons: &Path) -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -110,6 +112,7 @@ pub struct InstalledMod {
 impl InstalledMod {
     /// The lowest pak number among its VPKs: where it sits in the load order
     /// (`u32::MAX` when none of them has a pak number).
+    #[must_use]
     pub fn load_position(&self) -> u32 {
         self.vpks
             .iter()
@@ -119,6 +122,7 @@ impl InstalledMod {
     }
 
     /// Whether the mod counts as switched on: it has VPKs and all are enabled.
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         !self.vpks.is_empty() && self.vpks.iter().all(|v| v.enabled)
     }
@@ -128,6 +132,7 @@ impl InstalledMod {
 /// and category: they replace the same thing, so only one can win in game.
 /// Mods without a recorded hero (hand-added, or installed before it was
 /// recorded) never count.
+#[must_use]
 pub fn conflicts<'a>(
     mods: &'a [InstalledMod],
     mod_id: &str,

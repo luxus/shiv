@@ -71,7 +71,7 @@ pub(crate) fn offer(
             new_name,
             enable,
             with,
-        })
+        });
     });
     if let Some(app) = weak
         .upgrade()

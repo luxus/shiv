@@ -1042,6 +1042,7 @@ pub fn inspect(file: &Path, paths: &GamePaths) -> Result<Inspected, InstallError
 /// match only by content. Checks, in order: same source file name, file name
 /// equal to the mod name, then the largest inner-path overlap of at least
 /// [`OVERLAP_THRESHOLD`]. A mod with a different VPK count never matches.
+#[must_use]
 pub fn find_update_target(mods: &[InstalledMod], new: &Inspected) -> Option<UpdateMatch> {
     let candidates: Vec<(usize, &InstalledMod)> = mods
         .iter()
@@ -1089,6 +1090,7 @@ pub fn find_update_target(mods: &[InstalledMod], new: &Inspected) -> Option<Upda
 }
 
 /// Jaccard index of two path sets (0 when both are empty).
+#[must_use]
 pub fn overlap(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
     let union = a.union(b).count();
     if union == 0 {

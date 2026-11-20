@@ -251,6 +251,7 @@ pub fn read_manifest(path: &Path) -> Result<(PathBuf, Document), InterchangeErro
 /// Resolve a manifest file path against the bundle folder and refuse
 /// anything that would leave it: no absolute paths, no `..`, forward
 /// slashes only, no empty or `.` segments.
+#[must_use]
 pub fn bundle_file(dir: &Path, path: &str) -> Option<PathBuf> {
     if path.contains('\\') || path.is_empty() {
         return None;

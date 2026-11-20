@@ -99,14 +99,17 @@ pub struct AddedSource {
 }
 
 impl AddedSource {
+    #[must_use]
     pub fn api_origins(&self) -> Vec<String> {
         self.api_origins.clone()
     }
 
+    #[must_use]
     pub fn download_origins(&self) -> Vec<String> {
         self.download_origins.clone()
     }
 
+    #[must_use]
     pub fn mod_id_of(&self, listing_id: &str) -> String {
         format!(
             "{ID_PREFIX}{}-{}",
@@ -135,16 +138,19 @@ impl Registry {
         Ok(Self { path, sources })
     }
 
+    #[must_use]
     pub fn sources(&self) -> &[AddedSource] {
         &self.sources
     }
 
+    #[must_use]
     pub fn find(&self, origin: &str, source_id: &str) -> Option<&AddedSource> {
         self.sources
             .iter()
             .find(|s| s.origin == origin && s.source_id == source_id)
     }
 
+    #[must_use]
     pub fn by_mod_id(&self, mod_id: &str) -> Option<&AddedSource> {
         let (source_id, _) = split_mod_id(mod_id)?;
         self.sources.iter().find(|s| s.source_id == source_id)
@@ -201,6 +207,7 @@ impl Registry {
 
 /// The source a registry mod id names: `src-<encoded source>-<encoded
 /// listing>` splits into its parts; anything else is not a registry mod.
+#[must_use]
 pub fn split_mod_id(mod_id: &str) -> Option<(String, String)> {
     let body = mod_id.strip_prefix(ID_PREFIX)?;
     let (source, listing) = body.split_once('-')?;
@@ -212,6 +219,7 @@ pub fn split_mod_id(mod_id: &str) -> Option<(String, String)> {
 /// Whether `installed` predates `current`: a registry records opaque
 /// content revisions, so any difference is an update. A sidecar without a
 /// version predates the registry and updates too.
+#[must_use]
 pub fn revision_is_newer(installed: Option<&str>, current: &str) -> bool {
     installed.is_none_or(|old| old != current)
 }
@@ -298,6 +306,7 @@ fn disable_by_id(paths: &GamePaths, mod_id: &str) -> Result<(), RegistryError> {
 }
 
 /// The sidecars of the registry mods in `mods`, keyed by listing id.
+#[must_use]
 pub fn installed_from(mods: &[sidecar::InstalledMod]) -> BTreeMap<String, &Sidecar> {
     mods.iter()
         .filter_map(|m| {

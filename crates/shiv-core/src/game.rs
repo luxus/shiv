@@ -28,6 +28,7 @@ pub struct GamePaths {
 
 impl GamePaths {
     /// Derive all paths from the install root (the `Deadlock` folder).
+    #[must_use]
     pub fn from_root(root: PathBuf) -> Self {
         let citadel = root.join("game").join("citadel");
         Self {
@@ -89,6 +90,7 @@ pub fn any_deadlock_process<'a>(names: impl Iterator<Item = &'a str>) -> bool {
 
 /// Whether [`is_running`] can tell: false where process scanning is not
 /// implemented, so `is_running` always says "not running" there.
+#[must_use]
 pub fn can_detect() -> bool {
     platform::CAN_SCAN_PROCESSES
 }

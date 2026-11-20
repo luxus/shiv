@@ -86,6 +86,7 @@ const DONATION_HOSTS: &[&str] = &[
 
 /// True for an `https` URL on a known donation host (a `www.` prefix is
 /// fine). Ports and credentials in the URL are refused.
+#[must_use]
 pub fn is_donation_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
@@ -102,6 +103,7 @@ pub fn is_donation_url(url: &str) -> bool {
 impl ModDto {
     /// The first donation link the author offers on a known host, as
     /// `(platform, url)`. The platform falls back to the host's name.
+    #[must_use]
     pub fn donation_link(&self) -> Option<(&str, &str)> {
         let links = self.metadata.as_ref()?.donation_links.as_ref()?;
         links.iter().find_map(|l| {
@@ -120,6 +122,7 @@ impl ModDto {
     /// The mod's file version: the date its files changed, else its `GameBanana`
     /// update date. Shiv records this in the sidecar at install time and
     /// compares it with the catalog to spot updates. Empty strings count as missing.
+    #[must_use]
     pub fn version(&self) -> Option<&str> {
         fn non_empty(s: Option<&str>) -> Option<&str> {
             s.filter(|s| !s.is_empty())
@@ -130,6 +133,7 @@ impl ModDto {
 
     /// When the mod last changed: the `GameBanana` update date, else the date
     /// its files changed. Empty strings count as missing.
+    #[must_use]
     pub fn last_updated(&self) -> Option<&str> {
         fn non_empty(s: Option<&str>) -> Option<&str> {
             s.filter(|s| !s.is_empty())

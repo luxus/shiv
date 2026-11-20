@@ -61,6 +61,7 @@ struct Index {
 }
 
 /// Whether this platform can use profiles.
+#[must_use]
 pub const fn supported() -> bool {
     cfg!(unix)
 }
@@ -163,11 +164,13 @@ fn clean_name(name: &str) -> Result<String, ProfileError> {
 }
 
 /// Whether profiles are turned on: `addons` is a link to one of ours.
+#[must_use]
 pub fn is_set_up(paths: &GamePaths) -> bool {
     supported() && active_id(paths).is_some()
 }
 
 /// How many mod packages (`*_dir.vpk`, enabled or not) a profile holds.
+#[must_use]
 pub fn mod_count(paths: &GamePaths, id: &str) -> usize {
     fs::read_dir(folder(paths, id)).map_or(0, |entries| {
         entries

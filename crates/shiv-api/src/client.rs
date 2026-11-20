@@ -66,6 +66,7 @@ fn part_path(dest: &Path) -> PathBuf {
 }
 
 impl Client {
+    #[must_use]
     pub fn new(base_url: &str) -> Client {
         Client {
             base: base_url.trim_end_matches('/').to_string(),

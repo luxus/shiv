@@ -44,12 +44,14 @@ impl UtcMoment {
 /// The current UTC time as RFC-3339 text with nanosecond precision
 /// (`2026-11-20T12:34:56.123456789Z`): the rendering is fixed-width, so
 /// stored stamps compare and sort as instants without being parsed.
+#[must_use]
 pub fn rfc3339_utc_now() -> String {
     utc_now().rfc3339()
 }
 
 /// The current UTC time as a compact stamp (`20261120T123456123456789Z`)
 /// for folder names that sort by recency.
+#[must_use]
 pub fn compact_utc_now() -> String {
     utc_now().compact()
 }

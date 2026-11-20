@@ -68,6 +68,7 @@ impl Finding {
 
 /// Inspect the install. Never fails and never modifies anything: problems that
 /// stop the inspection itself (an unreadable folder) become findings too.
+#[must_use]
 pub fn check(paths: &GamePaths) -> Vec<Finding> {
     let mut findings = Vec::new();
     check_addons(&paths.addons, &mut findings);
@@ -321,6 +322,7 @@ fn check_chunk(dir_vpk: &Path, index: u16, need: u64, findings: &mut Vec<Finding
 
 /// Conditions as the Windows game client resolves them (Deadlock runs under
 /// Proton on Linux, so the host OS is irrelevant).
+#[must_use]
 pub fn client_symbol(name: &str) -> Option<bool> {
     match name.to_ascii_uppercase().as_str() {
         "WIN32" | "WIN64" | "WINDOWS" => Some(true),
