@@ -1,0 +1,552 @@
+{
+ "game": "6860",
+ "zip": "CompLock-pack.zip",
+ "est_scale": {
+  "avg": 0.9881,
+  "low": 0.9556,
+  "n": 6
+ },
+ "base": [
+  {
+   "id": "hud",
+   "title": "HUD++",
+   "avg": "+7.9%",
+   "low": "+8.1%",
+   "pak": "hud.vpk",
+   "vs": "over the stock HUD",
+   "text": "A cleaner HUD that costs less to draw: cooldowns in seconds, team souls, boss timers.",
+   "by": "By HoppCX and jcStani",
+   "points": [
+    "Cooldowns in seconds on abilities, items and every player's ult",
+    "Mid boss buff and powerup timers",
+    "Team souls and the gap between the teams",
+    "A clean minimap, no stat gauges",
+    "Its own settings panel and a custom crosshair",
+    "Top bar, lower HUD and minimap painted 30 times a second instead of every frame",
+    "The stat panel is built only when the shop, scoreboard or detail view opens"
+   ],
+   "choice_label": "Damage numbers",
+   "variants": {
+    "nodamage": "hud_nodamage.vpk",
+    "vanilla": "hud_vanilla.vpk"
+   },
+   "choice": [
+    {
+     "id": "vanilla",
+     "clip": {
+      "webm": "/docs/img/hudpp/damage-vanilla.webm?v=682a17acb3",
+      "mp4": "/docs/img/hudpp/damage-vanilla.mp4?v=f07155306a",
+      "poster": "/docs/img/hudpp/damage-vanilla-poster.webp?v=8a2b214e85"
+     },
+     "low": "\u2014",
+     "low01": "\u2014",
+     "title": "Vanilla damage",
+     "flag": "vanilla",
+     "gameinfo_off": {
+      "citadel_damage_text_batching_window_individual": "2"
+     }
+    },
+    {
+     "id": "cumulative",
+     "clip": {
+      "webm": "/docs/img/hudpp/damage-cumulative.webm?v=128dc4fd91",
+      "mp4": "/docs/img/hudpp/damage-cumulative.mp4?v=20a400525b",
+      "poster": "/docs/img/hudpp/damage-cumulative-poster.webp?v=22a94ff08a"
+     },
+     "title": "Cumulative damage",
+     "avg": "+1.8%",
+     "low": "+3.0%",
+     "low01": "\u00b10%",
+     "default": true,
+     "gameinfo": {
+      "citadel_damage_text_batching_window_individual": "2"
+     }
+    },
+    {
+     "id": "hidden",
+     "clip": {
+      "webm": "/docs/img/hudpp/damage-hidden.webm?v=2c9983515d",
+      "mp4": "/docs/img/hudpp/damage-hidden.mp4?v=165c730d41",
+      "poster": "/docs/img/hudpp/damage-hidden-poster.webp?v=fdd944e050"
+     },
+     "title": "Hidden damage",
+     "avg": "+2.8%",
+     "low": "+5.4%",
+     "low01": "\u00b10%",
+     "flag": "nodamage",
+     "gameinfo": {
+      "citadel_damage_text_batching_window_individual": "2"
+     }
+    }
+   ],
+   "shot": [
+    {
+     "area": "top",
+     "src": "/docs/img/hudpp/top-bar-6844.webp?v=6ae0d3ea94",
+     "w": 988,
+     "h": 233,
+     "title": "Top bar",
+     "caption": "Ults and respawns in seconds, team souls and the gap",
+     "alt": "Top bar: ult cooldowns 99 and 82 and respawn timers 70 and 12 in seconds, team souls 182k vs 224k with the gap -18.8%"
+    },
+    {
+     "area": "abil",
+     "src": "/docs/img/hudpp/abilities.webp?v=f07945caf7",
+     "w": 850,
+     "h": 151,
+     "title": "Abilities",
+     "caption": "Cooldowns in seconds instead of sweeps",
+     "alt": "Ability bar with cooldowns 13, 20 and 9 and an item at 17, in seconds"
+    },
+    {
+     "area": "items",
+     "src": "/docs/img/hudpp/items.webp?v=f49d51c165",
+     "w": 615,
+     "h": 172,
+     "title": "Items",
+     "caption": "Item cooldowns in seconds",
+     "alt": "Item grid with two items on cooldown, 11 and 8 seconds"
+    },
+    {
+     "area": "map",
+     "src": "/docs/img/hudpp/minimap.webp?v=9d0d5cb59f",
+     "w": 640,
+     "h": 710,
+     "title": "Minimap",
+     "caption": "Clean minimap with powerup timers",
+     "alt": "Clean minimap mid game: both bases, heroes spread over the lanes, powerup timers at 4:46"
+    },
+    {
+     "area": "dmg",
+     "src": "/docs/img/hudpp/damage-total.webp?v=6eb20aa77d",
+     "w": 300,
+     "h": 141,
+     "title": "Damage",
+     "caption": "Cumulative damage numbers: one running total per target",
+     "alt": "Running damage total of 528 next to an enemy's health bar, no per-hit numbers"
+    },
+    {
+     "area": "boss",
+     "src": "/docs/img/hudpp/midboss-6844.webp?v=42750b8e4a",
+     "w": 520,
+     "h": 244,
+     "title": "Mid boss",
+     "caption": "Buff timer under the team that took it",
+     "alt": "Mid boss buff: the team's rejuvenator icons under its souls and the buff timer at 2:45"
+    },
+    {
+     "area": "xh",
+     "clip": {
+      "webm": "/docs/img/hudpp/crosshair.webm?v=b52e741bca",
+      "mp4": "/docs/img/hudpp/crosshair.mp4?v=27441d5bcb",
+      "poster": "/docs/img/hudpp/crosshair-poster.webp?v=1e2cac3702"
+     },
+     "title": "Custom crosshair",
+     "caption": "15 styles in any color, with body shot and headshot hit markers",
+     "alt": "Custom crosshair cycling through its 15 styles in white, cyan, green, yellow and pink, with white body shot and yellow headshot hit markers"
+    }
+   ],
+   "updated": {
+    "date": "2026-11-20",
+    "text": "20 Nov",
+    "long": "20 Nov 2026",
+    "new": true,
+    "href": "/docs/changelog/#cl-2026-11-20-hud"
+   }
+  },
+  {
+   "id": "gameinfo",
+   "title": "gameinfo.gi",
+   "avg": "+16.3%",
+   "low": "+14.3%",
+   "vs": "over the stock gameinfo.gi",
+   "text": "CompLock's engine settings.",
+   "by": "By HoppCX",
+   "toggles": "physics",
+   "toggles_label": "Optional settings",
+   "gameinfo": {
+    "citadel_unit_status_healthbar_highlight_speed": "100"
+   },
+   "fov": {
+    "cvar": "r_aspectratio",
+    "default": "2.15",
+    "from": 1.85,
+    "to": 2.6,
+    "by": 0.05,
+    "src": "/docs/img/pack/fov-fight.webp?v=d70df1f042",
+    "src_at": 2.6,
+    "alt": "A fight from behind a player's hero on a raised walkway: two heroes ahead and one at the right edge, which a wider view brings in"
+   },
+   "updated": {
+    "date": "2026-11-19",
+    "text": "19 Nov",
+    "long": "19 Nov 2026",
+    "new": false,
+    "href": "/docs/changelog/#cl-2026-11-19-gameinfo"
+   }
+  }
+ ],
+ "group": [
+  {
+   "id": "engine",
+   "title": "Engine fixes",
+   "text": "Less work per frame. Nothing looks or sounds different."
+  },
+  {
+   "id": "effects",
+   "title": "Effects and map",
+   "text": "Less to draw. These change how the game looks."
+  },
+  {
+   "id": "physics",
+   "title": "Physics",
+   "text": "Less to simulate. Some things stop moving."
+  },
+  {
+   "id": "visibility",
+   "title": "Visibility",
+   "text": "Easier to read in a fight."
+  }
+ ],
+ "option": [
+  {
+   "id": "soundcap",
+   "group": "engine",
+   "title": "Sound stack update cap",
+   "avg": "+9.7%",
+   "low": "+11.1%",
+   "by": "By HoppCX",
+   "pak": "soundcap.vpk",
+   "on": true,
+   "text": "Playing sounds update about 60 times a second instead of every frame.",
+   "how": "Every sound has a place in the world: how loud it is in each ear depends on where it is and where you are. The game works that out again for each playing sound on every frame, and about 80 play at once in a team fight. Capped, each sound is worked out again every 15 to 17 ms, about as often as the server sends positions (64 times a second), on its own random timer so the work spreads across frames. Sounds still start the moment they're triggered.",
+   "diagram": "soundstage",
+   "updated": {
+    "date": "2026-11-08",
+    "text": "8 Nov",
+    "long": "8 Nov 2026",
+    "new": false,
+    "href": "/docs/changelog/#cl-2026-11-08-soundcap"
+   }
+  },
+  {
+   "id": "particles",
+   "group": "effects",
+   "title": "Particle Pruning",
+   "avg": "+7.7%",
+   "low": "+5.1%",
+   "by": "By HoppCX and jcStani",
+   "on": true,
+   "text": "Effects keep their shapes and warnings, without the glow, smoke and sparks.",
+   "how": "Abilities, items, explosions and pickups lose their glow, flashes, sparks and smoke; bosses only when idle or dying. The map loses its fog, steam, smoke and street light glow, movement raises no dust, and the decoration that stays draws half as many particles.",
+   "before": "/docs/img/particles-before.webp?v=61d27567a0",
+   "after": "/docs/img/particles-after.webp?v=6f54c3558b",
+   "alt": "A fight with the stock particles, then the same frame with Particle Pruning: no smoke, sparks or lightning, the ability ring still there",
+   "choice": [
+    {
+     "id": "stock",
+     "title": "Stock tracers and hit effects",
+     "avg": "+7.7%",
+     "low": "+5.1%",
+     "text": "As in the game, without the blood and debris bullets knock off heroes.",
+     "pak": "particlepruning_stocktracers.vpk",
+     "default": true
+    },
+    {
+     "id": "reduced",
+     "title": "Reduced tracers and hit effects",
+     "avg": "+9.3%",
+     "low": "+6.3%",
+     "text": "Fainter tracers. No bullet impacts, blood or headshot effects.",
+     "pak": "particlepruning.vpk"
+    }
+   ],
+   "updated": {
+    "date": "2026-11-19",
+    "text": "19 Nov",
+    "long": "19 Nov 2026",
+    "new": false,
+    "href": "/docs/changelog/#cl-2026-11-19-particles"
+   }
+  },
+  {
+   "id": "lowdetailmap",
+   "group": "effects",
+   "title": "Low detail map",
+   "avg": "+3.8%",
+   "low": "\u00b10%",
+   "est_avg": "+1.4%",
+   "est_low": "+1.3%",
+   "by": "By jcStani",
+   "pak": "lowdetailmap.vpk",
+   "text": "414 textures and 676 materials swapped for low-detail versions.",
+   "how": "Smaller textures need less VRAM and memory bandwidth, and simpler materials are cheaper to shade.",
+   "before": "/docs/img/pack/street-stock.webp?v=606cdfdc9d",
+   "after": "/docs/img/pack/lowdetailmap-after.webp?v=722d8eb139",
+   "alt": "Broadway street stock, then with Low detail map: plain road without painted markings, dark billboards and simpler materials",
+   "updated": {
+    "date": "2026-11-11",
+    "text": "11 Nov",
+    "long": "11 Nov 2026",
+    "new": false,
+    "href": "/docs/changelog/#cl-2026-11-11-lowdetailmap"
+   }
+  },
+  {
+   "id": "brighterlighting",
+   "group": "effects",
+   "title": "Brighter lighting",
+   "avg": "+2.9%",
+   "low": "\u00b10%",
+   "est_avg": "+2.1%",
+   "est_low": "+1.2%",
+   "by": "By BreadRollius",
+   "pak": "brighterlighting.vpk",
+   "text": "A brighter, flatter image: no vignette or base bloom, and no lamp, storm or street light glow.",
+   "how": "Vignette, local exposure and bloom are full-screen passes over every pixel, every frame. A retuned tonemap keeps the image bright, and smaller funnel clouds mean less see-through drawing.",
+   "before": "/docs/img/pack/street-stock.webp?v=606cdfdc9d",
+   "after": "/docs/img/pack/lighting-after.webp?v=3c1ffa2880",
+   "alt": "Broadway street stock, then with Brighter lighting: brighter and flatter, no vignette, bloom or sky glow",
+   "updated": {
+    "date": "2026-11-04",
+    "text": "4 Nov",
+    "long": "4 Nov 2026",
+    "new": false,
+    "href": "/docs/changelog/#cl-2026-11-04-brighterlighting"
+   }
+  },
+  {
+   "id": "cloth",
+   "group": "physics",
+   "title": "Cloth simulation off",
+   "avg": "+2.8%",
+   "low": "+3.4%",
+   "by": "By HoppCX",
+   "pak": "nocloth_dir.vpk",
+   "text": "Coats, capes, skirts and dresses removed from the 17 heroes that have them.",
+   "warn": "Not compatible with other mods that replace hero models.",
+   "how": "Cloth is simulated every frame. With the simulation off it would freeze in its default pose, so it's taken off the models instead. Hair, tails and straps stay, hanging stiffly.",
+   "before": "/docs/img/pack/cloth-before.webp?v=b03965ec27",
+   "after": "/docs/img/pack/cloth-after.webp?v=8dc72aacf7",
+   "alt": "All 17 heroes with cloth, from the side where it shows most, then without it",
+   "gameinfo": {
+    "cloth_update": "false"
+   },
+   "updated": {
+    "date": "2026-11-20",
+    "text": "20 Nov",
+    "long": "20 Nov 2026",
+    "new": true,
+    "href": "/docs/changelog/#cl-2026-11-20-cloth"
+   }
+  },
+  {
+   "id": "ragdolls",
+   "group": "physics",
+   "title": "Ragdolls off",
+   "avg": "+2.6%",
+   "low": "\u00b10%",
+   "est_avg": "\u00b10%",
+   "est_low": "\u00b10%",
+   "on": true,
+   "text": "Heroes and troopers don't ragdoll when they die.",
+   "warn": "Players caught in Doorman's ultimate sometimes fade.",
+   "how": "A ragdoll is the limp body of a hero or trooper that just died, which your PC simulates as it falls and settles. Off, that simulation is skipped. Turn this off to get ragdolls back.",
+   "gameinfo": {
+    "cl_disable_ragdolls": "true"
+   },
+   "gameinfo_else": {
+    "cl_disable_ragdolls": "false"
+   },
+   "updated": {
+    "date": "2026-11-20",
+    "text": "20 Nov",
+    "long": "20 Nov 2026",
+    "new": true,
+    "href": "/docs/changelog/#cl-2026-11-20-ragdolls"
+   }
+  },
+  {
+   "id": "hpbars",
+   "group": "visibility",
+   "title": "jcStani's HP Bars",
+   "by": "By jcStani",
+   "pak": "hpbars.vpk",
+   "text": "Performance-neutral hero health bars, unlike other custom ones: blue for allies, yellow for enemies, the HP number above enemy bars.",
+   "link": "/docs/hpbars/",
+   "link_text": "Make your own in the HP Bar Builder",
+   "how": "A plain stylesheet with no scripts, so the game updates them like the stock bars.",
+   "pic": [
+    {
+     "src": "/docs/img/hp-bars.webp?v=e5691797a7",
+     "w": 327,
+     "h": 319,
+     "alt": "Two heroes with flat health bars: an ally's blue bar, and an enemy's yellow bar with its health, 2,990, above it"
+    }
+   ],
+   "updated": {
+    "date": "2026-11-20",
+    "text": "20 Nov",
+    "long": "20 Nov 2026",
+    "new": true,
+    "href": "/docs/changelog/#cl-2026-11-20-hpbars"
+   }
+  },
+  {
+   "id": "ticklines",
+   "group": "physics",
+   "title": "Health tick lines off",
+   "avg": "+1.0%",
+   "low": "+1.2%",
+   "by": "By HoppCX",
+   "text": "For custom health bars: jcStani's HP Bars, or a bar from the HP Bar Builder without ticks.",
+   "warn": "Removes the tick lines from the game's own health bars and from HP Bar Builder bars that show them.",
+   "how": "Custom health bars hide the tick lines, but the game still makes a line panel for every step of health on every bar and places it. With the step set to 1,000,000 no bar has enough health for a line, so none are made.",
+   "gameinfo": {
+    "citadel_unit_status_breakpoint_line_small_amt": "1000000"
+   },
+   "updated": {
+    "date": "2026-11-18",
+    "text": "18 Nov",
+    "long": "18 Nov 2026",
+    "new": false,
+    "href": "/docs/changelog/#cl-2026-11-18-ticklines"
+   }
+  }
+ ],
+ "files": {
+  "hud.vpk": {
+   "num": 1,
+   "title": "HUD++",
+   "parts": [
+    {
+     "name": "pak01_dir.vpk",
+     "size": 5865409,
+     "crc": 2753229676,
+     "csize": 849244,
+     "url": "/dl/pack/hud.3d9d21a660.z"
+    }
+   ]
+  },
+  "hud_nodamage.vpk": {
+   "num": 1,
+   "title": "HUD++ with hidden damage numbers",
+   "parts": [
+    {
+     "name": "pak01_dir.vpk",
+     "size": 5866805,
+     "crc": 2361572882,
+     "csize": 849536,
+     "url": "/dl/pack/hud_nodamage.54d037c6e0.z"
+    }
+   ]
+  },
+  "hud_vanilla.vpk": {
+   "num": 1,
+   "title": "HUD++ with vanilla damage numbers",
+   "parts": [
+    {
+     "name": "pak01_dir.vpk",
+     "size": 5865723,
+     "crc": 209910849,
+     "csize": 849376,
+     "url": "/dl/pack/hud_vanilla.2997287707.z"
+    }
+   ]
+  },
+  "soundcap.vpk": {
+   "num": 3,
+   "title": "Sound stack update cap",
+   "parts": [
+    {
+     "name": "pak03_dir.vpk",
+     "size": 24989,
+     "crc": 3218033789,
+     "csize": 7611,
+     "url": "/dl/pack/soundcap.af99a150bd.z"
+    }
+   ]
+  },
+  "particlepruning_stocktracers.vpk": {
+   "num": 2,
+   "title": "Particle Pruning (stock tracers and hit effects)",
+   "parts": [
+    {
+     "name": "pak02_dir.vpk",
+     "size": 12376486,
+     "crc": 111720160,
+     "csize": 2821327,
+     "url": "/dl/pack/particlepruning_stocktracers.27c69e89a8.z"
+    }
+   ]
+  },
+  "particlepruning.vpk": {
+   "num": 2,
+   "title": "Particle Pruning (reduced tracers and hit effects)",
+   "parts": [
+    {
+     "name": "pak02_dir.vpk",
+     "size": 15319421,
+     "crc": 253341159,
+     "csize": 3529187,
+     "url": "/dl/pack/particlepruning.da63fc3038.z"
+    }
+   ]
+  },
+  "lowdetailmap.vpk": {
+   "num": 6,
+   "title": "Low detail map",
+   "parts": [
+    {
+     "name": "pak06_dir.vpk",
+     "size": 35171928,
+     "crc": 2683326327,
+     "csize": 13443887,
+     "url": "/dl/pack/lowdetailmap.d783db56c1.z"
+    }
+   ]
+  },
+  "brighterlighting.vpk": {
+   "num": 4,
+   "title": "Brighter lighting",
+   "parts": [
+    {
+     "name": "pak04_dir.vpk",
+     "size": 107862,
+     "crc": 1489255419,
+     "csize": 32938,
+     "url": "/dl/pack/brighterlighting.24063f386e.z"
+    }
+   ]
+  },
+  "nocloth_dir.vpk": {
+   "num": 7,
+   "title": "No Cloth",
+   "parts": [
+    {
+     "name": "pak07_dir.vpk",
+     "size": 122453857,
+     "crc": 3891494729,
+     "csize": 107804630,
+     "url": [
+      "/dl/pack/nocloth_dir.62652119c3.0.z",
+      "/dl/pack/nocloth_dir.62652119c3.1.z"
+     ]
+    }
+   ]
+  },
+  "hpbars.vpk": {
+   "num": 5,
+   "title": "jcStani's HP Bars",
+   "parts": [
+    {
+     "name": "pak05_dir.vpk",
+     "size": 34921,
+     "crc": 790342424,
+     "csize": 6748,
+     "url": "/dl/pack/hpbars.d8d68acd52.z"
+    }
+   ]
+  }
+ }
+}

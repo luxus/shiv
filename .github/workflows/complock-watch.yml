@@ -1,9 +1,10 @@
 name: CompLock watch
 
 # Daily: fetch deadlockconfig.com's pack-data, embed their current
-# gameinfo.gi and its build number, and commit when they changed. The
-# site is the moving source by design; the core test on the asset
-# (complock::tests) is the parse gate.
+# gameinfo.gi, its build number and their options data (the pack-data minus
+# the gameinfo text), and commit when they changed. The site is the moving
+# source by design; the core tests on the assets (complock::tests) are the
+# parse gates.
 on:
   schedule:
     - cron: "17 6 * * *"
@@ -37,7 +38,38 @@ jobs:
           assert game.isdigit() and game, "the site names no game build"
           assert "ConVars" in gameinfo and "SearchPaths" in gameinfo, "not a gameinfo"
 
+          options = {k: v for k, v in data.items() if k != "gameinfo"}
+          assert isinstance(options.get("option"), list) and options["option"], "no options"
+          assert isinstance(options.get("group"), list), "no groups"
+          files = options.get("files")
+          assert isinstance(files, dict) and files, "no files"
+
+          def pak_names(card):
+              if "pak" in card:
+                  yield card["pak"]
+              for choice in card.get("choice", []):
+                  yield from pak_names(choice)
+
+          def check_pak(name):
+              pak = files.get(name)
+              assert pak, f"pak {name} is missing from files"
+              for part in pak["parts"]:
+                  assert part["name"].endswith(".vpk"), f"{name}: {part['name']} is no vpk"
+                  urls = part["url"] if isinstance(part["url"], list) else [part["url"]]
+                  assert urls, f"{name}: {part['name']} has no url"
+                  assert isinstance(part["crc"], int), f"{name}: {part['name']} has no crc"
+                  assert isinstance(part["size"], int), f"{name}: {part['name']} has no size"
+
+          for card in options["option"] + options.get("base", []):
+              for name in pak_names(card):
+                  check_pak(name)
+              for name in (card.get("variants") or {}).values():
+                  check_pak(name)
+
           pathlib.Path("crates/shiv-core/assets/complock-gameinfo.gi").write_text(gameinfo)
+          pathlib.Path("crates/shiv-core/assets/complock-options.json").write_text(
+              json.dumps(options, indent=1) + "\n"
+          )
           meta = {
               "game": game,
               "fetched": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
@@ -45,14 +77,17 @@ jobs:
           pathlib.Path("crates/shiv-core/assets/complock.json").write_text(
               json.dumps(meta, indent=2) + "\n"
           )
-          print(f"pack-data build {game}, {len(gameinfo)} bytes")
+          print(
+              f"pack-data build {game}, {len(gameinfo)} bytes of gameinfo, "
+              f"{len(options['option'])} options"
+          )
           PY
       - name: Commit when the build changed
         run: |
           git config user.name "shiv-complock-watch"
           git config user.email "actions@users.noreply.github.com"
           if git diff --quiet -- crates/shiv-core/assets; then
-            echo "The embedded CompLock gameinfo is current."
+            echo "The embedded CompLock data is current."
             exit 0
           fi
           game=$(python3 -c "import json; print(json.load(open('crates/shiv-core/assets/complock.json'))['game'])")
