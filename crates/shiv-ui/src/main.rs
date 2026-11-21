@@ -292,6 +292,7 @@ mod tests {
         repair_flow();
         crosshair_flow();
         performance_flow();
+        complock_options_flow();
         downloads::storm::progress_storm_flow(&app);
     }
 
@@ -684,6 +685,12 @@ mod tests {
         let running = Arc::new(AtomicBool::new(false));
         let fetches = Arc::new(AtomicUsize::new(0));
         let (flag, count, located) = (running.clone(), fetches.clone(), paths.clone());
+        let pack_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../shiv-core/tests/data/complock-soundcap-part.z"
+        ))
+        .expect("the soundcap fixture");
+        let served = pack_bytes.clone();
         let app = App::new().expect("app");
         performance::attach_with(
             &app,
@@ -699,6 +706,18 @@ mod tests {
                     Ok(Some(("\"e1\"".into(), PERF_CATALOG.as_bytes().to_vec())))
                 }),
                 cache: Some(CatalogCache::new(temp.path().join("cache"))),
+                pack_download: Arc::new(move |url, dest, cancel, progress| {
+                    assert!(
+                        url.starts_with("https://deadlockconfig.com/dl/"),
+                        "the part url resolved on the site: {url}"
+                    );
+                    std::fs::write(dest, &served).expect("serve the part");
+                    progress(served.len() as u64, Some(served.len() as u64));
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".into());
+                    }
+                    Ok(())
+                }),
             },
         );
         app.show().expect("show");
@@ -963,6 +982,222 @@ mod tests {
             "{}",
             state.get_status()
         );
+    }
+
+    /// The CompLock options under their card, against a temp gameinfo.gi and
+    /// a stub part download (the soundcap fixture bytes from shiv-core's
+    /// tests, whose crc and size the embedded asset declares): the rows
+    /// render with counts derived from the same embedded data, a convar
+    /// option stages on and then its off value, the FOV slider stages
+    /// r_aspectratio, a HUD choice stages its line and resolves its pak, a
+    /// pak option installs end to end — download, unpack, CRC gate, install
+    /// as a mod with progress on Downloads — and a re-install updates in
+    /// place. What the harness cannot drive: the live site's bytes (the
+    /// fixture stands in for them; shiv-core's tests pin the crc contract)
+    /// and the multi-piece download (the soundcap part is one piece).
+    fn complock_options_flow() {
+        use shiv_core::complock;
+        use slint::Model;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = shiv_core::game::GamePaths::from_root(temp.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        std::fs::write(
+            &paths.gameinfo,
+            "GameInfo\n{\n\tFileSystem\n\t{\n\t\tSearchPaths\n\t{\n\t\t\tGame citadel\n\t\t}\n\t}\n\tConVars\n\t{\n\t\tfps_max 400\n\t}\n}\n",
+        )
+        .expect("gameinfo");
+
+        let fixture =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../shiv-core/tests/data/complock-soundcap-part.z"))
+                .expect("the soundcap fixture");
+        let (running, fetches) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        let (flag, count, located, served) =
+            (running.clone(), fetches.clone(), paths.clone(), fixture.clone());
+        let app = App::new().expect("app");
+        downloads::attach(&app);
+        performance::attach_with(
+            &app,
+            performance::Deps {
+                locate: Arc::new(move || Ok(located.clone())),
+                running: Arc::new(move || flag.load(Ordering::Relaxed)),
+                fetch: Arc::new(move |etag| {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    if etag == Some("\"e1\"") {
+                        return Ok(None);
+                    }
+                    Ok(Some(("\"e1\"".into(), PERF_CATALOG.as_bytes().to_vec())))
+                }),
+                cache: Some(shiv_core::perf::CatalogCache::new(temp.path().join("cache"))),
+                pack_download: Arc::new(move |url, dest, cancel, progress| {
+                    assert!(
+                        url.starts_with("https://deadlockconfig.com/dl/"),
+                        "the part url resolved on the site: {url}"
+                    );
+                    std::fs::write(dest, &served).expect("serve the part");
+                    progress(served.len() as u64, Some(served.len() as u64));
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".into());
+                    }
+                    Ok(())
+                }),
+            },
+        );
+        app.show().expect("show");
+        let state = app.global::<PerfState>();
+        app.set_screen(4);
+        let ready = |a: &App| {
+            let s = a.global::<PerfState>();
+            s.get_load_state() == LoadState::Ready && s.get_pack_rows().row_count() > 0
+        };
+        assert!(run_until(&app, Duration::from_secs(20), ready));
+
+        // The rows are the embedded data: the HUD base, the FOV field, and
+        // the options under a heading per group that has any.
+        let expected_rows = 2
+            + complock::groups()
+                .iter()
+                .filter(|g| {
+                    complock::options()
+                        .iter()
+                        .any(|o| o.group.as_deref() == Some(g.id.as_str()))
+                })
+                .count()
+            + complock::options().len();
+        assert_eq!(state.get_pack_rows().row_count(), expected_rows);
+        let pack_row = |app: &App, id: &str| {
+            app.global::<PerfState>()
+                .get_pack_rows()
+                .iter()
+                .find(|r| r.id == id)
+                .expect("the row")
+        };
+        let soundcap = pack_row(&app, "soundcap");
+        assert!(soundcap.has_pak && !soundcap.has_toggle);
+        assert!(soundcap.install_label.contains("Install"), "{}", soundcap.install_label);
+        let ragdolls = pack_row(&app, "ragdolls");
+        assert!(ragdolls.has_toggle && !ragdolls.has_pak);
+        assert!(!ragdolls.checked, "the fixture's file leaves ragdolls unset");
+        let hud = pack_row(&app, "hud");
+        assert!(
+            hud.has_pak
+                && hud.choices.row_count() == complock::hud().expect("hud").choices.len()
+        );
+        assert!(pack_row(&app, "fov").step > 0.0, "the FOV row carries the slider");
+
+        // A convar option stages on, then its off value: the site's
+        // gameinfo_else, not a removed line.
+        state.invoke_toggle_pack("ragdolls".into());
+        let changes: Vec<_> = state.get_changes().iter().collect();
+        let ragdoll_change = changes
+            .iter()
+            .find(|c| c.name == "cl_disable_ragdolls")
+            .expect("the on value staged");
+        assert_eq!(ragdoll_change.after.as_str(), "true");
+        assert!(pack_row(&app, "ragdolls").checked);
+        state.invoke_toggle_pack("ragdolls".into());
+        let changes: Vec<_> = state.get_changes().iter().collect();
+        let ragdoll_change = changes
+            .iter()
+            .find(|c| c.name == "cl_disable_ragdolls")
+            .expect("the off value staged");
+        assert_eq!(ragdoll_change.after.as_str(), "false");
+        assert!(!pack_row(&app, "ragdolls").checked);
+
+        // The FOV slider stages r_aspectratio at the site's step precision.
+        state.invoke_set_fov(2.3);
+        let changes: Vec<_> = state.get_changes().iter().collect();
+        let fov_change = changes
+            .iter()
+            .find(|c| c.name == "r_aspectratio")
+            .expect("the FOV staged");
+        assert_eq!(fov_change.after.as_str(), "2.3");
+        assert_eq!(pack_row(&app, "fov").value_text.as_str(), "2.3");
+
+        // A HUD choice stages its convar line and resolves its own pak.
+        let hidden = complock::hud()
+            .expect("hud")
+            .choices
+            .iter()
+            .position(|c| c.id == "hidden")
+            .expect("the hidden damage choice");
+        state.invoke_pick_pack_choice("hud".into(), hidden as i32);
+        let changes: Vec<_> = state.get_changes().iter().collect();
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.name == "citadel_damage_text_batching_window_individual"),
+            "the choice's line staged: {changes:?}"
+        );
+
+        // A pak option installs end to end and reports on Downloads.
+        state.invoke_install_pack("soundcap".into());
+        let sidecar = paths.addons.join(".shiv/complock-soundcap.json");
+        let sidecar_there = move |_a: &App| sidecar.is_file();
+        assert!(run_until(&app, Duration::from_secs(20), sidecar_there));
+        let done = |a: &App| {
+            let rows = a.global::<crate::DownloadsState>().get_rows();
+            rows.iter().any(|r| r.id.as_str() == "complock-soundcap")
+                && a.global::<PerfState>()
+                    .get_pack_rows()
+                    .iter()
+                    .any(|r| r.id == "soundcap" && r.install_label == "Update")
+        };
+        assert!(
+            run_until(&app, Duration::from_secs(20), done),
+            "the Downloads row finished and the option shows installed"
+        );
+        let downloads_row = app
+            .global::<crate::DownloadsState>()
+            .get_rows()
+            .iter()
+            .find(|r| r.id.as_str() == "complock-soundcap")
+            .expect("the Downloads row");
+        assert_eq!(downloads_row.phase, DownloadPhase::Done);
+        assert!(downloads_row.name.contains("Sound stack update cap"));
+        let mod_vpks: Vec<_> = std::fs::read_dir(&paths.addons)
+            .expect("addons")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".vpk"))
+            .collect();
+        assert_eq!(mod_vpks.len(), 1, "{mod_vpks:?}");
+        let written = std::fs::read(
+            paths.addons.join(mod_vpks.first().expect("the vpk").clone()),
+        )
+        .expect("the installed vpk");
+        assert_eq!(
+            written,
+            complock::inflate(&fixture).expect("the fixture inflates"),
+            "the installed bytes are the part's declared VPK"
+        );
+
+        // A re-install updates in place: still one mod, one VPK.
+        state.invoke_install_pack("soundcap".into());
+        let addons = paths.addons.clone();
+        let one_vpk = move |_a: &App| {
+            std::fs::read_dir(&addons)
+                .map(|entries| {
+                    entries
+                        .filter(|e| {
+                            e.as_ref()
+                                .is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".vpk"))
+                        })
+                        .count()
+                })
+                .is_ok_and(|n| n == 1)
+        };
+        assert!(
+            run_until(&app, Duration::from_secs(20), one_vpk) && one_vpk(&app),
+            "the re-install replaced the mod's files"
+        );
+        let sidecars: Vec<_> = std::fs::read_dir(paths.addons.join(".shiv"))
+            .expect("the sidecar dir")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("complock-"))
+            .collect();
+        assert_eq!(sidecars, ["complock-soundcap.json"], "one mod, same id");
     }
 
     fn crosshair_flow() {
