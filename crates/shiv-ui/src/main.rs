@@ -1009,7 +1009,7 @@ mod tests {
                 a.global::<PerfState>()
                     .get_pack_rows()
                     .iter()
-                    .any(|r| r.id == "hud" && !r.installing && r.install_label == "Update")
+                    .any(|r| r.id == "hud" && !r.installing && r.install_label == "Installed")
             }),
         );
         let hud_mods = shiv_core::sidecar::group(&paths.addons)
@@ -2077,7 +2077,7 @@ mod tests {
                 && a.global::<PerfState>()
                     .get_pack_rows()
                     .iter()
-                    .any(|r| r.id == "soundcap" && r.install_label == "Update")
+                    .any(|r| r.id == "soundcap" && r.install_label == "Installed" && r.current)
         };
         assert!(
             run_until(&app, Duration::from_secs(20), done),
@@ -2109,8 +2109,24 @@ mod tests {
             "the installed bytes are the part's declared VPK"
         );
 
-        // A re-install updates in place: still one mod, one VPK.
-        state.invoke_install_pack("soundcap".into());
+        // Kai (t309u): installed and current reads "Installed", not
+        // "Update"; Reinstall forces it, with a real click, in place: still
+        // one mod, one VPK.
+        assert!(
+            ElementHandle::find_by_accessible_label(&app, "Update")
+                .all(|e| e.accessible_role()
+                    != Some(i_slint_backend_testing::AccessibleRole::Button)),
+            "no Update button while nothing changed"
+        );
+        let sidecar_file = paths.addons.join(".shiv/complock-soundcap.json");
+        let before = std::fs::metadata(&sidecar_file)
+            .and_then(|m| m.modified())
+            .ok();
+        run_until(&app, Duration::from_millis(1100), |_| false);
+        let reinstall = ElementHandle::find_by_accessible_label(&app, "Reinstall")
+            .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button))
+            .expect("the Reinstall button");
+        pointer_click(&app, &reinstall);
         let addons = paths.addons.clone();
         let one_vpk = move |_a: &App| {
             std::fs::read_dir(&addons)
@@ -2124,16 +2140,50 @@ mod tests {
                 })
                 .is_ok_and(|n| n == 1)
         };
-        let settled = move |a: &App| {
+        let settled = Rc::new(move |a: &App| {
             one_vpk(a)
                 && a.global::<PerfState>()
                     .get_pack_rows()
                     .iter()
-                    .any(|r| r.id == "soundcap" && !r.installing && r.install_label == "Update")
-        };
+                    .any(|r| r.id == "soundcap" && !r.installing && r.install_label == "Installed")
+        });
+        let rewritten = sidecar_file.clone();
+        let first = settled.clone();
         assert!(
-            run_until(&app, Duration::from_secs(20), settled),
+            run_until(&app, Duration::from_secs(20), move |a| first(a)
+                && std::fs::metadata(&rewritten)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    != before),
             "the re-install replaced the mod's files"
+        );
+
+        // A pak installed at another revision (the site moved on) is an
+        // update: the Update button shows, and a click brings it current.
+        let mut old = shiv_core::sidecar::read(&paths.addons, "complock-soundcap")
+            .expect("read")
+            .expect("the sidecar");
+        old.version = Some("crc32:00000000".into());
+        shiv_core::sidecar::write(&paths.addons, &old).expect("write");
+        state.invoke_shown();
+        assert!(
+            run_until(&app, Duration::from_secs(10), |a| a
+                .global::<PerfState>()
+                .get_pack_rows()
+                .iter()
+                .any(|r| r.id == "soundcap"
+                    && r.install_label == "Update"
+                    && !r.current)),
+            "an older revision reads Update"
+        );
+        run_until(&app, Duration::from_millis(100), |_| false);
+        let update = ElementHandle::find_by_accessible_label(&app, "Update")
+            .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button))
+            .expect("the Update button");
+        pointer_click(&app, &update);
+        assert!(
+            run_until(&app, Duration::from_secs(20), move |a| settled(a)),
+            "the update brought it current"
         );
         let sidecars: Vec<_> = std::fs::read_dir(paths.addons.join(".shiv"))
             .expect("the sidecar dir")
