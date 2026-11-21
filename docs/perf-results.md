@@ -219,10 +219,11 @@ run-to-run spread is loopback scheduling, not parse).
   thumbs.rs): a 2000×1500 source decodes to 240×135 (fill) / 720×540
   (fit) RGBA — `width × height × 4` bytes in the cache, never the
   12 MB source bitmap.
-
-Not yet built (see issue #4): interchange import peak-RSS probe,
-Downloads model-storm `row_changed` count, and the CI job that gates
-these baselines on every push (`perf.yml`).
+- `importing_a_multi_mod_bundle_stays_within_its_largest_vpk`
+  (shiv-core tests/interchange_import_peak.rs): a 90-mod bundle with a
+  12 MiB largest VPK imports and adopts with total allocation under
+  1.2× that VPK — the manifest is the only whole-file read, hashing is
+  chunked, nothing re-buffers a VPK. Numbers below.
 
 ## Allocation ceilings — 2026-11-21, the dev workstation (issue #6)
 
@@ -262,6 +263,38 @@ fixture variance — temp-path lengths differ (`/tmp` on CI against a
 `cargo test --workspace` in CI with the observed number in the message;
 the author removes the allocation or raises the ceiling with a written
 reason (what the bytes are, why the flow needs them).
+
+## Interchange import peak — 2026-11-21, the dev workstation (issue #4)
+
+Machine and profile as the allocation ceilings above (Apple M1 Pro,
+macOS, debug; **not lea**). Harness:
+`shiv-core/tests/interchange_import_peak.rs`, the same
+`CountingAlloc` as `tests/alloc_ceilings.rs` standing in for peak RSS —
+total bytes handed out during the import, worst of three runs on fresh
+libraries after one unmeasured warmup. Fixture: a synthetic 90-mod
+bundle (hand-written manifest, real VPKs, distinct sizes), the last mod
+carrying a 12 MiB VPK; 90 is near the realizable domain limit for a
+fresh import (every imported VPK takes a pak slot, at most 99 mount per
+search path — the bound the reorder bench records). The gate: worst
+total ≤ 1.2× the largest VPK's size on disk (12,582,986 B, limit
+15,099,583 B).
+
+| Flow | Worst of 3 | Ratio to largest VPK |
+|---|---|---|
+| fresh import (copy into staging, rename into place) | 5,042,740 B | 0.40× |
+| adoption in place (size-then-hash match, chunked SHA-256) | 7,206,852 B | 0.57× |
+
+The adoption number is after a fix the gate forced: `adopt_or_install`
+re-ran `sidecar::group` on the whole library after every adopted mod to
+find the files it had just claimed — quadratic sidecar parsing, 26.4 MB
+on the first 8 MiB fixture (3.1× its largest VPK; 2.1× the shipped
+12 MiB one). Adopting writes a sidecar only, so the files are the ones
+the listing already read; the loop now walks them directly and the
+total dropped 3.7×. A single re-buffered VPK (the failure shape the
+gate exists for) would add the full 12 MiB and land past 1.5×. The
+remaining per-mod cost — `addons::list` and the by-size map are rebuilt
+per mod — is bounded by the same pak capacity and stays well under the
+gate.
 
 ## Scroll-peak experiments (lea, 2026-11-21)
 

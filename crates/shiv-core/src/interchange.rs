@@ -844,16 +844,11 @@ fn adopt_or_install(
     let sc =
         sidecar::adopt(addons, &group, name, m.description.clone()).map_err(|e| e.to_string())?;
     // The document's state wins: an enabled mod switches stray `.disabled`
-    // files on, a disabled one switches the enabled ones off.
-    let after = sidecar::group(addons);
-    if let Some(installed) = after
-        .iter()
-        .find(|x| x.sidecar.as_ref().is_some_and(|s| s.mod_id == sc.mod_id))
-    {
-        for vpk in &installed.vpks {
-            if vpk.enabled != m.enabled {
-                let _ = addons::set_enabled(vpk, m.enabled);
-            }
+    // files on, a disabled one switches the enabled ones off. The files are
+    // the ones just adopted, still in the state the listing read.
+    for vpk in &group.vpks {
+        if vpk.enabled != m.enabled {
+            let _ = addons::set_enabled(vpk, m.enabled);
         }
     }
     Ok((true, sc.mod_id))
