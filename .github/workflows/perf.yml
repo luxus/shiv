@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -25,9 +27,36 @@ jobs:
             libfontconfig1-dev libxkbcommon-dev libwayland-dev pkg-config
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
-      - name: Bench (reorder)
-        run: cargo bench -p shiv-core --bench reorder -- --warm-up-time 2 --measurement-time 2
-      - name: Bench (catalog)
-        run: cargo bench -p shiv-api --bench catalog -- --warm-up-time 2 --measurement-time 2
+      - name: Resolve the bench comparison base
+        run: |
+          base="${{ github.event.before }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="${{ github.sha }}^"
+          fi
+          echo "BENCH_BASE=$base" >> "$GITHUB_ENV"
+      - name: Bench the comparison base, saving the criterion baseline
+        run: |
+          git checkout --detach "$BENCH_BASE"
+          cargo bench -p shiv-core --bench reorder \
+            -- --warm-up-time 2 --measurement-time 2 --save-baseline push \
+            | tee "$RUNNER_TEMP/reorder-base.log"
+          cargo bench -p shiv-api --bench catalog \
+            -- --warm-up-time 2 --measurement-time 2 --save-baseline push \
+            | tee "$RUNNER_TEMP/catalog-base.log"
+      - name: Bench the pushed tree against the saved baseline
+        run: |
+          git checkout --detach "${{ github.sha }}"
+          cargo bench -p shiv-core --bench reorder \
+            -- --warm-up-time 2 --measurement-time 2 --baseline-lenient push \
+            | tee "$RUNNER_TEMP/reorder-candidate.log"
+          cargo bench -p shiv-api --bench catalog \
+            -- --warm-up-time 2 --measurement-time 2 --baseline-lenient push \
+            | tee "$RUNNER_TEMP/catalog-candidate.log"
+      - name: Post the bench diff, failing regressed benches beyond +25%
+        run: >
+          python3 scripts/bench_diff_summary.py
+          --base "$RUNNER_TEMP/reorder-base.log" "$RUNNER_TEMP/catalog-base.log"
+          --candidate "$RUNNER_TEMP/reorder-candidate.log" "$RUNNER_TEMP/catalog-candidate.log"
+          --base-ref "$BENCH_BASE" --head-ref "${{ github.sha }}"
       - name: Allocation gates
         run: cargo test -p shiv-core --test alloc_ceilings --test interchange_import_peak
