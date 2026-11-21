@@ -2,7 +2,6 @@ use crate::{
     error::{Result, VpkError},
     types::*,
 };
-use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::File;
@@ -388,7 +387,7 @@ impl VpkParser {
         header: &VpkHeader,
         hashes: ContentHashes,
         file_path: &str,
-        last_modified: Option<DateTime<Utc>>,
+        last_modified: Option<String>,
         include_merkle: bool,
     ) -> VpkFingerprint {
         let has_multiparts = self.detect_multiparts(entries);
@@ -405,7 +404,7 @@ impl VpkParser {
         VpkFingerprint {
             file_path: file_path.to_string(),
             file_size: hashes.size,
-            last_modified: last_modified.map(|dt| dt.to_rfc3339()),
+            last_modified,
             fast_hash: hashes.fast_hash,
             sha256: hashes.sha256,
             content_signature,
@@ -614,6 +613,19 @@ mod tests {
             include_entries: true,
             ..VpkParseOptions::default()
         }
+    }
+
+    #[test]
+    fn rfc3339_last_modified_lands_in_the_fingerprint_verbatim() {
+        let mut options = options();
+        options.last_modified = Some("2026-11-21T12:00:00Z".to_string());
+
+        let parsed = VpkParser::parse(std::fs::read(FIXTURE).unwrap(), options).unwrap();
+
+        assert_eq!(
+            parsed.fingerprint.last_modified.as_deref(),
+            Some("2026-11-21T12:00:00Z")
+        );
     }
 
     #[test]

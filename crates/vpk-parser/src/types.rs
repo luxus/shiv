@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +52,8 @@ pub struct VpkParsed {
 pub struct VpkParseOptions {
     pub include_full_file_hash: bool,
     pub file_path: String,
-    pub last_modified: Option<DateTime<Utc>>,
+    /// Modification time as RFC-3339 text, carried into the fingerprint verbatim.
+    pub last_modified: Option<String>,
     pub include_merkle: bool,
     pub include_entries: bool,
 }
