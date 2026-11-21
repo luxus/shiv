@@ -55,7 +55,7 @@ pub(crate) struct Deps {
 }
 
 impl Deps {
-    fn system(api_url: &str) -> Self {
+    pub(crate) fn system(api_url: &str) -> Self {
         let client = Arc::new(Client::new(api_url));
         let download = client.clone();
         Deps {
@@ -1050,8 +1050,24 @@ impl Perf {
                 .or(option.warn.as_deref()),
             convars: choice.map_or(&option.convars, |c| &c.convars),
             choices: &option.choices,
-            pak: choice.and_then(|c| c.pak.as_ref()).or(option.pak.as_ref()),
+            pak: self.option_pak(option),
         })
+    }
+
+    /// The pak an option's Install fetches: the picked choice's, else the
+    /// default choice's (an option such as Particle Pruning publishes its
+    /// paks only on its choices), else the option's own.
+    fn option_pak<'a>(&self, option: &'a complock::PackOption) -> Option<&'a complock::Pak> {
+        let index = self
+            .pack_choices
+            .borrow()
+            .get(&option.id)
+            .copied()
+            .or_else(|| option.choices.iter().position(|c| c.default));
+        index
+            .and_then(|i| option.choices.get(i))
+            .and_then(|c| c.pak.as_ref())
+            .or(option.pak.as_ref())
     }
 
     /// The HUD++ row: its damage-number choices and the pak the picked one
@@ -1757,14 +1773,7 @@ impl Perf {
                 .iter()
                 .find(|o| o.id == id)
                 .and_then(|option| {
-                    let pak = self
-                        .pack_choices
-                        .borrow()
-                        .get(&option.id)
-                        .copied()
-                        .and_then(|i| option.choices.get(i))
-                        .and_then(|c| c.pak.as_ref())
-                        .or(option.pak.as_ref())?;
+                    let pak = self.option_pak(option)?;
                     Some(PackTask::of(
                         pack_mod_id(id),
                         format!("CompLock {}", option.title),
@@ -1801,6 +1810,11 @@ impl Perf {
                 }
             }
             PackUpdate::Done(result) => {
+                let name = self
+                    .pack_jobs
+                    .borrow()
+                    .get(id)
+                    .map_or_else(|| id.to_owned(), |j| j.task.name.clone());
                 if current {
                     self.pack_jobs.borrow_mut().remove(id);
                 }
@@ -1812,6 +1826,9 @@ impl Perf {
                         crate::launch::refresh();
                     }
                     Err((text, running)) => {
+                        if text != CANCELLED_TEXT {
+                            self.show_result(&format!("Couldn't install {name}"), &text, true);
+                        }
                         let outcome = if text == CANCELLED_TEXT {
                             crate::downloads::Outcome::Cancelled
                         } else {
@@ -2147,6 +2164,55 @@ mod tests {
             fetch,
             cache: Some(cache),
             pack_download: Arc::new(|_, _, _, _| Err("no pack downloads in unit tests".into())),
+        }
+    }
+
+    /// Diagnosis: the real pack install (real client, real site) into a
+    /// temp copy of an addons folder (`SHIV_ADDONS_COPY`).
+    #[test]
+    #[ignore = "network; needs SHIV_ADDONS_COPY"]
+    fn real_pack_install_into_a_copy() {
+        let Ok(copy) = std::env::var("SHIV_ADDONS_COPY") else {
+            return;
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = shiv_core::game::GamePaths::from_root(temp.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let ok = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(format!("{copy}/."))
+            .arg(&paths.addons)
+            .status()
+            .expect("cp")
+            .success();
+        assert!(ok);
+        let mut deps = Deps::system(crate::DEFAULT_API_URL);
+        let located = paths.clone();
+        deps.locate = Arc::new(move || Ok(located.clone()));
+        deps.running = Arc::new(|| false);
+        let ids: Vec<String> = std::iter::once(PACK_HUD_ID.to_owned())
+            .chain(
+                complock::options()
+                    .iter()
+                    .filter(|o| o.pak.is_some())
+                    .map(|o| o.id.clone()),
+            )
+            .collect();
+        for id in ids {
+            let pak = complock::release_for(&pack_mod_id(&id), None).expect("published");
+            let task = PackTask::of(pack_mod_id(&id), format!("CompLock {id}"), pak);
+            let r = run_pack_install(&deps, task, &AtomicBool::new(false), |_| {});
+            eprintln!("{id}: {r:?}");
+        }
+        for m in shiv_core::sidecar::group(&paths.addons) {
+            eprintln!(
+                "{:?} {:?}",
+                m.sidecar.map(|s| s.mod_id),
+                m.vpks
+                    .iter()
+                    .map(|v| v.file.file_name().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            );
         }
     }
 

@@ -114,6 +114,8 @@ export struct PerfChange {
 }
 
 export global PerfState {
+    // Left column of the page: 0 the CompLock options, 1 every setting.
+    in-out property <int> section: 0;
     in property <LoadState> load-state: LoadState.loading;
     in property <string> error-text;
     // Line under the title: catalog revision and the file's state.
@@ -313,12 +315,13 @@ component PackRow inherits Rectangle {
                 HorizontalLayout {
                     spacing: Theme.s1;
                     alignment: start;
+                    // The name stays whole; the averages elide first.
                     Text {
                         text: root.item.title;
+                        min-width: self.preferred-width;
                         color: Theme.text;
                         font-size: Theme.text-md;
                         font-weight: 600;
-                        overflow: elide;
                     }
                     Text {
                         text: root.item.detail;
@@ -731,48 +734,61 @@ export component PerformancePage inherits Rectangle {
             clicked => { PerfState.stage-complock(); }
         }
 
-        // The site's options under their card: group headings, options with
-        // their convar switches, choice dropdowns and pak installs, the
-        // HUD++ base and the FOV slider.
-        if PerfState.load-state == LoadState.ready: Rectangle {
-            height: 198px;
-            border-radius: Theme.radius;
-            border-width: 1px;
-            border-color: Theme.border;
-            clip: true;
-            ListView {
-                x: 1px;
-                y: 1px;
-                width: parent.width - 2px;
-                height: parent.height - 2px;
-                for pack[i] in PerfState.pack-rows: PackRow {
-                    item: pack;
-                    toggled => { PerfState.toggle-pack(pack.id); }
-                    picked(c) => { PerfState.pick-pack-choice(pack.id, c); }
-                    installed => { PerfState.install-pack(pack.id); }
-                    fov-changed(v) => { PerfState.set-fov(v); }
-                }
-            }
-        }
-
         if PerfState.load-state == LoadState.ready: HorizontalLayout {
             vertical-stretch: 1;
             spacing: Theme.s3;
 
-            // Searchable list of every setting.
+            // The left column fills the page height and is its one scroll:
+            // either the site's CompLock options (group headings, convar
+            // switches, choice dropdowns, pak installs, HUD++ base, FOV) or
+            // the searchable list of every setting.
             VerticalLayout {
                 horizontal-stretch: 1;
                 spacing: Theme.s1;
-                SearchField {
+                HorizontalLayout {
+                    spacing: Theme.s1;
+                    alignment: start;
+                    Button {
+                        text: "CompLock options";
+                        primary: PerfState.section == 0;
+                        clicked => { PerfState.section = 0; }
+                    }
+                    Button {
+                        text: "All settings";
+                        primary: PerfState.section == 1;
+                        clicked => { PerfState.section = 1; }
+                    }
+                }
+                if PerfState.section == 0: complock-options := Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
+                    ListView {
+                        x: 1px;
+                        y: 1px;
+                        width: parent.width - 2px;
+                        height: parent.height - 2px;
+                        for pack[i] in PerfState.pack-rows: PackRow {
+                            item: pack;
+                            toggled => { PerfState.toggle-pack(pack.id); }
+                            picked(c) => { PerfState.pick-pack-choice(pack.id, c); }
+                            installed => { PerfState.install-pack(pack.id); }
+                            fov-changed(v) => { PerfState.set-fov(v); }
+                        }
+                    }
+                }
+                if PerfState.section == 1: SearchField {
                     placeholder: "Search settings";
                     edited(t) => { PerfState.search(t); }
                 }
-                Text {
+                if PerfState.section == 1: Text {
                     text: PerfState.list-note;
                     color: Theme.text-muted;
                     font-size: Theme.text-sm;
                 }
-                Rectangle {
+                if PerfState.section == 1: Rectangle {
                     vertical-stretch: 1;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -794,10 +810,12 @@ export component PerformancePage inherits Rectangle {
             // The selected setting, the pending changes and Apply.
             VerticalLayout {
                 horizontal-stretch: 0;
-                width: 340px;
+                // The CompLock options have no setting editor: the column
+                // narrows to the pending changes and Apply.
+                width: PerfState.section == 0 ? 300px : 340px;
                 spacing: Theme.s2;
 
-                EditorPanel {
+                if PerfState.section == 1: EditorPanel {
                     vertical-stretch: 3;
                     min-height: 220px;
                     e: PerfState.editor;

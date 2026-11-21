@@ -203,6 +203,7 @@ impl Sources {
                     .registry()
                     .ok()
                     .and_then(|r| r.find(&origin, &descriptor.source_id).cloned())
+                    .filter(|existing| !existing.predates_origins())
                 {
                     state.set_add_error(
                         format!(

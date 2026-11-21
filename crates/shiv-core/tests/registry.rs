@@ -43,6 +43,59 @@ fn the_same_source_cannot_be_added_twice() {
     assert_eq!(registries.sources().len(), 3);
 }
 
+/// Shiv 0.2.0 saved sources without their origins (the exact list on
+/// lea); 0.3.0 refused to read it ("missing field `api_origins`"), which took
+/// down adding, browsing and installing from every source. The list loads,
+/// and reviewing the real luxus descriptor (`data/luxus-dmm-source.json`,
+/// the live file) replaces the old entry of the same origin and id.
+#[test]
+fn a_source_list_from_before_origins_loads_and_a_review_replaces_it() {
+    let root = tempdir().unwrap();
+    let paths = GamePaths::from_root(root.path().join("Deadlock"));
+    fs::create_dir_all(&paths.addons).unwrap();
+    let legacy = r#"[
+  {
+    "descriptor_url": "https://luxus.github.io/improved-quickbuy/dmm-source.json",
+    "origin": "https://luxus.github.io",
+    "source_id": "luxus",
+    "name": "luxus Deadlock mods"
+  }
+]"#;
+    fs::write(paths.root.join("shiv-sources.json"), legacy).unwrap();
+    let mut registries = registry::Registry::load(&paths).expect("a 0.2.0 list loads");
+    assert_eq!(registries.sources().len(), 1);
+    assert!(registries.sources()[0].api_origins.is_empty());
+
+    let live: serde_json::Value =
+        serde_json::from_str(include_str!("data/luxus-dmm-source.json")).unwrap();
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let reviewed = AddedSource {
+        descriptor_url: "https://luxus.github.io/deadlock-mods/dmm-source.json".into(),
+        origin: "https://luxus.github.io".into(),
+        source_id: live["sourceId"].as_str().unwrap().into(),
+        name: live["name"].as_str().unwrap().into(),
+        api_origins: strings(&live["networkOrigins"]["api"]),
+        download_origins: strings(&live["networkOrigins"]["downloads"]),
+    };
+    registries
+        .add(reviewed.clone())
+        .expect("the review replaces the old entry");
+    let reloaded = registry::Registry::load(&paths).unwrap();
+    assert_eq!(reloaded.sources(), std::slice::from_ref(&reviewed));
+
+    let mut again = reloaded;
+    assert!(matches!(
+        again.add(reviewed),
+        Err(RegistryError::Refused(_))
+    ));
+}
+
 #[test]
 fn a_removed_source_is_gone_and_stays_gone() {
     let paths = env();

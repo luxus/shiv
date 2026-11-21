@@ -59,7 +59,7 @@ winresource = "0.1"
 
 [dev-dependencies]
 # Headless Slint platform for driving the UI in tests (same version as slint).
-i-slint-backend-testing = { version = "=1.18.1", default-features = false }
+i-slint-backend-testing = { version = "=1.18.1", default-features = false, features = ["renderer-software"] }
 tiny_http = "0.12.0"
 # Builds repair fixtures (compiled game data packed into VPKs) in tests.
 vpkmanager = { path = "../vpkmanager" }

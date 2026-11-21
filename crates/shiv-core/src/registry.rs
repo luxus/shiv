@@ -96,12 +96,23 @@ pub struct AddedSource {
     pub name: String,
     /// The origins the reviewed descriptor declared, kept with the saved
     /// source so an install can check a resolver's answer against exactly
-    /// what the user reviewed.
+    /// what the user reviewed. Empty for a source saved before origins were
+    /// recorded (Shiv 0.2.0 and older): such a list still loads, and a
+    /// re-review replaces the entry (see [`Registry::add`]).
+    #[serde(default)]
     pub api_origins: Vec<String>,
+    #[serde(default)]
     pub download_origins: Vec<String>,
 }
 
 impl AddedSource {
+    /// Saved before Shiv recorded the reviewed origins (0.2.0 and older):
+    /// reviewing the same source again replaces it instead of being refused.
+    #[must_use]
+    pub fn predates_origins(&self) -> bool {
+        self.api_origins.is_empty() && self.download_origins.is_empty()
+    }
+
     #[must_use]
     pub fn api_origins(&self) -> Vec<String> {
         self.api_origins.clone()
@@ -167,19 +178,24 @@ impl Registry {
 
     /// Remember a reviewed source. The origin of its descriptor plus the
     /// declared `sourceId` is its identity: the same pair twice is a
-    /// duplicate, whatever URL it was reviewed from.
+    /// duplicate, whatever URL it was reviewed from — except over an entry
+    /// saved before origins were recorded, which the new review replaces.
     ///
     /// # Errors
     ///
     /// [`RegistryError::Refused`] naming the existing entry when the pair is
     /// already added; [`RegistryError::Io`] when the list cannot be saved.
     pub fn add(&mut self, source: AddedSource) -> Result<(), RegistryError> {
-        if let Some(existing) = self.find(&source.origin, &source.source_id) {
+        if let Some(existing) = self.find(&source.origin, &source.source_id)
+            && !existing.predates_origins()
+        {
             return Err(RegistryError::Refused(format!(
                 "{} is already added from {}",
                 existing.name, existing.descriptor_url
             )));
         }
+        self.sources
+            .retain(|s| !(s.origin == source.origin && s.source_id == source.source_id));
         self.sources.push(source);
         self.sources.sort_by(|a, b| {
             a.name
