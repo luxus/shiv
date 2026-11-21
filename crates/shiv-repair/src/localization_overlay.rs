@@ -3591,6 +3591,67 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn duplicate_token_rows_keep_the_last_value() {
+        let bytes = br#""lang"
+{
+  "Language" "English"
+  "Tokens"
+  {
+    "hero_test" "First"
+    "hero_test" "Second"
+  }
+}
+"#;
+
+        let parsed = parse_localization_bytes(bytes, "duplicates.txt").unwrap();
+        assert_eq!(
+            parsed.file.tokens.get("hero_test"),
+            Some(&"Second".to_string())
+        );
+    }
+
+    #[test]
+    fn structural_keys_match_regardless_of_case() {
+        let bytes = br#""LANG"
+{
+  "language" "English"
+  "tokens"
+  {
+    "hero_test" "Value"
+  }
+}
+"#;
+
+        let parsed = parse_localization_bytes(bytes, "case.txt").unwrap();
+        assert_eq!(parsed.file.language, "English");
+        assert_eq!(
+            parsed.file.tokens.get("hero_test"),
+            Some(&"Value".to_string())
+        );
+    }
+
+    #[test]
+    fn unquoted_token_values_keep_their_exact_text() {
+        let bytes = br#""lang"
+{
+  "Language" "English"
+  "Tokens"
+  {
+    "hero_id" 007
+    "hero_big" 123456789012345678901234567890
+  }
+}
+"#;
+
+        let parsed = parse_localization_bytes(bytes, "unquoted.txt").unwrap();
+        assert_eq!(parsed.file.tokens.get("hero_id"), Some(&"007".to_string()));
+        assert_eq!(
+            parsed.file.tokens.get("hero_big"),
+            Some(&"123456789012345678901234567890".to_string())
+        );
+    }
+
+    #[test]
     fn localization_scan_covers_every_language_and_nested_folder() {
         const FRENCH_PATH: &str =
             "resource/localization/community/custom_heroes/citadel_heroes_french.txt";
