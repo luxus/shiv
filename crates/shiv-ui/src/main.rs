@@ -323,6 +323,7 @@ mod tests {
         profiles_flow();
         installed_screen();
         registry_flow();
+        registry_blocked_flow();
         launch_flow();
         repair_flow();
         crosshair_flow();
@@ -3095,6 +3096,138 @@ mod tests {
         );
         assert!(!reloaded.sources()[0].predates_origins());
         assert!(paths.addons.join("pak01_dir.vpk").is_file());
+    }
+
+    /// Kai's "nur Quickbuy" (t325u): a source whose catalog lists mods
+    /// Shiv cannot install must still show them, each with its reason, and
+    /// say on its Sources card how many mods it lists, so neither a refused
+    /// entry nor an outdated saved descriptor goes unnoticed. A changed
+    /// snapshot shows on refresh.
+    fn registry_blocked_flow() {
+        use slint::Model;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let descriptor = r#"{"format":"dmm-source","protocolVersion":"1.0",
+           "sourceId":"luxus","name":"luxus Deadlock mods","gameId":"deadlock",
+           "catalog":{"kind":"static","indexUrl":"./catalog.json"},
+           "networkOrigins":{"api":["ORIGIN"],"downloads":["ORIGIN"],"media":["ORIGIN"]}}"#;
+        let catalog = r#"{"snapshotId":"SNAP","items":[
+           {"id":"quickbuy","title":"Improved Quickbuy","availability":"available","detailUrl":"./mods/quickbuy.json"},
+           {"id":"commend","title":"Commend","availability":"unavailable","detailUrl":"./mods/commend.json"},
+           {"id":"links","title":"Profile Links","availability":"available","detailUrl":"./mods/links.json"}
+           EXTRA]}"#;
+        let detail = |id: &str, title: &str, availability: &str| {
+            format!(
+                r#"{{"id":"{id}","title":"{title}","availability":"{availability}",
+                "release":{{"id":"r1","contentRevision":"rev-{id}","version":"1.0.0",
+                "artifacts":[{{"id":"a","filename":"{id}.vpk","format":"vpk",
+                "download":{{"url":"../files/{id}.vpk"}}}}],
+                "installation":{{"mode":"manual"}}}}}}"#
+            )
+        };
+        let (quickbuy, commend, outlines) = (
+            detail("quickbuy", "Improved Quickbuy", "available"),
+            detail("commend", "Commend", "unavailable"),
+            detail("outlines", "Thicker Outlines", "available"),
+        );
+        let next = Arc::new(AtomicBool::new(false));
+        let next_in = next.clone();
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("stub server");
+        let url = format!("http://{}", server.server_addr().to_ip().expect("ip"));
+        let origin = url.clone();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let later = next_in.load(Ordering::SeqCst);
+                let (body, status) = match req.url() {
+                    "/d.json" => (descriptor.replace("ORIGIN", &origin), 200),
+                    "/catalog.json" if later => (
+                        catalog.replace("SNAP", "s5").replace(
+                            "EXTRA",
+                            r#",{"id":"outlines","title":"Thicker Outlines","availability":"available","detailUrl":"./mods/outlines.json"}"#,
+                        ),
+                        200,
+                    ),
+                    "/catalog.json" => (catalog.replace("SNAP", "s4").replace("EXTRA", ""), 200),
+                    "/mods/quickbuy.json" => (quickbuy.clone(), 200),
+                    "/mods/commend.json" => (commend.clone(), 200),
+                    "/mods/outlines.json" => (outlines.clone(), 200),
+                    "/v2/mods" => ("[]".to_owned(), 200),
+                    // Profile Links' detail is missing: the entry is refused.
+                    _ => (String::new(), 404),
+                };
+                let _ =
+                    req.respond(tiny_http::Response::from_string(body).with_status_code(status));
+            }
+        });
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let paths = GamePaths::from_root(root.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        // Saved by an older Shiv: no origins recorded.
+        std::fs::write(
+            paths.root.join("shiv-sources.json"),
+            format!(
+                r#"[{{"descriptor_url":"{url}/d.json","origin":"{url}","source_id":"luxus","name":"luxus Deadlock mods"}}]"#
+            ),
+        )
+        .expect("legacy list");
+        source_filter::set_dir_for_test(Some(root.path().join("settings")));
+        let app = App::new().expect("app");
+        let located = paths.clone();
+        let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
+        browse::attach_with(&app, &url, &locate);
+        sources::attach_with(&app, locate);
+        app.show().expect("show");
+        sources::load();
+
+        let row = |a: &App, id: &str| {
+            let mods = a.global::<BrowseState>().get_mods();
+            (0..mods.row_count())
+                .filter_map(|i| mods.row_data(i))
+                .find(|r| r.id.as_str() == id)
+        };
+        assert!(
+            run_until(&app, Duration::from_secs(10), move |a| {
+                ["quickbuy", "commend", "links"]
+                    .iter()
+                    .all(|id| row(a, &format!("src-luxus-{id}")).is_some())
+            }),
+            "every listed mod is a Browse row"
+        );
+        let quickbuy = row(&app, "src-luxus-quickbuy").expect("quickbuy");
+        assert_eq!(quickbuy.state, InstallState::Idle);
+        let commend = row(&app, "src-luxus-commend").expect("commend");
+        assert_eq!(commend.state, InstallState::Unavailable);
+        assert_eq!(commend.stats.as_str(), "Not available yet");
+        let links = row(&app, "src-luxus-links").expect("links");
+        assert_eq!(links.name.as_str(), "Profile Links");
+        assert_eq!(links.state, InstallState::Unavailable);
+        assert!(links.stats.starts_with("Refused: "), "{}", links.stats);
+
+        let sources = app.global::<crate::SourcesState>();
+        assert!(
+            sources.get_banner_text().contains("Profile Links ("),
+            "the refusal is in the banner: {}",
+            sources.get_banner_text()
+        );
+        let card = sources.get_rows().row_data(0).expect("the card");
+        assert_eq!(
+            card.detail.as_str(),
+            "3 mods \u{b7} 2 cannot be installed \u{b7} saved by an older Shiv: add its descriptor again to review it"
+        );
+
+        // The registry publishes a new snapshot; Refresh shows it.
+        next.store(true, Ordering::SeqCst);
+        sources.invoke_refresh();
+        assert!(
+            run_until(&app, Duration::from_secs(10), move |a| row(
+                a,
+                "src-luxus-outlines"
+            )
+            .is_some_and(|r| r.state == InstallState::Idle)),
+            "the new snapshot's mod appears"
+        );
     }
 
     fn installed_screen() {

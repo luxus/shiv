@@ -45,6 +45,21 @@ fn json(body: impl Into<String>) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_string(body)
 }
 
+/// Why the catalog's one entry was refused; the entry must still be listed,
+/// and never installable.
+fn refusal(listings: &[shiv_api::NativeListing], what: &str) -> String {
+    let [only] = listings else {
+        panic!("{what}: expected the one entry, got {listings:?}");
+    };
+    assert!(
+        !only.installable(),
+        "{what}: a refused entry is installable"
+    );
+    only.problem
+        .clone()
+        .unwrap_or_else(|| panic!("{what}: no problem recorded"))
+}
+
 fn descriptor(origin: &str, kind: &str, index_field: &str) -> String {
     format!(
         r#"{{
@@ -125,10 +140,10 @@ fn an_artifact_outside_the_declared_download_origins_is_refused() {
     let descriptor = client
         .fetch_descriptor(&format!("{origin}/d.json"))
         .unwrap();
-    let refused = client
-        .fetch_catalog(&descriptor)
-        .map_err(|e| e.to_string())
-        .expect_err("an artifact outside the download origins");
+    let refused = refusal(
+        &client.fetch_catalog(&descriptor).unwrap(),
+        "an artifact outside the download origins",
+    );
     assert!(refused.contains("download origins"), "{refused}");
 }
 
@@ -223,10 +238,10 @@ fn a_release_with_an_unsafe_filename_is_refused() {
     let descriptor = client
         .fetch_descriptor(&format!("{origin}/d.json"))
         .unwrap();
-    let refused = client
-        .fetch_catalog(&descriptor)
-        .map_err(|e| e.to_string())
-        .expect_err("a release with an unsafe file name");
+    let refused = refusal(
+        &client.fetch_catalog(&descriptor).unwrap(),
+        "a release with an unsafe file name",
+    );
     assert!(refused.contains("safe file name"), "{refused}");
 }
 
@@ -400,4 +415,41 @@ fn a_release_history_page_parses_into_rows() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].version.as_deref(), Some("1.0.0"));
     assert_eq!(history[0].changelog.as_deref(), Some("First release."));
+}
+
+/// One entry whose documents fail must not take the others down or vanish:
+/// the good entries stay installable, the bad one is listed with why.
+#[test]
+fn one_failing_entry_is_listed_with_its_error_and_the_rest_still_load() {
+    let origin = origin_stub(move |origin, req| match req.url() {
+        url if url.ends_with("/d.json") => json(descriptor(origin, "static", "indexUrl")),
+        url if url.ends_with("/catalog.json") => json(
+            r#"{"snapshotId":"s4","items":[
+            {"id":"good","title":"Good","availability":"available","detailUrl":"./good.json"},
+            {"id":"broken","title":"Broken","availability":"available","detailUrl":"./missing.json"},
+            {"id":"gone","title":"Gone","availability":"removed","detailUrl":"./missing.json"}]}"#,
+        ),
+        url if url.ends_with("/good.json") => json(
+            r#"{"id":"good","title":"Good","availability":"available",
+            "release":{"id":"r1","contentRevision":"rev-1",
+            "artifacts":[{"id":"a1","filename":"good.vpk","format":"vpk",
+            "download":{"url":"../files/good.vpk"}}]}}"#,
+        ),
+        _ => Response::from_string("not found").with_status_code(404),
+    });
+    let client = NativeSourceClient::new();
+    let descriptor = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let listings = client
+        .fetch_catalog(&descriptor)
+        .expect("the catalog loads");
+    let ids: Vec<&str> = listings.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(ids, ["good", "broken", "gone"]);
+    assert!(listings[0].installable() && listings[0].problem.is_none());
+    let broken = &listings[1];
+    assert_eq!(broken.title, "Broken");
+    assert!(!broken.installable());
+    assert!(broken.problem.as_deref().is_some_and(|p| !p.is_empty()));
+    assert!(listings[2].removed, "a removed entry stays removed");
 }

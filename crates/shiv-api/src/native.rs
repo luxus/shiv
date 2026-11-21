@@ -205,7 +205,7 @@ impl NativeSourceClient {
                         item.identity()?
                     )));
                 }
-                listings.push(self.resolve_listing(item, &url, source)?);
+                listings.push(self.resolve_or_refuse(item, &url, source)?);
             }
             next = next_page;
         }
@@ -247,11 +247,40 @@ impl NativeSourceClient {
                         item.identity()?
                     )));
                 }
-                listings.push(self.resolve_listing(item, &url, source)?);
+                listings.push(self.resolve_or_refuse(item, &url, source)?);
             }
             next = next_cursor;
         }
         Ok(listings)
+    }
+
+    /// One catalog entry as a listing. An entry whose own documents fail
+    /// (a detail that does not load, an artifact off the download origins,
+    /// an unsafe file name) is refused on its own: it comes back
+    /// uninstallable with [`NativeListing::problem`] saying why, so one bad
+    /// entry neither takes the source down nor vanishes without a word.
+    /// Only an entry without an id fails the catalog.
+    fn resolve_or_refuse(
+        &self,
+        item: PageItem,
+        page_url: &str,
+        source: &SourceDescriptor,
+    ) -> Result<NativeListing, ApiError> {
+        let id = item.identity()?.to_owned();
+        let title = item.title.clone().unwrap_or_default();
+        let nsfw = item.is_nsfw;
+        // A removed entry stays removed (hidden) even when its documents fail.
+        let removed = item.availability.as_deref() == Some("removed");
+        Ok(self
+            .resolve_listing(item, page_url, source)
+            .unwrap_or_else(|e| NativeListing {
+                id,
+                title,
+                nsfw,
+                removed,
+                problem: Some(e.to_string()),
+                ..NativeListing::default()
+            }))
     }
 
     fn resolve_listing(
@@ -456,6 +485,8 @@ pub struct NativeListing {
     pub updated_at: Option<String>,
     pub release: Option<NativeRelease>,
     pub release_history_url: Option<String>,
+    /// Why this entry was refused; such a listing is never installable.
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -503,7 +534,8 @@ impl NativeArtifact {
 impl NativeListing {
     #[must_use]
     pub fn installable(&self) -> bool {
-        self.available
+        self.problem.is_none()
+            && self.available
             && !self.removed
             && self
                 .release
@@ -597,6 +629,7 @@ impl PageItem {
                 let _ = (page_url, source);
                 None
             },
+            problem: None,
         })
     }
 }
@@ -694,6 +727,7 @@ impl DetailWire {
                 release_history_url: self
                     .release_history_url
                     .map(|href| resolve_url(detail_url, &href)),
+                problem: None,
             },
             self.release_url,
         ))

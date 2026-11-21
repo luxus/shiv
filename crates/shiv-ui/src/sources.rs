@@ -16,7 +16,7 @@ use shiv_api::{
 };
 use shiv_core::game::{GameError, GamePaths};
 use shiv_core::registry::{self, AddedSource, RegistryError};
-use slint::{ComponentHandle, ModelRc, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
 use crate::browse;
 use crate::{App, SourceRow, SourcesState};
@@ -32,6 +32,51 @@ fn with_sources(f: impl FnOnce(&Rc<Sources>)) {
     if let Some(s) = SOURCES.with(|c| c.borrow().clone()) {
         f(&s);
     }
+}
+
+/// The Sources card's status line: how many mods the source's catalog
+/// lists (once loaded) and how many of them cannot be installed, and, for
+/// an entry an older Shiv saved without the descriptor's origins, that it
+/// should be added again. Says which catalog the card stands for, so a
+/// source saved from an outdated descriptor is visible as such.
+pub(crate) fn source_detail(source: &AddedSource, listings: Option<&[NativeListing]>) -> String {
+    let mut parts = Vec::new();
+    if let Some(listings) = listings {
+        let shown: Vec<&NativeListing> = listings.iter().filter(|l| !l.removed).collect();
+        let blocked = shown.iter().filter(|l| !l.installable()).count();
+        parts.push(match shown.len() {
+            1 => "1 mod".to_owned(),
+            n => format!("{n} mods"),
+        });
+        if blocked > 0 {
+            parts.push(format!("{blocked} cannot be installed"));
+        }
+    }
+    if source.predates_origins() {
+        parts.push("saved by an older Shiv: add its descriptor again to review it".to_owned());
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// The banner line for the entries a loaded catalog refused, if any: each
+/// one's name and why, so a refused mod is never silently missing.
+pub(crate) fn refused_text(source: &AddedSource, listings: &[NativeListing]) -> Option<String> {
+    let refused: Vec<String> = listings
+        .iter()
+        .filter(|l| !l.removed)
+        .filter_map(|l| {
+            let problem = l.problem.as_deref()?;
+            let name = if l.title.is_empty() { &l.id } else { &l.title };
+            Some(format!("{name} ({problem})"))
+        })
+        .collect();
+    (!refused.is_empty()).then(|| {
+        format!(
+            "{} lists mods Shiv refused: {}",
+            source.name,
+            refused.join("; ")
+        )
+    })
 }
 
 /// One registry's catalog, as Browse shows it.
@@ -105,6 +150,7 @@ impl Sources {
                 id: s.source_id.as_str().into(),
                 name: s.name.as_str().into(),
                 descriptor: s.descriptor_url.as_str().into(),
+                detail: source_detail(s, None).into(),
             })
             .collect();
         self.rows.set_vec(rows);
@@ -143,8 +189,23 @@ impl Sources {
             }
             Err(text) => banners.push(text),
         }
-        if let Some(text) = banners.pop() {
-            self.with_state(|s| s.set_banner_text(text.into()));
+        for catalog in &catalogs {
+            banners.extend(refused_text(&catalog.source, &catalog.listings));
+        }
+        if !banners.is_empty() {
+            self.with_state(|s| s.set_banner_text(banners.join("\n").into()));
+        }
+        for row in 0..self.rows.row_count() {
+            let Some(mut item) = self.rows.row_data(row) else {
+                continue;
+            };
+            let loaded = catalogs.iter().find(|c| {
+                c.source.origin == item.origin.as_str() && c.source.source_id == item.id.as_str()
+            });
+            if let Some(c) = loaded {
+                item.detail = source_detail(&c.source, Some(&c.listings)).into();
+                self.rows.set_row_data(row, item);
+            }
         }
         *self.catalogs.borrow_mut() = catalogs;
         browse::refresh_sources();
