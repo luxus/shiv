@@ -42,7 +42,13 @@ pub fn fetched() -> &'static str {
 /// test on the asset catches before it reaches a build.
 #[must_use]
 pub fn entries() -> Vec<ConfigEntry> {
-    let Ok(doc) = SourceDocument::parse(GAMEINFO, parse_options()) else {
+    entries_of(GAMEINFO)
+}
+
+/// The ConVars of a gameinfo text as staged entries, as [`entries`] reads
+/// the embedded one.
+fn entries_of(gameinfo: &str) -> Vec<ConfigEntry> {
+    let Ok(doc) = SourceDocument::parse(gameinfo, parse_options()) else {
         return Vec::new();
     };
     doc.sites
@@ -729,6 +735,269 @@ static CRC32_TABLE: [u32; 256] = crc32_table();
 #[must_use]
 pub fn verify_decompressed(bytes: &[u8], crc: u32, size: u64) -> bool {
     u64::try_from(bytes.len()).is_ok_and(|len| len == size) && crc32(bytes) == crc
+}
+
+// ---------------------------------------------------------------------------
+// The watch's checks
+
+/// What the daily watch found wrong with a fresh pack-data: each reason it
+/// refuses to embed the update and opens an issue instead (#20).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackProblem {
+    /// The fresh pack-data does not parse into the typed model.
+    Unparsed(String),
+    /// The fresh gameinfo text carries no ConVars the staging can map.
+    GameinfoUnmapped,
+    /// A card names a pak the files list lacks.
+    MissingPak { card: String, pak: String },
+    /// A pak's part cannot be downloaded as declared: no url, no size.
+    IncompletePart { pak: String, part: String },
+    /// A key the last good data did not have, in the named section.
+    NewKey { section: &'static str, key: String },
+    /// A key the last good data had and the fresh one dropped.
+    GoneKey { section: &'static str, key: String },
+    /// An option the last good data did not have.
+    NewOption(String),
+    /// An option the last good data had and the site retired.
+    GoneOption(String),
+    /// A part that did not download, unpack or match its declared CRC/size.
+    PartFailed {
+        pak: String,
+        part: String,
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for PackProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PackProblem::Unparsed(e) => write!(f, "pack-data does not parse: {e}"),
+            PackProblem::GameinfoUnmapped => write!(f, "the gameinfo carries no ConVars to stage"),
+            PackProblem::MissingPak { card, pak } => {
+                write!(f, "{card} names pak `{pak}`, which files lacks")
+            }
+            PackProblem::IncompletePart { pak, part } => {
+                write!(f, "{pak} / {part}: no url, crc or size")
+            }
+            PackProblem::NewKey { section, key } => write!(f, "new key `{section}.{key}`"),
+            PackProblem::GoneKey { section, key } => write!(f, "key `{section}.{key}` is gone"),
+            PackProblem::NewOption(id) => write!(f, "new option `{id}`"),
+            PackProblem::GoneOption(id) => write!(f, "option `{id}` is gone upstream"),
+            PackProblem::PartFailed { pak, part, reason } => {
+                write!(f, "{pak} / {part}: {reason}")
+            }
+        }
+    }
+}
+
+/// The fresh pack-data (without its gameinfo text) and gameinfo against the
+/// last good pack-data: the typed parse Shiv itself uses, every pak a card
+/// names present with downloadable parts, and the key and option sets
+/// unchanged. Empty means the update is safe to embed as far as the data
+/// goes; [`check_parts`] proves the bytes.
+#[must_use]
+pub fn check_pack(fresh: &str, gameinfo: &str, last_good: &str) -> Vec<PackProblem> {
+    let mut problems = Vec::new();
+    if entries_of(gameinfo).is_empty() {
+        problems.push(PackProblem::GameinfoUnmapped);
+    }
+    let fresh_value: serde_json::Value = match serde_json::from_str(fresh) {
+        Ok(v) => v,
+        Err(e) => {
+            problems.push(PackProblem::Unparsed(e.to_string()));
+            return problems;
+        }
+    };
+    let raw: RawDoc = match serde_json::from_value(fresh_value.clone()) {
+        Ok(raw) => raw,
+        Err(e) => {
+            problems.push(PackProblem::Unparsed(e.to_string()));
+            return problems;
+        }
+    };
+    if raw.option.is_empty() {
+        problems.push(PackProblem::Unparsed("no options".into()));
+    }
+    for (card, pak) in named_paks(&raw) {
+        match raw.files.get(&pak) {
+            None => problems.push(PackProblem::MissingPak { card, pak }),
+            Some(found) => {
+                for part in &found.parts {
+                    if part.url.is_empty() || part.size == 0 || part.crc == 0 {
+                        problems.push(PackProblem::IncompletePart {
+                            pak: pak.clone(),
+                            part: part.name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(last_value) = serde_json::from_str::<serde_json::Value>(last_good) {
+        let (fresh_keys, last_keys) = (key_sets(&fresh_value), key_sets(&last_value));
+        for (section, keys) in &fresh_keys {
+            let before = last_keys.get(section);
+            for key in keys
+                .iter()
+                .filter(|k| before.is_none_or(|b| !b.contains(*k)))
+            {
+                problems.push(PackProblem::NewKey {
+                    section,
+                    key: key.clone(),
+                });
+            }
+        }
+        for (section, keys) in &last_keys {
+            let now = fresh_keys.get(section);
+            for key in keys.iter().filter(|k| now.is_none_or(|n| !n.contains(*k))) {
+                problems.push(PackProblem::GoneKey {
+                    section,
+                    key: key.clone(),
+                });
+            }
+        }
+        let ids = |v: &serde_json::Value| -> std::collections::BTreeSet<String> {
+            v.get("option")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|o| o.get("id").and_then(serde_json::Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        };
+        let (fresh_ids, last_ids) = (ids(&fresh_value), ids(&last_value));
+        problems.extend(
+            fresh_ids
+                .difference(&last_ids)
+                .map(|id| PackProblem::NewOption(id.clone())),
+        );
+        problems.extend(
+            last_ids
+                .difference(&fresh_ids)
+                .map(|id| PackProblem::GoneOption(id.clone())),
+        );
+    }
+    problems
+}
+
+/// Every part the fresh pack-data declares, unpacked from the piece files
+/// already downloaded into `dir` under their url's file name, against the
+/// declared size and CRC ([`unpack_pak`]). A part shared by several cards is
+/// checked once; a missing piece file is a failed download.
+#[must_use]
+pub fn check_parts(fresh: &str, dir: &std::path::Path) -> Vec<PackProblem> {
+    let Ok(raw) = serde_json::from_str::<RawDoc>(fresh) else {
+        return vec![PackProblem::Unparsed("pack-data does not parse".into())];
+    };
+    let mut problems = Vec::new();
+    let mut checked = std::collections::BTreeSet::new();
+    let scratch = dir.join(".unpacked");
+    for (_, name) in named_paks(&raw) {
+        let Some(pak) = raw.files.get(&name) else {
+            continue;
+        };
+        for part in &pak.parts {
+            if !checked.insert(part.url.clone()) {
+                continue;
+            }
+            let pieces: Vec<std::path::PathBuf> = part
+                .url
+                .iter()
+                .map(|url| dir.join(url.rsplit('/').next().unwrap_or(url)))
+                .collect();
+            let fail = |reason: String| PackProblem::PartFailed {
+                pak: name.clone(),
+                part: part.name.clone(),
+                reason,
+            };
+            if let Some(missing) = pieces.iter().find(|p| !p.is_file()) {
+                problems.push(fail(format!("{} did not download", missing.display())));
+                continue;
+            }
+            if let Err(e) = std::fs::create_dir_all(&scratch) {
+                problems.push(fail(e.to_string()));
+                continue;
+            }
+            let dest = scratch.join(&part.name);
+            match unpack_pak(&pieces, &dest, part.crc, part.size) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&dest);
+                }
+                Err(e) => problems.push(fail(e)),
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(&scratch);
+    problems
+}
+
+/// Every (card, pak name) pair the raw pack-data names: options, their
+/// choices, the bases, their choices and the HUD variants.
+fn named_paks(raw: &RawDoc) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut add = |card: &str, pak: &Option<String>| {
+        if let Some(pak) = pak {
+            out.push((card.to_owned(), pak.clone()));
+        }
+    };
+    for o in &raw.option {
+        add(&o.id, &o.pak);
+        for c in &o.choice {
+            add(&format!("{}/{}", o.id, c.id), &c.pak);
+        }
+    }
+    for b in &raw.base {
+        add(&b.id, &b.pak);
+        for c in &b.choice {
+            add(&format!("{}/{}", b.id, c.id), &c.pak);
+        }
+        for (flag, pak) in &b.variants {
+            add(&format!("{}/{flag}", b.id), &Some(pak.clone()));
+        }
+    }
+    out
+}
+
+/// The keys each section of a pack-data carries, unioned over its entries:
+/// the shape the watch compares against the last good data.
+fn key_sets(doc: &serde_json::Value) -> BTreeMap<&'static str, std::collections::BTreeSet<String>> {
+    use serde_json::Value;
+    let mut sets: BTreeMap<&'static str, std::collections::BTreeSet<String>> = BTreeMap::new();
+    let mut note = |section: &'static str, v: &Value| {
+        if let Some(map) = v.as_object() {
+            sets.entry(section).or_default().extend(map.keys().cloned());
+        }
+    };
+    let list = |v: &Value, key: &str| -> Vec<Value> {
+        v.get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    note("top", doc);
+    for (section, cards) in [("option", list(doc, "option")), ("base", list(doc, "base"))] {
+        for card in &cards {
+            note(section, card);
+            for choice in list(card, "choice") {
+                note("choice", &choice);
+            }
+            if let Some(fov) = card.get("fov") {
+                note("fov", fov);
+            }
+        }
+    }
+    for group in list(doc, "group") {
+        note("group", &group);
+    }
+    if let Some(files) = doc.get("files").and_then(Value::as_object) {
+        for pak in files.values() {
+            note("files", pak);
+            for part in list(pak, "parts") {
+                note("part", &part);
+            }
+        }
+    }
+    sets
 }
 
 #[cfg(test)]
