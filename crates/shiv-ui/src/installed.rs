@@ -106,7 +106,7 @@ pub(crate) struct Entry {
     pub version: Option<String>,
     /// 1-based place in the load order (1 loads first and wins conflicts);
     /// 0 for a mod that has no pak number and cannot be moved.
-    pub position: u32,
+    pub position: usize,
     pub can_up: bool,
     pub can_down: bool,
     /// The mod's lowest pak number; 0 when its files carry none.
@@ -234,7 +234,7 @@ pub(crate) fn entries(mods: &[InstalledMod]) -> Vec<Entry> {
     let movable = mods
         .iter()
         .filter(|m| m.load_position() != u32::MAX)
-        .count() as u32;
+        .count();
     let mut rank = 0;
     mods.iter()
         .map(|m| {
@@ -518,7 +518,7 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
     });
     state.on_move_to(|id, position| {
         // The row shows 1-based places; 0 or below means first.
-        let to = Move::To((position.max(1) - 1) as usize);
+        let to = Move::To(usize::try_from(position.max(1) - 1).unwrap_or(0));
         with_installed(|i| i.act(id.as_str(), Action::Move(to)));
     });
     state.on_update(|id| crate::browse::update_mod(id.as_str()));
@@ -941,6 +941,11 @@ impl Installed {
         self.with_state(|s| s.set_busy(busy));
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 at the row boundary"
+    )]
     fn build_row(&self, e: &Entry) -> InstalledRow {
         let mut row = InstalledRow {
             id: e.id.as_str().into(),
@@ -966,7 +971,7 @@ impl Installed {
             row.transfer_text = match (installing, progress) {
                 (true, _) => "Installing".into(),
                 (false, p) if p < 0.0 => "Downloading".into(),
-                (false, p) => format!("Downloading {}%", (p * 100.0).round() as u32).into(),
+                (false, p) => format!("Downloading {:.0}%", p * 100.0).into(),
             };
         }
         if e.managed

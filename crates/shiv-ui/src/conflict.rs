@@ -48,11 +48,11 @@ pub(crate) fn attach(app: &App) {
     });
     state.on_swap({
         let weak = weak.clone();
-        move || swap(weak.clone())
+        move || swap(&weak)
     });
     state.on_load_first({
         let weak = weak.clone();
-        move || load_first(weak.clone())
+        move || load_first(&weak)
     });
     state.on_cancel(move || cancel(&weak));
 }
@@ -144,18 +144,18 @@ fn cancel(weak: &Weak<App>) {
     }
 }
 
-fn swap(weak: Weak<App>) {
+fn swap(weak: &Weak<App>) {
     let Some(offer) = claim_front() else { return };
     let ids: Vec<String> = offer.with.iter().map(|(id, _)| id.clone()).collect();
-    run(&weak, "shiv-conflict-swap", move || {
+    run(weak, "shiv-conflict-swap", move || {
         disable(&ids, offer.enable.as_deref())
     });
 }
 
 /// Leave both mods on and put the new one first in the load order, so it wins.
-fn load_first(weak: Weak<App>) {
+fn load_first(weak: &Weak<App>) {
     let Some(offer) = claim_front() else { return };
-    run(&weak, "shiv-conflict-first", move || {
+    run(weak, "shiv-conflict-first", move || {
         enable_first(&offer.new_id, offer.enable.is_some())
     });
 }

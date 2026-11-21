@@ -201,6 +201,11 @@ impl Profiles {
         }
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 for the active profile index"
+    )]
     fn loaded(&self, generation: u64, result: Result<Snapshot, String>) {
         if generation != self.generation.get() {
             return;

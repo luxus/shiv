@@ -97,13 +97,28 @@ fn trim_number(text: String) -> String {
 }
 
 /// `v` as the convar's kind writes it: whole numbers for ints, floats to the
+/// A whole f64 from the catalog or the user, shown without a decimal point.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the caller checked the value is whole and inside the setting's range"
+)]
+fn whole_number_text(v: f64) -> String {
+    format!("{}", v as i64)
+}
+
 /// step's precision (3 places without a step).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0..=6 decimals before the cast"
+)]
 pub(crate) fn format_number(v: f64, kind: ConvarKind, step: Option<f64>) -> String {
     if !v.is_finite() {
         return "0".into();
     }
     if kind == ConvarKind::Int {
-        return format!("{}", v.round() as i64);
+        return whole_number_text(v.round());
     }
     let decimals = step
         .filter(|s| *s > 0.0 && s.is_finite())
@@ -148,7 +163,7 @@ pub(crate) fn checked_value(meta: Option<&ConvarMeta>, text: &str) -> Result<Str
             })?;
         let n = finite_range(meta).map_or(n, |(min, max)| n.clamp(min, max));
         Ok(if whole {
-            format!("{}", n as i64)
+            whole_number_text(n)
         } else if n.to_string() == text {
             text.to_string()
         } else {
@@ -767,6 +782,12 @@ impl Perf {
             .or_else(|| meta.and_then(|m| m.default.clone()))
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        reason = "Slint's editor model carries f32 fields and an i32 option index"
+    )]
     fn publish_editor(&self) {
         let Some((key, name, meta)) = self.selected_item() else {
             self.with_state(|s| s.set_editor(PerfEditor::default()));

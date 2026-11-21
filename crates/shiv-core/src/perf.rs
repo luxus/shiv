@@ -606,7 +606,7 @@ fn rel(site: &SourceSite) -> Option<&[String]> {
 /// # Errors
 ///
 /// [`PerfError::NotText`] when the file is not UTF-8; [`PerfError::Unparsable`]
-/// when it is not a KeyValues document; [`PerfError::Io`] when it cannot be
+/// when it is not a `KeyValues` document; [`PerfError::Io`] when it cannot be
 /// read.
 pub fn read_current(paths: &GamePaths) -> Result<Vec<ConfigEntry>, PerfError> {
     let path = resolve(&paths.gameinfo)?;

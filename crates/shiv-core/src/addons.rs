@@ -196,7 +196,7 @@ pub fn set_enabled(vpk: &InstalledVpk, enabled: bool) -> Result<(), AddonsError>
                     source: io::Error::from(io::ErrorKind::NotFound),
                 });
             }
-            (true, false) | (false, false) => {}
+            (true | false, false) => {}
         }
     }
     let mut done: Vec<&(PathBuf, PathBuf)> = Vec::new();

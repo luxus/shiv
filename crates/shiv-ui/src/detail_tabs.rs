@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use shiv_api::{ChangelogEntry, Comment, Comments, GameBananaClient, ModFile, Page};
-use slint::{ComponentHandle, ModelRc, VecModel, Weak};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
 
 use crate::browse::{fmt_count, fmt_size, now_epoch, relative_secs};
 use crate::{App, BrowseState, TabLoad, TextRow};
@@ -423,7 +423,7 @@ fn file_rows(files: &[ModFile], now: i64) -> Vec<TextRow> {
                 when(f.added, now),
             ])
             .into(),
-            body: Default::default(),
+            body: SharedString::default(),
         })
         .collect()
 }

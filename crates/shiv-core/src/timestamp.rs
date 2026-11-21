@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// A UTC instant broken into calendar fields.
 struct UtcMoment {
-    year: i64,
+    year: u64,
     month: u64,
     day: u64,
     hour: u64,
@@ -72,7 +72,7 @@ fn utc_now() -> UtcMoment {
 
 /// The instant `seconds` and `nanoseconds` after 1970-01-01T00:00:00Z.
 fn utc_fields(seconds: u64, nanoseconds: u32) -> UtcMoment {
-    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    let (year, month, day) = civil_from_days(seconds / 86_400);
     let rest = seconds % 86_400;
     UtcMoment {
         year,
@@ -86,13 +86,14 @@ fn utc_fields(seconds: u64, nanoseconds: u32) -> UtcMoment {
 }
 
 /// `(year, month, day)` from days since 1970-01-01 (Howard Hinnant's
-/// `civil_from_days`).
-fn civil_from_days(days: i64) -> (i64, u64, u64) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
+/// `civil_from_days`, with the pre-1970 branch removed: the Unix clock
+/// counts up from the epoch only).
+fn civil_from_days(days_since_epoch: u64) -> (u64, u64, u64) {
+    let z = days_since_epoch + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
+    let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
     let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]

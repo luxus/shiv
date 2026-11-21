@@ -92,6 +92,11 @@ fn snap(v: f32, step: f32, (min, max): (f32, f32)) -> f32 {
     if tidy == 0.0 { 0.0 } else { tidy }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0..=255 first, so the cast cannot truncate or go negative"
+)]
 fn channel(v: f32) -> u8 {
     // Clamped to 0..=255 first, so the cast cannot truncate.
     v.round().clamp(0.0, 255.0) as u8

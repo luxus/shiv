@@ -1143,6 +1143,10 @@ pub fn find_update_target(mods: &[InstalledMod], new: &Inspected) -> Option<Upda
 
 /// Jaccard index of two path sets (0 when both are empty).
 #[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "file counts are far below 2^53; the ratio needs a float"
+)]
 pub fn overlap(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
     let union = a.union(b).count();
     if union == 0 {

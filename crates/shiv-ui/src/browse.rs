@@ -96,6 +96,10 @@ pub(crate) fn fmt_count(n: u64) -> String {
     out
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "one decimal of megabytes cannot distinguish past 2^53 bytes"
+)]
 pub(crate) fn fmt_mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
@@ -191,7 +195,7 @@ pub(crate) fn relative_secs(then: i64, now: i64) -> String {
 pub(crate) fn now_epoch() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// Thumbnail URL for a mod. `GameBanana` screenshots are rewritten to their
@@ -318,7 +322,7 @@ fn detail_info_at(m: &ModDto, now: i64) -> ModDetail {
             non_empty(m.mod_author_id.as_deref()),
         ) {
             (Some(_), Some(id)) => id.into(),
-            _ => Default::default(),
+            _ => SharedString::default(),
         },
         donation_label: m
             .donation_link()
@@ -945,6 +949,10 @@ enum Failure {
 /// Where the game is: injectable so tests never touch the real install.
 pub(crate) type Locate = Arc<dyn Fn() -> Result<GamePaths, GameError> + Send + Sync>;
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the percent step is at most 100, exact in f32, for Slint's progress"
+)]
 fn run_install(
     client: &Client,
     locate: &Locate,
@@ -1503,6 +1511,11 @@ impl Browse {
         });
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 for the category index"
+    )]
     fn loaded(
         &self,
         generation: u64,
@@ -2010,6 +2023,11 @@ impl Browse {
 
     /// Open the detail page for `id` (from the loaded catalog; no network
     /// needed for the text). The list stays as it is underneath.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 for the gallery's image count"
+    )]
     fn open_detail(&self, id: &str) {
         // A registry row has a page too: its listing, with the release
         // history its registry publishes as the Changelog tab.
@@ -2061,6 +2079,11 @@ impl Browse {
     /// A registry mod's page: the listing its registry published, with its
     /// screenshots as the gallery and the release history as the Changelog
     /// tab. No `GameBanana` extras exist for it.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 for the gallery's image count"
+    )]
     fn open_registry_detail(&self, install: &RegistryInstall) {
         self.drop_gallery();
         let entry = self
@@ -2205,6 +2228,11 @@ impl Browse {
 
     /// Show gallery image `index`: from the cache, else load it (and its
     /// neighbours) on the gallery workers.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 for the gallery's image count"
+    )]
     fn show_image(&self, index: usize) {
         let (url, neighbours) = {
             let mut detail = self.detail.borrow_mut();
@@ -2247,6 +2275,11 @@ impl Browse {
         });
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint's step is i32; the wrap-around needs signed math against the usize index"
+    )]
     fn gallery_step(&self, delta: i32) {
         let next = {
             let detail = self.detail.borrow();
@@ -2410,7 +2443,12 @@ impl Browse {
 /// second after opening.
 #[cfg(any(debug_assertions, feature = "dev-probe"))]
 mod dev_probe {
-    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::time::Duration;
+
+    use slint::Timer;
+
+    use super::{Browse, TimerMode, with_browse};
 
     thread_local! {
         static DONE: Cell<bool> = const { Cell::new(false) };
@@ -2449,7 +2487,7 @@ mod dev_probe {
         after(open, move |b| b.open_detail(&id));
         if let Some(tab) = num("SHIV_DETAIL_TAB") {
             after(open + 1, move |_| {
-                crate::detail_tabs::select_for_probe(tab as i32);
+                crate::detail_tabs::select_for_probe(i32::try_from(tab).unwrap_or(0));
             });
         }
         for n in 1..=steps {

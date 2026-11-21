@@ -488,12 +488,13 @@ pub fn set_pak(
         return Ok(());
     };
     // Range first, so the block arithmetic below cannot overflow: a `pak`
-    // within 01..=99 plus at most 99 VPKs stays far below `u32::MAX`.
+    // within 01..=99 plus any VPK count stays far below `u64::MAX`.
     if pak == 0 || pak > addons::PAK_CAPACITY {
         return Err(SidecarError::BadPak(pak));
     }
-    let take = target.vpks.iter().filter(|v| v.pak.is_some()).count() as u32;
-    if pak + take - 1 > addons::PAK_CAPACITY {
+    let take = u32::try_from(target.vpks.iter().filter(|v| v.pak.is_some()).count())
+        .map_err(|_| SidecarError::PakPush { pak })?;
+    if u64::from(pak) + u64::from(take) - 1 > u64::from(addons::PAK_CAPACITY) {
         return Err(SidecarError::PakPush { pak });
     }
     // Every pak-numbered VPK in load order, marked when it belongs to the mod.

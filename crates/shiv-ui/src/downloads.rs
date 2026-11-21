@@ -131,7 +131,7 @@ pub(crate) enum Outcome {
 }
 
 fn speed_text(bytes_per_sec: f64) -> String {
-    format!("{}/s", fmt_mb(bytes_per_sec as u64))
+    format!("{:.1} MB/s", bytes_per_sec / 1_000_000.0)
 }
 
 /// "12.3 MB of 52.0 MB \u{b7} 4.2 MB/s", or just what is known.
@@ -170,6 +170,11 @@ impl Downloads {
         crate::installed::transfer_changed(id);
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "byte counts become a speed and a 0..1 share for display; Slint's progress is f32"
+    )]
     fn progress(&self, id: &str, done: u64, total: Option<u64>, now: Instant) {
         {
             let mut items = self.items.borrow_mut();
@@ -248,6 +253,11 @@ impl Downloads {
         self.sync();
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 for the active download count"
+    )]
     fn sync(&self) {
         let items = self.items.borrow();
         self.rows.set_vec(
