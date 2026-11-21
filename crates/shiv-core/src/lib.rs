@@ -29,3 +29,11 @@ pub mod reset;
 pub mod sidecar;
 pub mod timestamp;
 pub mod vanilla;
+
+/// Shiv's settings folder: `shiv` under the user's settings folder
+/// (`$XDG_CONFIG_HOME` or `~/.config`, `%APPDATA%`, `~/Library/Application
+/// Support`); `None` where there is none.
+#[must_use]
+pub fn settings_dir() -> Option<std::path::PathBuf> {
+    platform::config_dir().map(|d| d.join("shiv"))
+}

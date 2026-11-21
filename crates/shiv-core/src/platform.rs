@@ -129,3 +129,30 @@ pub fn cache_dir() -> Option<PathBuf> {
 pub fn cache_dir() -> Option<PathBuf> {
     None
 }
+
+/// The user's settings folder (`$XDG_CONFIG_HOME`, else `~/.config`).
+#[cfg(target_os = "linux")]
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+}
+
+/// The user's settings folder (`%APPDATA%`).
+#[cfg(windows)]
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(PathBuf::from)
+}
+
+/// The user's settings folder (`~/Library/Application Support`).
+#[cfg(target_os = "macos")]
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Application Support"))
+}
+
+/// No known settings folder on other platforms.
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+pub fn config_dir() -> Option<PathBuf> {
+    None
+}

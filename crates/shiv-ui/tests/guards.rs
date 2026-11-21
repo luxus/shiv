@@ -71,6 +71,7 @@ const MODULES_UNDER_GUARD: &[&str] = &[
     "performance",
     "profiles",
     "repair",
+    "source_filter",
     "sources",
     "thumbs",
 ];

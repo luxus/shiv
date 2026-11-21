@@ -33,6 +33,7 @@ mod log;
 mod performance;
 mod profiles;
 mod repair;
+mod source_filter;
 mod sources;
 mod thumbs;
 
@@ -158,6 +159,10 @@ fn run() -> Result<(), slint::PlatformError> {
     performance::attach(&app, &api_url);
     profiles::attach(&app);
     sources::attach(&app);
+    // Browse lists the added sources' mods from the start, not only once
+    // the Sources screen has been opened (and a remembered source filter
+    // has something to show).
+    sources::load();
     downloads::attach(&app);
     dnd::attach(&app);
     // Debug builds only: open on another screen (e.g. for screenshots); 0 is Browse.
@@ -2788,6 +2793,7 @@ mod tests {
         let game_root = root.path().join("Deadlock");
         let paths = GamePaths::from_root(game_root.clone());
         std::fs::create_dir_all(&paths.addons).expect("addons");
+        source_filter::set_dir_for_test(Some(root.path().join("settings")));
         let app = App::new().expect("app");
         let located = paths.clone();
         let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
@@ -2849,6 +2855,138 @@ mod tests {
             }),
             "the registry's screenshot becomes the row's thumbnail"
         );
+
+        // Kai's filter (t304u): narrow Browse to one source with real
+        // clicks on the Source dropdown; the choice is remembered.
+        let source_dropdown = || {
+            ElementHandle::find_by_accessible_label(&app, "Source")
+                .find(|e| {
+                    e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Combobox)
+                })
+                .expect("the Source dropdown")
+        };
+        let pick_source = |label: &str| {
+            pointer_click(&app, &source_dropdown());
+            let wanted = label.to_owned();
+            assert!(
+                run_until(&app, Duration::from_secs(5), move |a| {
+                    ElementHandle::find_by_accessible_label(a, &wanted).any(|e| {
+                        e.accessible_role()
+                            == Some(i_slint_backend_testing::AccessibleRole::ListItem)
+                    })
+                }),
+                "{label} offered"
+            );
+            let option = ElementHandle::find_by_accessible_label(&app, label)
+                .find(|e| {
+                    e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::ListItem)
+                })
+                .expect("the option row");
+            // The popup reports positions inside itself; it opens one
+            // spacing step below the dropdown (widgets.slint).
+            let (dd, at, size) = (source_dropdown(), option.absolute_position(), option.size());
+            let (top, height) = (dd.absolute_position(), dd.size());
+            pointer_click_at(
+                &app,
+                top.x + at.x + size.width / 2.0,
+                top.y + height.height + 8.0 + at.y + size.height / 2.0,
+            );
+        };
+        let ids = |a: &App| -> Vec<String> {
+            let mods = a.global::<BrowseState>().get_mods();
+            (0..mods.row_count())
+                .filter_map(|i| mods.row_data(i))
+                .map(|r| r.id.to_string())
+                .collect()
+        };
+        assert_eq!(
+            source_dropdown().accessible_value().as_deref(),
+            Some("All sources (2)")
+        );
+        let options: Vec<String> = app
+            .global::<BrowseState>()
+            .get_sources()
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(
+            options,
+            ["All sources (2)", "GameBanana (1)", "Example Community (1)"]
+        );
+        pick_source("Example Community (1)");
+        assert!(run_until(&app, Duration::from_secs(5), move |a| ids(a)
+            == ["src-my_2dcommunity-example"]));
+        assert_eq!(
+            app.global::<BrowseState>().get_summary().as_str(),
+            "1 of 2 mods"
+        );
+        assert_eq!(
+            source_dropdown().accessible_value().as_deref(),
+            Some("Example Community (1)")
+        );
+        // Narrowed to a source, the list does not wait on (or fail with)
+        // the GameBanana catalog.
+        let browse_state = app.global::<BrowseState>();
+        let shows = |label: &str| ElementHandle::find_by_accessible_label(&app, label).count() > 0;
+        browse_state.set_load_state(LoadState::Failed);
+        run_until(&app, Duration::from_millis(100), |_| false);
+        assert!(!shows("Couldn't load mods"));
+        assert!(shows("Harmless Example"));
+        browse_state.set_load_state(LoadState::Loading);
+        run_until(&app, Duration::from_millis(100), |_| false);
+        assert!(!shows("Loading mods") && shows("Harmless Example"));
+        browse_state.set_load_state(LoadState::Ready);
+        let mine = source_filter::SourceKey::Added {
+            origin: url.clone(),
+            source_id: "my-community".into(),
+        };
+        assert!(
+            run_until(&app, Duration::from_secs(5), move |_| source_filter::load()
+                == mine),
+            "remembered"
+        );
+        // A restart (a fresh window over the same settings) comes back
+        // filtered, once the source's catalog is in.
+        {
+            let again = App::new().expect("app");
+            let located = paths.clone();
+            let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
+            let _ = browse::attach_with(&again, &url, &locate);
+            sources::attach_with(&again, locate);
+            sources::load();
+            again.show().expect("show");
+            assert!(
+                run_until(&again, Duration::from_secs(10), move |a| ids(a)
+                    == ["src-my_2dcommunity-example"]
+                    && a.global::<BrowseState>().get_source_index() == 2),
+                "{:?}",
+                ids(&again)
+            );
+            again.hide().expect("hide");
+        }
+        // The restart re-attached Browse to its window: back to this one.
+        let located = paths.clone();
+        let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
+        let _ = browse::attach_with(&app, &url, &locate);
+        sources::attach_with(&app, locate);
+        sources::load();
+        assert!(run_until(&app, Duration::from_secs(10), move |a| ids(a)
+            == ["src-my_2dcommunity-example"]));
+        pick_source("GameBanana (1)");
+        assert!(run_until(&app, Duration::from_secs(5), move |a| ids(a) == ["catalog"]));
+        pick_source("All sources (2)");
+        assert!(run_until(&app, Duration::from_secs(5), move |a| ids(a)
+            .len()
+            == 2));
+        assert!(run_until(&app, Duration::from_secs(5), |_| {
+            source_filter::load() == source_filter::SourceKey::All
+        }));
+        // With the catalog in the list, its failure stands in for it again.
+        let browse_state = app.global::<BrowseState>();
+        browse_state.set_load_state(LoadState::Failed);
+        run_until(&app, Duration::from_millis(100), |_| false);
+        assert!(ElementHandle::find_by_accessible_label(&app, "Couldn't load mods").count() > 0);
+        browse_state.set_load_state(LoadState::Ready);
 
         // Installing downloads the artifact, verifies it and records the
         // content revision as the mod's version.
@@ -3795,7 +3933,9 @@ mod tests {
         assert!(run_until(&app, Duration::from_secs(20), ready));
         let row_named = |name: &str| {
             ElementHandle::find_by_accessible_label(&app, name)
-                .find(|e| e.accessible_role() == Some(AccessibleRole::ListItem))
+                .find(|e| {
+                    e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::ListItem)
+                })
                 .unwrap_or_else(|| panic!("no row {name:?}"))
         };
 

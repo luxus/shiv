@@ -631,7 +631,10 @@ fn clean_stale_staging(addons_dir: &Path) {
 // ---- pak names ----
 
 /// `count` lowest free pak numbers, ascending. A number is taken when any file in
-/// `addons` (dir, disabled or chunk) already carries it.
+/// `addons` (dir, disabled or chunk) already carries it. Once a CompLock pak
+/// is installed, the pack's slots (`1..=complock::last_slot()`) are kept for
+/// the pack: other mods get the lowest free slots above them, and only fall
+/// back to a free pack slot when nothing above is left.
 fn allocate_paks(addons_dir: &Path, count: usize) -> Result<Vec<u32>, InstallError> {
     match addons::next_pak(addons_dir) {
         Ok(_) => {}
@@ -639,14 +642,34 @@ fn allocate_paks(addons_dir: &Path, count: usize) -> Result<Vec<u32>, InstallErr
         Err(e) => return Err(e.into()),
     }
     let used: BTreeSet<u32> = addons::used_pak_numbers(addons_dir)?.into_iter().collect();
-    let free: Vec<u32> = (1..=addons::PAK_CAPACITY)
+    let reserved = if uses_complock(addons_dir) {
+        crate::complock::last_slot().min(addons::PAK_CAPACITY)
+    } else {
+        0
+    };
+    let mut free: Vec<u32> = (reserved + 1..=addons::PAK_CAPACITY)
+        .chain(1..=reserved)
         .filter(|n| !used.contains(n))
         .take(count)
         .collect();
     if free.len() < count {
         return Err(InstallError::AddonsFull);
     }
+    // A mod's own paks keep their order even when they spill below.
+    free.sort_unstable();
     Ok(free)
+}
+
+/// Whether any CompLock pak (a `complock-*` sidecar) is installed in `addons`.
+fn uses_complock(addons_dir: &Path) -> bool {
+    let Ok(dir) = fs::read_dir(addons_dir.join(SHIV_DIR)) else {
+        return false;
+    };
+    dir.flatten().any(|e| {
+        e.file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with(crate::complock::MOD_PREFIX) && n.ends_with(".json"))
+    })
 }
 
 fn move_into_place(from: &Path, to: &Path) -> Result<(), InstallError> {
