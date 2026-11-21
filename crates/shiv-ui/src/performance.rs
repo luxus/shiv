@@ -10,7 +10,7 @@
 //! keeps the pending changes.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -485,7 +485,7 @@ type CatalogLoad = Result<(Arc<Catalog>, Origin), String>;
 type FileLoad = (
     Result<HashMap<String, (String, String)>, String>,
     bool,
-    BTreeSet<String>,
+    BTreeMap<String, Option<String>>,
 );
 
 fn load_catalog(deps: &Deps) -> CatalogLoad {
@@ -537,9 +537,10 @@ fn load_file(deps: &Deps) -> FileLoad {
         .map(|paths| {
             shiv_core::sidecar::group(&paths.addons)
                 .into_iter()
-                .filter_map(|m| m.sidecar.map(|s| s.mod_id))
-                .filter(|id| is_pack_id(id))
-                .collect::<BTreeSet<_>>()
+                .filter_map(|m| m.sidecar)
+                .filter(|s| is_pack_id(&s.mod_id))
+                .map(|s| (s.mod_id, s.version))
+                .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
     (current, running, packs)
@@ -598,7 +599,10 @@ struct Perf {
     /// The ids of the rows in `pack_rows`, in order.
     pack_ids: RefCell<Vec<String>>,
     /// CompLock pak mods that have a sidecar (`complock-<option>`).
-    pack_installed: RefCell<BTreeSet<String>>,
+    /// Installed CompLock paks: mod id → the revision their sidecar records
+    /// (`complock::revision` of the pak installed), `None` when it records
+    /// none.
+    pack_installed: RefCell<BTreeMap<String, Option<String>>>,
     /// The choice each option with versions has picked, by option id.
     pack_choices: RefCell<BTreeMap<String, usize>>,
     /// Pack installs by Downloads-screen id.
@@ -609,6 +613,15 @@ struct Perf {
 /// A pack install, addressable from the Downloads screen. `generation`
 /// tells a late worker answer from a cancelled attempt apart after a retry.
 #[derive(Clone)]
+/// A pak row's install button.
+struct InstallButton {
+    label: String,
+    installing: bool,
+    installed: bool,
+    /// Installed, and the same revision the row would install now.
+    current: bool,
+}
+
 struct PackJob {
     task: PackTask,
     cancel: Arc<AtomicBool>,
@@ -645,7 +658,7 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
         on_screen: Cell::new(false),
         pack_rows: Rc::new(VecModel::default()),
         pack_ids: RefCell::new(Vec::new()),
-        pack_installed: RefCell::new(BTreeSet::new()),
+        pack_installed: RefCell::new(BTreeMap::new()),
         pack_choices: RefCell::new(BTreeMap::new()),
         pack_jobs: RefCell::new(HashMap::new()),
         pack_generation: Cell::new(0),
@@ -798,7 +811,7 @@ impl Perf {
             move || (load_catalog(&deps), load_file(&deps)),
             move |result| {
                 let (catalog, file) = result.unwrap_or_else(|text| {
-                    (Err(text), (Err(String::new()), false, BTreeSet::new()))
+                    (Err(text), (Err(String::new()), false, BTreeMap::new()))
                 });
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     with_perf(|p| p.loaded(catalog, file));
@@ -808,7 +821,7 @@ impl Perf {
         if !started {
             self.loaded(
                 Err("Could not start a background thread.".into()),
-                (Err(String::new()), false, BTreeSet::new()),
+                (Err(String::new()), false, BTreeMap::new()),
             );
         }
     }
@@ -849,7 +862,7 @@ impl Perf {
             "shiv-perf-read",
             move || load_file(&deps),
             move |result| {
-                let file = result.unwrap_or_else(|text| (Err(text), false, BTreeSet::new()));
+                let file = result.unwrap_or_else(|text| (Err(text), false, BTreeMap::new()));
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     with_perf(|p| {
                         p.loading.set(false);
@@ -968,23 +981,41 @@ impl Perf {
         trim_number(format!("{v:.decimals$}"))
     }
 
-    /// The install button of a row with a pak.
-    fn install_label(&self, mod_id: &str, pak: &complock::Pak) -> (String, bool, bool) {
-        let installed = self.pack_installed.borrow().contains(mod_id);
+    /// The install button of a row with a pak: its label, whether a
+    /// download runs, whether the pak is installed, and whether the
+    /// installed pak is the one the row would install now (same revision:
+    /// the parts' CRCs). Only a different revision is an update; one
+    /// installed before Shiv recorded revisions counts as one.
+    fn install_label(&self, mod_id: &str, pak: &complock::Pak) -> InstallButton {
+        let recorded = self.pack_installed.borrow().get(mod_id).cloned();
+        let installed = recorded.is_some();
+        let current = recorded.flatten().as_deref() == Some(complock::revision(pak).as_str());
         if let Some((progress, _)) = crate::downloads::transfer(mod_id) {
             let label = if progress < 0.0 {
                 "Downloading".to_string()
             } else {
                 format!("Downloading {:.0}%", progress * 100.0)
             };
-            return (label, true, installed);
+            return InstallButton {
+                label,
+                installing: true,
+                installed,
+                current: false,
+            };
         }
-        let label = if installed {
+        let label = if current {
+            "Installed".to_string()
+        } else if installed {
             "Update".to_string()
         } else {
             format!("Install · {}", fmt_size(Some(pak.download_size())))
         };
-        (label, false, installed)
+        InstallButton {
+            label,
+            installing: false,
+            installed,
+            current,
+        }
     }
 
     /// One row of the options list: the switch state from the staged and
@@ -1001,10 +1032,15 @@ impl Perf {
                     .position(|c| c.default)
                     .unwrap_or_default()
             });
-        let (install_label, installing, installed) =
-            info.pak.map_or((String::new(), false, false), |pak| {
-                self.install_label(&pack_mod_id(info.id), pak)
-            });
+        let button = info.pak.map_or(
+            InstallButton {
+                label: String::new(),
+                installing: false,
+                installed: false,
+                current: false,
+            },
+            |pak| self.install_label(&pack_mod_id(info.id), pak),
+        );
         PerfPackRow {
             kind: info.kind,
             id: info.id.into(),
@@ -1015,9 +1051,10 @@ impl Perf {
             has_toggle: !info.convars.is_empty(),
             checked: !info.convars.is_empty() && self.pack_option_is_on(info.convars),
             has_pak: info.pak.is_some(),
-            installed,
-            install_label: install_label.into(),
-            installing,
+            installed: button.installed,
+            current: button.current,
+            install_label: button.label.into(),
+            installing: button.installing,
             choices: ModelRc::new(VecModel::from(
                 info.choices
                     .iter()
@@ -1821,18 +1858,19 @@ impl Perf {
                 }
             }
             PackUpdate::Done(result) => {
-                let name = self
-                    .pack_jobs
-                    .borrow()
-                    .get(id)
-                    .map_or_else(|| id.to_owned(), |j| j.task.name.clone());
+                let (name, revision) = self.pack_jobs.borrow().get(id).map_or_else(
+                    || (id.to_owned(), None),
+                    |j| (j.task.name.clone(), Some(complock::revision(&j.task.pak))),
+                );
                 if current {
                     self.pack_jobs.borrow_mut().remove(id);
                 }
                 match result {
                     Ok(()) => {
                         crate::downloads::finished(id, crate::downloads::Outcome::Done);
-                        self.pack_installed.borrow_mut().insert(id.to_owned());
+                        self.pack_installed
+                            .borrow_mut()
+                            .insert(id.to_owned(), revision);
                         crate::installed::reload();
                         crate::launch::refresh();
                     }
@@ -2018,7 +2056,7 @@ impl Perf {
                     s.set_complock_staged(false);
                     s.set_game_running(false);
                 });
-                self.file_loaded((Ok(current), false, BTreeSet::new()));
+                self.file_loaded((Ok(current), false, BTreeMap::new()));
                 let what = if count == 1 {
                     "1 change".to_string()
                 } else {

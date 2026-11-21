@@ -48,7 +48,10 @@ export struct PerfPackRow {
     // The option (or the HUD base) installs a pak.
     has-pak: bool,
     installed: bool,
-    // "Install · 7.5 MB", "Update" or "Installing 42%".
+    // Installed and the revision the site publishes now (for the picked
+    // choice): nothing to update, Reinstall forces it.
+    current: bool,
+    // "Install · 7.5 MB", "Update", "Installed" or "Downloading 42%".
     install-label: string,
     // A download is in flight for this row's pak.
     installing: bool,
@@ -385,11 +388,26 @@ component PackRow inherits Rectangle {
                 changed(v) => { root.fov-changed(v); }
             }
 
-            if root.item.has-pak: Button {
+            if root.item.has-pak && !root.item.current: Button {
                 width: 150px;
                 text: root.item.install-label;
                 disabled: root.item.installing;
                 clicked => { root.installed(); }
+            }
+            if root.item.has-pak && root.item.current: HorizontalLayout {
+                width: 150px;
+                spacing: Theme.s1;
+                alignment: end;
+                Text {
+                    text: root.item.install-label;
+                    color: Theme.text-muted;
+                    font-size: Theme.text-md;
+                    vertical-alignment: center;
+                }
+                TextButton {
+                    text: "Reinstall";
+                    clicked => { root.installed(); }
+                }
             }
         }
     }
