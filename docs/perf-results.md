@@ -253,22 +253,24 @@ change, criterion's verdict).
 The gate **fails** a push only when criterion marks a bench
 "Performance has regressed." *and* the change point estimate exceeds
 **+25%**; every other movement reports. The threshold is calibrated by
-the no-op dispatch [44901062246](https://github.com/luxus/shiv/actions/runs/44901062246)
-(identical bench code in both arms): its worst statistically
-significant noise verdict was +10.3% (`set_pak/50`), while
-non-significant spikes reached +46.8% (`set_pak/25`, CI
-[−2.7% +46.8% +153.9%]) — requiring significance absorbs the wide-CI
-spikes, and +25% clears the significant ones. Demonstrated once on the
-throwaway branch `issue-11-bench-diff-gate`, run
-[44901820732](https://github.com/luxus/shiv/actions/runs/44901820732):
-a commit that made `group` parse every sidecar twice moved the three
-`group` benches +79–92% (all "Performance has regressed.") and failed
-the job, while the same run's noise — +36.5% on `move_mod/50` (not
-significant), +20.5% on `set_pak/25` (significant, under the line) —
-passed. A failure that looks like noise is re-dispatched by hand. The
-absolute baselines stay with these tables on the machines that
-recorded them; CI grades each push's direction, not the absolute
-number.
+same-code runs: the no-op dispatch
+[44901062246](https://github.com/luxus/shiv/actions/runs/44901062246)
+drew a significant noise verdict of +10.3% (`set_pak/50`) and
+non-significant spikes to +46.8% (`set_pak/25`, CI
+[−2.7% +46.8% +153.9%]); the gate's own landing push
+[44902389879](https://github.com/luxus/shiv/actions/runs/44902389879)
+drew a significant +16.9% (`move_mod/25`). Requiring significance
+absorbs the wide-CI spikes, and +25% clears every significant noise
+verdict observed. Demonstrated once in the throwaway run
+[44901820732](https://github.com/luxus/shiv/actions/runs/44901820732)
+(branch since deleted): a commit that made `group` parse every sidecar
+twice moved the three `group` benches +79–92% (all "Performance has
+regressed.") and failed the job, while the same run's noise — +36.5%
+on `move_mod/50` (not significant), +20.5% on `set_pak/25`
+(significant, under the line) — passed. A failure that looks like
+noise is re-dispatched by hand. The absolute baselines stay with these
+tables on the machines that recorded them; CI grades each push's
+direction, not the absolute number.
 
 ## Allocation ceilings — 2026-11-21, the dev workstation (issue #6)
 
