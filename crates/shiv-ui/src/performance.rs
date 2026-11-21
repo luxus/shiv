@@ -801,62 +801,14 @@ impl Perf {
             .as_ref()
             .and_then(|c| c.writable(&entry_path(&name)).err());
 
-        let mut meta_line = match &meta {
-            Some(m) => format!(
-                "{} · {}",
-                catalog
-                    .as_ref()
-                    .map_or(m.category.as_str(), |c| c.category_label(&m.category)),
-                kind_label(m.kind)
-            ),
-            None => "Not in the catalog".into(),
-        };
-        match meta.as_ref().map(|m| m.status) {
-            Some(ConvarStatus::Blocked) => meta_line.push_str(" · blocked by the game"),
-            Some(ConvarStatus::Removed) => meta_line.push_str(" · not in the current game build"),
-            Some(ConvarStatus::NotConvar) => meta_line.push_str(" · a console command"),
-            _ => {}
-        }
-        let mut help = meta
-            .as_ref()
-            .and_then(|m| m.help_text())
-            .unwrap_or_default()
-            .to_string();
-        if let Some(side) = meta.as_ref().and_then(|m| m.side_effects.as_deref()) {
-            if !help.is_empty() {
-                help.push_str("\n\n");
-            }
-            help.push_str(side);
-        }
         let range = meta.as_ref().and_then(finite_range);
-        let mut limits = Vec::new();
-        if let (Some(m), Some((min, max))) = (&meta, range) {
-            limits.push(format!(
-                "Range {} to {}",
-                format_number(min, m.kind, m.step),
-                format_number(max, m.kind, m.step)
-            ));
-        }
-        if let Some(d) = meta.as_ref().and_then(|m| m.default.as_deref()) {
-            limits.push(format!("default {d}"));
-        }
-
+        let text = editor_text(meta.as_ref(), catalog.as_deref(), range);
         let kind = meta.as_ref().map(|m| m.kind);
         let options: Vec<&perf::EnumValue> = meta
             .as_ref()
             .map(|m| m.enum_values.iter().collect())
             .unwrap_or_default();
-        let control = if denied.is_some() {
-            PerfControl::Locked
-        } else if kind == Some(ConvarKind::Bool) {
-            PerfControl::Toggle
-        } else if kind == Some(ConvarKind::Enum) && !options.is_empty() {
-            PerfControl::Choice
-        } else if matches!(kind, Some(ConvarKind::Int | ConvarKind::Float)) && range.is_some() {
-            PerfControl::Slider
-        } else {
-            PerfControl::Text
-        };
+        let control = control_for(denied.is_some(), kind, &options, range);
         let (minimum, maximum) = range.unwrap_or((0.0, 1.0));
         let step = meta
             .as_ref()
@@ -883,9 +835,9 @@ impl Perf {
         let editor = PerfEditor {
             open: true,
             name: name.into(),
-            meta: meta_line.into(),
-            help: help.into(),
-            limits: limits.join(" · ").into(),
+            meta: text.meta_line.into(),
+            help: text.help.into(),
+            limits: text.limits.into(),
             current: match &current {
                 Some(v) => format!("In gameinfo.gi: {v}"),
                 None => "Not set in gameinfo.gi".into(),
@@ -1176,6 +1128,85 @@ fn kind_label(kind: ConvarKind) -> &'static str {
     }
 }
 
+/// The editor's descriptive text: the meta line under the name, the help
+/// body, and the limits line.
+struct EditorText {
+    meta_line: String,
+    help: String,
+    limits: String,
+}
+
+/// The editor's descriptive text for `meta`: category, kind and status on
+/// the meta line, the help text with the side effects appended, the range
+/// and default as the limits.
+fn editor_text(
+    meta: Option<&ConvarMeta>,
+    catalog: Option<&Catalog>,
+    range: Option<(f64, f64)>,
+) -> EditorText {
+    let mut meta_line = match meta {
+        Some(m) => format!(
+            "{} · {}",
+            catalog.map_or(m.category.as_str(), |c| c.category_label(&m.category)),
+            kind_label(m.kind)
+        ),
+        None => "Not in the catalog".into(),
+    };
+    match meta.map(|m| m.status) {
+        Some(ConvarStatus::Blocked) => meta_line.push_str(" · blocked by the game"),
+        Some(ConvarStatus::Removed) => meta_line.push_str(" · not in the current game build"),
+        Some(ConvarStatus::NotConvar) => meta_line.push_str(" · a console command"),
+        _ => {}
+    }
+    let mut help = meta
+        .and_then(|m| m.help_text())
+        .unwrap_or_default()
+        .to_string();
+    if let Some(side) = meta.and_then(|m| m.side_effects.as_deref()) {
+        if !help.is_empty() {
+            help.push_str("\n\n");
+        }
+        help.push_str(side);
+    }
+    let mut limits = Vec::new();
+    if let (Some(m), Some((min, max))) = (meta, range) {
+        limits.push(format!(
+            "Range {} to {}",
+            format_number(min, m.kind, m.step),
+            format_number(max, m.kind, m.step)
+        ));
+    }
+    if let Some(d) = meta.and_then(|m| m.default.as_deref()) {
+        limits.push(format!("default {d}"));
+    }
+    EditorText {
+        meta_line,
+        help,
+        limits: limits.join(" · "),
+    }
+}
+
+/// The widget the editor shows for a setting: locked when the catalog
+/// denies the write, else the kind's natural control.
+fn control_for(
+    denied: bool,
+    kind: Option<ConvarKind>,
+    options: &[&perf::EnumValue],
+    range: Option<(f64, f64)>,
+) -> PerfControl {
+    if denied {
+        PerfControl::Locked
+    } else if kind == Some(ConvarKind::Bool) {
+        PerfControl::Toggle
+    } else if kind == Some(ConvarKind::Enum) && !options.is_empty() {
+        PerfControl::Choice
+    } else if matches!(kind, Some(ConvarKind::Int | ConvarKind::Float)) && range.is_some() {
+        PerfControl::Slider
+    } else {
+        PerfControl::Text
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1266,6 +1297,42 @@ mod tests {
         assert_eq!(format_number(0.26, ConvarKind::Float, Some(0.5)), "0.3");
         assert_eq!(format_number(12.0, ConvarKind::Float, Some(1.0)), "12");
         assert_eq!(format_number(-0.0001, ConvarKind::Float, None), "0");
+    }
+
+    #[test]
+    fn control_for_locks_denied_settings_and_maps_kinds_to_widgets() {
+        let option = perf::EnumValue {
+            value: "0".into(),
+            label: "Off".into(),
+        };
+        assert_eq!(
+            control_for(true, Some(ConvarKind::Bool), &[&option], Some((0.0, 1.0))),
+            PerfControl::Locked,
+            "a denied write locks the widget whatever the kind"
+        );
+        assert_eq!(
+            control_for(false, Some(ConvarKind::Bool), &[], None),
+            PerfControl::Toggle
+        );
+        assert_eq!(
+            control_for(false, Some(ConvarKind::Enum), &[&option], None),
+            PerfControl::Choice
+        );
+        assert_eq!(
+            control_for(false, Some(ConvarKind::Enum), &[], None),
+            PerfControl::Text,
+            "an enum without options is free text"
+        );
+        assert_eq!(
+            control_for(false, Some(ConvarKind::Int), &[], Some((0.0, 100.0))),
+            PerfControl::Slider
+        );
+        assert_eq!(
+            control_for(false, Some(ConvarKind::Float), &[], None),
+            PerfControl::Text,
+            "a number without a range is free text"
+        );
+        assert_eq!(control_for(false, None, &[], None), PerfControl::Text);
     }
 
     #[test]
