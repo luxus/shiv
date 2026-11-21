@@ -418,68 +418,21 @@ pub fn export_into(
         let folder = format!("{:04}-{}", index, slug(&name));
         let dir = files_dir.join(&folder);
         fs::create_dir_all(&dir).map_err(io_err(dir.clone()))?;
-        let mut files: Vec<InterchangeFile> = Vec::new();
-        let mut primary_hash: Option<String> = None;
-        let mut failed: Option<String> = None;
-        for vpk in &m.vpks {
-            let raw = vpk
-                .file
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            if raw.is_empty() {
-                failed = Some("a file has no readable name".into());
-                break;
-            }
-            // The enabled form of the name: a disabled `pakNN_dir.vpk`
-            // rides along as the mod's file (the mod's `enabled` carries
-            // the on/off state, not a `selected: false` variant, which the
-            // format means for alternative files that are kept but never
-            // part of the installed mod).
-            let file_name = raw.strip_suffix(".disabled").unwrap_or(raw).to_owned();
-            let target = dir.join(&file_name);
-            if let Err(e) = fs::copy(&vpk.file, &target) {
-                failed = Some(format!("copying failed: {e}"));
-                break;
-            }
-            let sha = match sha256_of(&target) {
-                Ok(s) => s,
-                Err(InterchangeError::Io { source, .. }) => {
-                    failed = Some(format!("hashing failed: {source}"));
-                    break;
-                }
-                Err(e) => {
-                    failed = Some(e.to_string());
-                    break;
-                }
-            };
-            let size = fs::metadata(&target).map_or(0, |m| m.len());
-            if primary_hash.is_none() {
-                primary_hash = Some(sha.clone());
-            }
-            files.push(InterchangeFile {
-                name: file_name,
-                path: url_path_name(&target, root),
-                sha256: Some(sha),
-                size: Some(size),
-                selected: true,
-            });
-        }
-        match (failed, primary_hash) {
-            (Some(why), _) => {
-                let _ = fs::remove_dir_all(&dir);
-                report
-                    .skipped
-                    .push((name.clone(), format!("could not export it: {why}")));
-                continue;
-            }
-            (None, None) => {
+        let files = match exported_files(m, &dir, root) {
+            Ok(files) if files.is_empty() => {
                 let _ = fs::remove_dir_all(&dir);
                 report.skipped.push((name, "no readable VPK".into()));
                 continue;
             }
-            (None, Some(_)) => {}
-        }
+            Ok(files) => files,
+            Err(why) => {
+                let _ = fs::remove_dir_all(&dir);
+                report
+                    .skipped
+                    .push((name, format!("could not export it: {why}")));
+                continue;
+            }
+        };
         let enabled = m.is_enabled();
         let remote = m.sidecar.as_ref().and_then(|s| remote_of(&s.mod_id));
         let primary_hash = files.first().and_then(|f| f.sha256.clone());
@@ -529,6 +482,52 @@ pub fn export_into(
         source,
     })?;
     Ok(report)
+}
+
+/// The mod's VPKs copied into `dir` under their enabled names, or why
+/// copying stopped. Empty means nothing was readable.
+fn exported_files(
+    m: &sidecar::InstalledMod,
+    dir: &Path,
+    root: &Path,
+) -> Result<Vec<InterchangeFile>, String> {
+    let mut files: Vec<InterchangeFile> = Vec::new();
+    for vpk in &m.vpks {
+        let raw = vpk
+            .file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if raw.is_empty() {
+            return Err("a file has no readable name".into());
+        }
+        // The enabled form of the name: a disabled `pakNN_dir.vpk`
+        // rides along as the mod's file (the mod's `enabled` carries
+        // the on/off state, not a `selected: false` variant, which the
+        // format means for alternative files that are kept but never
+        // part of the installed mod).
+        let file_name = raw.strip_suffix(".disabled").unwrap_or(raw).to_owned();
+        let target = dir.join(&file_name);
+        if let Err(e) = fs::copy(&vpk.file, &target) {
+            return Err(format!("copying failed: {e}"));
+        }
+        let sha = match sha256_of(&target) {
+            Ok(s) => s,
+            Err(InterchangeError::Io { source, .. }) => {
+                return Err(format!("hashing failed: {source}"));
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        let size = fs::metadata(&target).map_or(0, |m| m.len());
+        files.push(InterchangeFile {
+            name: file_name,
+            path: url_path_name(&target, root),
+            sha256: Some(sha),
+            size: Some(size),
+            selected: true,
+        });
+    }
+    Ok(files)
 }
 
 /// The entry for one installed mod: the key from its `GameBanana` reference
@@ -885,4 +884,57 @@ fn install_from_bundle(
         }
     }
     Ok(sc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exported_files_ride_disabled_vpks_along_under_enabled_names() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let source = work.path().join("pak02_dir.vpk.disabled");
+        std::fs::write(&source, b"vpk-bytes").expect("write source");
+        let root = work.path().join("bundle");
+        let dir = root.join("files/0000-test-mod");
+        std::fs::create_dir_all(&dir).expect("make bundle dir");
+        let m = sidecar::InstalledMod {
+            sidecar: None,
+            vpks: vec![addons::InstalledVpk {
+                file: source,
+                pak: Some(2),
+                enabled: false,
+                chunks: Vec::new(),
+            }],
+        };
+
+        let files = exported_files(&m, &dir, &root).expect("exported");
+
+        assert_eq!(files.len(), 1, "one VPK in, one file out");
+        assert_eq!(
+            files[0].name, "pak02_dir.vpk",
+            "the disabled suffix rides along as the enabled name"
+        );
+        assert!(
+            files[0].selected,
+            "the mod's enabled flag carries the on/off state, not a per-file selected"
+        );
+        assert_eq!(files[0].path, "files/0000-test-mod/pak02_dir.vpk");
+        assert_eq!(
+            files[0].size,
+            Some(u64::try_from(b"vpk-bytes".len()).expect("size"))
+        );
+        let copied = dir.join("pak02_dir.vpk");
+        assert_eq!(
+            std::fs::read(&copied).expect("read copy"),
+            b"vpk-bytes",
+            "the bytes land under the enabled name"
+        );
+        let sha = sha256_of(&copied).expect("hash the copy");
+        assert_eq!(
+            files[0].sha256.as_deref(),
+            Some(sha.as_str()),
+            "the recorded hash is of the copied file"
+        );
+    }
 }
