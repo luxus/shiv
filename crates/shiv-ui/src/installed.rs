@@ -9,6 +9,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -811,7 +812,7 @@ impl Installed {
                     report.root.display()
                 );
                 for (name, why) in &report.skipped {
-                    text.push_str(&format!(" {name} was skipped: {why}."));
+                    let _ = write!(text, " {name} was skipped: {why}.");
                 }
                 Ok(text)
             },
@@ -860,7 +861,7 @@ impl Installed {
                     report.adopted.len()
                 );
                 for (name, why) in &report.skipped {
-                    text.push_str(&format!(" {name}: {why}."));
+                    let _ = write!(text, " {name}: {why}.");
                 }
                 Ok(text)
             },

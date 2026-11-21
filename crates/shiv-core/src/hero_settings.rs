@@ -6,6 +6,7 @@
 //! added at the end of the `base` object.
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::ops::Range;
 
 /// A settings file with empty `base` and `heroes`, used when there is none.
@@ -209,7 +210,9 @@ impl<'a> HeroSettings<'a> {
                     }
                 }
                 Some(_) => return Err(Invalid),
-                None => additions.push_str(&format!("{newline}\t\t{key} = {value}")),
+                None => {
+                    let _ = write!(additions, "{newline}\t\t{key} = {value}");
+                }
             }
         }
         if !additions.is_empty() {
@@ -220,7 +223,8 @@ impl<'a> HeroSettings<'a> {
             let at = if before[before.len() - trailing..].contains('\n') {
                 self.base_end - trailing
             } else {
-                additions.push_str(&format!("{newline}\t"));
+                additions.push_str(newline);
+                additions.push('\t');
                 self.base_end
             };
             edits.push((at..at, additions));

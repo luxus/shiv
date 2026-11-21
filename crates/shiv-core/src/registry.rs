@@ -9,6 +9,7 @@
 //! a newer revision exactly like a catalog date.
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,7 +34,9 @@ fn encode_id_component(raw: &str) -> String {
         match byte {
             b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => out.push(char::from(byte)),
             b'_' => out.push_str("__"),
-            _ => out.push_str(&format!("_{byte:02x}")),
+            _ => {
+                let _ = write!(out, "_{byte:02x}");
+            }
         }
     }
     out

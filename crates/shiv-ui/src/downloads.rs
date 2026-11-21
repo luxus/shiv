@@ -141,7 +141,8 @@ fn progress_text(done: u64, total: Option<u64>, speed: f64) -> String {
         None => fmt_mb(done),
     };
     if speed > 0.0 {
-        text.push_str(&format!(" \u{b7} {}", speed_text(speed)));
+        text.push_str(" \u{b7} ");
+        text.push_str(&speed_text(speed));
     }
     text
 }
