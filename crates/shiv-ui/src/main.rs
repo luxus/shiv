@@ -1010,12 +1010,21 @@ mod tests {
         )
         .expect("gameinfo");
 
-        let fixture =
-            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../shiv-core/tests/data/complock-soundcap-part.z"))
-                .expect("the soundcap fixture");
-        let (running, fetches) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
-        let (flag, count, located, served) =
-            (running.clone(), fetches.clone(), paths.clone(), fixture.clone());
+        let fixture = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../shiv-core/tests/data/complock-soundcap-part.z"
+        ))
+        .expect("the soundcap fixture");
+        let (running, fetches) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let (flag, count, located, served) = (
+            running.clone(),
+            fetches.clone(),
+            paths.clone(),
+            fixture.clone(),
+        );
         let app = App::new().expect("app");
         downloads::attach(&app);
         performance::attach_with(
@@ -1030,7 +1039,9 @@ mod tests {
                     }
                     Ok(Some(("\"e1\"".into(), PERF_CATALOG.as_bytes().to_vec())))
                 }),
-                cache: Some(shiv_core::perf::CatalogCache::new(temp.path().join("cache"))),
+                cache: Some(shiv_core::perf::CatalogCache::new(
+                    temp.path().join("cache"),
+                )),
                 pack_download: Arc::new(move |url, dest, cancel, progress| {
                     assert!(
                         url.starts_with("https://deadlockconfig.com/dl/"),
@@ -1076,16 +1087,25 @@ mod tests {
         };
         let soundcap = pack_row(&app, "soundcap");
         assert!(soundcap.has_pak && !soundcap.has_toggle);
-        assert!(soundcap.install_label.contains("Install"), "{}", soundcap.install_label);
+        assert!(
+            soundcap.install_label.contains("Install"),
+            "{}",
+            soundcap.install_label
+        );
         let ragdolls = pack_row(&app, "ragdolls");
         assert!(ragdolls.has_toggle && !ragdolls.has_pak);
-        assert!(!ragdolls.checked, "the fixture's file leaves ragdolls unset");
+        assert!(
+            !ragdolls.checked,
+            "the fixture's file leaves ragdolls unset"
+        );
         let hud = pack_row(&app, "hud");
         assert!(
-            hud.has_pak
-                && hud.choices.row_count() == complock::hud().expect("hud").choices.len()
+            hud.has_pak && hud.choices.row_count() == complock::hud().expect("hud").choices.len()
         );
-        assert!(pack_row(&app, "fov").step > 0.0, "the FOV row carries the slider");
+        assert!(
+            pack_row(&app, "fov").step > 0.0,
+            "the FOV row carries the slider"
+        );
 
         // A convar option stages on, then its off value: the site's
         // gameinfo_else, not a removed line.
@@ -1164,7 +1184,9 @@ mod tests {
             .collect();
         assert_eq!(mod_vpks.len(), 1, "{mod_vpks:?}");
         let written = std::fs::read(
-            paths.addons.join(mod_vpks.first().expect("the vpk").clone()),
+            paths
+                .addons
+                .join(mod_vpks.first().expect("the vpk").clone()),
         )
         .expect("the installed vpk");
         assert_eq!(
@@ -1188,8 +1210,15 @@ mod tests {
                 })
                 .is_ok_and(|n| n == 1)
         };
+        let settled = move |a: &App| {
+            one_vpk(a)
+                && a.global::<PerfState>()
+                    .get_pack_rows()
+                    .iter()
+                    .any(|r| r.id == "soundcap" && !r.installing && r.install_label == "Update")
+        };
         assert!(
-            run_until(&app, Duration::from_secs(20), one_vpk) && one_vpk(&app),
+            run_until(&app, Duration::from_secs(20), settled),
             "the re-install replaced the mod's files"
         );
         let sidecars: Vec<_> = std::fs::read_dir(paths.addons.join(".shiv"))
