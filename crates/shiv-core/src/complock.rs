@@ -789,6 +789,37 @@ pub fn release_for(mod_id: &str, version: Option<&str>) -> Option<&'static Pak> 
         .copied()
 }
 
+/// The last pak slot the site's pack names: its paks carry their load
+/// order in their part names (HUD++ `pak01_dir.vpk`, Particle Pruning
+/// `pak02_dir.vpk`, ...), so slots `1..=last_slot()` belong to the pack and
+/// Shiv installs each part on the slot it names.
+#[must_use]
+pub fn last_slot() -> u32 {
+    let hud = hud().into_iter().flat_map(|h| {
+        h.default_pak
+            .iter()
+            .chain(h.variants.values())
+            .chain(h.choices.iter().filter_map(|c| c.pak.as_ref()))
+    });
+    let options = options().iter().flat_map(|o| {
+        o.pak
+            .iter()
+            .chain(o.choices.iter().filter_map(|c| c.pak.as_ref()))
+    });
+    hud.chain(options)
+        .flat_map(|p| &p.parts)
+        .filter_map(|part| slot_of(&part.name))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The slot a part's file name names: `pakNN_dir.vpk` → NN.
+#[must_use]
+pub fn slot_of(name: &str) -> Option<u32> {
+    let digits = name.strip_prefix("pak")?.strip_suffix("_dir.vpk")?;
+    (digits.len() == 2).then(|| digits.parse().ok()).flatten()
+}
+
 fn releases(mod_id: &str) -> Vec<&'static Pak> {
     let Some(id) = mod_id.strip_prefix(MOD_PREFIX) else {
         return Vec::new();

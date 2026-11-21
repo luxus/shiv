@@ -739,6 +739,10 @@ mod tests {
             .expect("sources");
         }
 
+        let seeded: Vec<shiv_core::sidecar::Sidecar> = shiv_core::sidecar::group(&paths.addons)
+            .into_iter()
+            .filter_map(|m| m.sidecar)
+            .collect();
         let app = App::new().expect("app");
         let located = paths.clone();
         let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
@@ -866,62 +870,98 @@ mod tests {
                 s.get_load_state() == LoadState::Ready && s.get_pack_rows().row_count() > 0
             }),
         );
-        let multi = shiv_core::complock::options()
-            .iter()
-            .find(|o| {
-                o.pak.as_ref().is_some_and(|p| {
-                    p.parts.iter().any(|part| part.urls.len() > 1) || p.parts.len() > 1
+        // Every pak CompLock offers, all started at once: the downloads race,
+        // the slots must not. Each option installs its pak, or its default
+        // choice's; HUD++ its default damage numbers.
+        let mut wanted: Vec<(String, String)> = vec![(
+            "hud".to_owned(),
+            shiv_core::complock::hud()
+                .and_then(|h| {
+                    h.pak_of_choice(h.choices.iter().position(|c| c.default).unwrap_or(0))
                 })
-            })
-            .map(|o| o.id.clone())
-            .unwrap_or_default();
-        let mut pack_ok = perf_ready;
-        let mut pack_detail = String::new();
-        // An option whose pak sits on its choices (Particle Pruning): the
-        // default choice's pak installs without a pick.
-        let on_choices = shiv_core::complock::options()
-            .iter()
-            .find(|o| o.pak.is_none() && o.choices.iter().any(|c| c.pak.is_some()))
-            .map(|o| o.id.clone())
-            .unwrap_or_default();
-        for id in ["hud".to_owned(), multi.clone(), on_choices.clone()] {
+                .map(|p| p.parts[0].name.clone())
+                .unwrap_or_default(),
+        )];
+        for o in shiv_core::complock::options() {
+            let pak = o.pak.as_ref().or_else(|| {
+                o.choices
+                    .iter()
+                    .find(|c| c.default)
+                    .or(o.choices.first())
+                    .and_then(|c| c.pak.as_ref())
+            });
+            if let Some(pak) = pak {
+                wanted.push((o.id.clone(), pak.parts[0].name.clone()));
+            }
+        }
+        for (id, _) in &wanted {
             app.global::<PerfState>()
                 .invoke_install_pack(id.as_str().into());
-            let mod_id = format!("complock-{id}");
-            let m2 = mod_id.clone();
-            let settled = wait(
-                180,
+        }
+        let ids: Vec<String> = wanted
+            .iter()
+            .map(|(id, _)| format!("complock-{id}"))
+            .collect();
+        let all = ids.clone();
+        let settled = perf_ready
+            && wait(
+                600,
                 Box::new(move |a| {
-                    a.global::<crate::DownloadsState>()
-                        .get_rows()
-                        .iter()
-                        .any(|r| {
-                            r.id.as_str() == m2
+                    let rows = a.global::<crate::DownloadsState>().get_rows();
+                    all.iter().all(|id| {
+                        rows.iter().any(|r| {
+                            r.id.as_str() == id
                                 && matches!(r.phase, DownloadPhase::Done | DownloadPhase::Failed)
                         })
+                    })
                 }),
             );
+        let mut pack_ok = settled;
+        let mut pack_detail = String::new();
+        let mut slots_ok = settled;
+        let mut slots_detail = String::new();
+        for ((id, name), mod_id) in wanted.iter().zip(&ids) {
             let row = app
                 .global::<crate::DownloadsState>()
                 .get_rows()
                 .iter()
                 .find(|r| r.id.as_str() == mod_id);
-            let done = settled && row.as_ref().is_some_and(|r| r.phase == DownloadPhase::Done);
+            pack_ok &= row.as_ref().is_some_and(|r| r.phase == DownloadPhase::Done);
             pack_detail.push_str(&format!(
                 "{id}: {} ",
                 row.map(|r| r.detail.to_string()).unwrap_or_default()
             ));
-            pack_ok &= done
-                && shiv_core::sidecar::read(&paths.addons, &mod_id)
+            let got = shiv_core::sidecar::read(&paths.addons, mod_id)
+                .ok()
+                .flatten()
+                .map(|s| s.vpks.join(","))
+                .unwrap_or_default();
+            slots_ok &= got == *name && paths.addons.join(name).is_file();
+            slots_detail.push_str(&format!("{id} {got} (site {name}); "));
+        }
+        table.push(("complock: install every pak at once", pack_ok, pack_detail));
+        table.push((
+            "complock: slots follow the site (HUD++ pak01 ...)",
+            slots_ok,
+            slots_detail,
+        ));
+        // A mod that sat on a CompLock slot is still installed, elsewhere.
+        let others_ok = seeded.iter().all(|s| {
+            shiv_core::sidecar::read(&paths.addons, &s.mod_id)
+                .ok()
+                .flatten()
+                .is_some_and(|now| now.vpks.iter().all(|v| paths.addons.join(v).is_file()))
+        });
+        let others: Vec<String> = seeded
+            .iter()
+            .filter_map(|s| {
+                shiv_core::sidecar::read(&paths.addons, &s.mod_id)
                     .ok()
                     .flatten()
-                    .is_some();
-        }
-        table.push((
-            "complock: install HUD++, a multi-part pak and a choice pak",
-            pack_ok,
-            pack_detail,
-        ));
+            })
+            .map(|s| format!("{} {}", s.name, s.vpks.join(",")))
+            .collect();
+        table.push(("complock: other mods kept", others_ok, others.join("; ")));
 
         // CompLock: stage their convars and apply them to gameinfo.gi.
         app.global::<PerfState>().invoke_stage_complock();
@@ -960,10 +1000,15 @@ mod tests {
                     .is_some_and(|s| s.mod_id == "complock-hud")
             })
             .count();
+        let hud_slot = shiv_core::sidecar::read(&paths.addons, "complock-hud")
+            .ok()
+            .flatten()
+            .map(|s| s.vpks.join(","))
+            .unwrap_or_default();
         table.push((
             "complock: update HUD++ in place",
-            updated && hud_mods == 1,
-            format!("{hud_mods} hud mods"),
+            updated && hud_mods == 1 && hud_slot == "pak01_dir.vpk",
+            format!("{hud_mods} hud mods at {hud_slot}"),
         ));
 
         // Installed: modify the registry mod, reset to release, restore.
@@ -1956,8 +2001,53 @@ mod tests {
             "the choice's line staged: {changes:?}"
         );
 
-        // A pak option installs end to end and reports on Downloads.
-        state.invoke_install_pack("soundcap".into());
+        // Kai on 0.3.1: leaving Performance by the nav and coming back left
+        // the CompLock list empty. Real pointer clicks on the nav, as he did.
+        app.window()
+            .set_size(slint::LogicalSize::new(1120.0, 760.0));
+        run_until(&app, Duration::from_millis(50), |_| false);
+        let nav = |label: &str| {
+            ElementHandle::find_by_accessible_label(&app, label)
+                .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Tab))
+                .unwrap_or_else(|| panic!("nav {label}"))
+        };
+        pointer_click(&app, &nav("Installed"));
+        assert_eq!(app.get_screen(), 1);
+        run_until(&app, Duration::from_millis(100), |_| false);
+        pointer_click(&app, &nav("Performance"));
+        assert_eq!(app.get_screen(), 4);
+        assert!(
+            run_until(&app, Duration::from_secs(20), ready),
+            "the CompLock options are back after a nav round trip: {} rows",
+            state.get_pack_rows().row_count()
+        );
+        assert_eq!(state.get_pack_rows().row_count(), expected_rows);
+        run_until(&app, Duration::from_millis(100), |_| false);
+        assert!(
+            ElementHandle::find_by_accessible_label(&app, "Sound stack update cap")
+                .next()
+                .is_some(),
+            "the soundcap row is on screen"
+        );
+
+        // Kai on 0.3.1: clicking Install did nothing. A real pointer click on
+        // the row's Install button, not the callback.
+        let label = pack_row(&app, "soundcap").install_label.to_string();
+        let install = ElementHandle::find_by_accessible_label(&app, &label)
+            .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button))
+            .unwrap_or_else(|| panic!("the {label:?} button"));
+        pointer_click(&app, &install);
+        let clicked_sidecar = paths.addons.join(".shiv/complock-soundcap.json");
+        assert!(
+            run_until(&app, Duration::from_millis(500), move |a| {
+                a.global::<PerfState>()
+                    .get_pack_rows()
+                    .iter()
+                    .any(|r| r.id == "soundcap" && r.installing)
+                    || clicked_sidecar.is_file()
+            }),
+            "the click started the install"
+        );
         let sidecar = paths.addons.join(".shiv/complock-soundcap.json");
         let sidecar_there = move |_a: &App| sidecar.is_file();
         assert!(run_until(&app, Duration::from_secs(20), sidecar_there));

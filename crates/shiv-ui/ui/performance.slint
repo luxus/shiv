@@ -279,6 +279,18 @@ component PackRow inherits Rectangle {
     height: root.item.kind == PerfPackKind.heading ? 44px : 64px;
     background: ta.has-hover && root.item.kind != PerfPackKind.heading ? Theme.hover : transparent;
 
+    // Behind the row's controls: a later sibling is hit first, and this
+    // one used to sit on top and swallow every click on Install, the
+    // switches and the dropdowns.
+    ta := TouchArea {
+        mouse-cursor: root.item.kind == PerfPackKind.heading ? default : pointer;
+        clicked => {
+            if (root.item.kind == PerfPackKind.option && !root.item.has-toggle && root.item.choices.length == 0 && !root.item.has-pak) {
+                root.toggled();
+            }
+        }
+    }
+
     VerticalLayout {
         padding-left: Theme.s2;
         padding-right: Theme.s2;
@@ -388,14 +400,6 @@ component PackRow inherits Rectangle {
         background: Theme.border;
     }
 
-    ta := TouchArea {
-        mouse-cursor: root.item.kind == PerfPackKind.heading ? default : pointer;
-        clicked => {
-            if (root.item.kind == PerfPackKind.option && !root.item.has-toggle && root.item.choices.length == 0 && !root.item.has-pak) {
-                root.toggled();
-            }
-        }
-    }
 }
 
 component SettingRow inherits Rectangle {

@@ -228,9 +228,17 @@ fn run_pack_install(
         hero: None,
         category: None,
     };
-    install::install_files(&vpks, meta, &paths, move || running())
-        .map_err(|e| fail(install_error_text(&e)))
-        .map(|_| ())
+    // Each part goes on the slot its name gives (HUD++ pak01, ...), so the
+    // pack's load order does not depend on which download finished first.
+    install::install_files_in_slots(
+        &vpks,
+        meta,
+        &paths,
+        move || running(),
+        complock::last_slot(),
+    )
+    .map_err(|e| fail(install_error_text(&e)))
+    .map(|_| ())
 }
 
 thread_local! {
@@ -757,11 +765,14 @@ impl Perf {
         *self.items.borrow_mut() = Vec::new();
         *self.visible.borrow_mut() = Vec::new();
         self.rows.set_vec(Vec::new());
+        // Emptied in place: `pack-rows` stays bound to this model (set once
+        // in `attach_with`). Swapping in a new empty model left the list
+        // empty after a nav round trip, since publishing fills this one.
+        self.pack_rows.set_vec(Vec::new());
         self.with_state(|s| {
             s.set_tiers(ModelRc::default());
             s.set_complock(PerfComplock::default());
             s.set_editor(PerfEditor::default());
-            s.set_pack_rows(ModelRc::default());
             s.set_load_state(LoadState::Loading);
         });
         // The catalog was parsed on a worker thread, so glibc keeps its pages
