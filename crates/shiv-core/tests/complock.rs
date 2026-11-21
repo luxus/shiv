@@ -355,3 +355,123 @@ fn live_parts_unpack_to_the_declared_vpks() {
     );
     println!("{} parts unpacked and CRC-verified", checked.len());
 }
+
+const OPTIONS_ASSET: &str = include_str!("../assets/complock-options.json");
+const GAMEINFO_ASSET: &str = include_str!("../assets/complock-gameinfo.gi");
+
+/// The embedded options asset as a JSON value to mutate.
+fn asset_value() -> serde_json::Value {
+    serde_json::from_str(OPTIONS_ASSET).expect("the asset parses")
+}
+
+/// The watch's data checks of a mutated asset against the embedded one.
+fn check_mutated(mutate: impl FnOnce(&mut serde_json::Value)) -> Vec<complock::PackProblem> {
+    let mut fresh = asset_value();
+    mutate(&mut fresh);
+    complock::check_pack(&fresh.to_string(), GAMEINFO_ASSET, OPTIONS_ASSET)
+}
+
+#[test]
+fn the_embedded_data_checks_clean_against_itself() {
+    assert_eq!(
+        complock::check_pack(OPTIONS_ASSET, GAMEINFO_ASSET, OPTIONS_ASSET),
+        []
+    );
+}
+
+#[test]
+fn a_new_key_is_reported_with_its_section() {
+    let problems = check_mutated(|v| {
+        v["option"][0]["renamed_gains"] = serde_json::json!("+5%");
+    });
+    assert_eq!(
+        problems,
+        [complock::PackProblem::NewKey {
+            section: "option",
+            key: "renamed_gains".into()
+        }]
+    );
+}
+
+#[test]
+fn a_pak_missing_from_files_is_reported_with_its_card() {
+    let (card, pak) = {
+        let v = asset_value();
+        let option = v["option"]
+            .as_array()
+            .expect("options")
+            .iter()
+            .find(|o| o.get("pak").is_some())
+            .expect("an option with a pak")
+            .clone();
+        (
+            option["id"].as_str().expect("id").to_owned(),
+            option["pak"].as_str().expect("pak").to_owned(),
+        )
+    };
+    let gone = pak.clone();
+    let problems = check_mutated(move |v| {
+        v["files"].as_object_mut().expect("files").remove(&gone);
+    });
+    assert!(
+        problems.contains(&complock::PackProblem::MissingPak { card, pak }),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_retired_option_and_an_unparsable_doc_are_reported() {
+    let retired = asset_value()["option"][0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let id = retired.clone();
+    let problems = check_mutated(move |v| {
+        v["option"]
+            .as_array_mut()
+            .expect("options")
+            .retain(|o| o["id"] != id.as_str());
+    });
+    assert!(
+        problems.contains(&complock::PackProblem::GoneOption(retired)),
+        "{problems:?}"
+    );
+    assert!(matches!(
+        complock::check_pack("{\"option\": 3}", GAMEINFO_ASSET, OPTIONS_ASSET).as_slice(),
+        [complock::PackProblem::Unparsed(_)]
+    ));
+    assert_eq!(
+        complock::check_pack(OPTIONS_ASSET, "GameInfo\n{\n}\n", OPTIONS_ASSET),
+        [complock::PackProblem::GameinfoUnmapped]
+    );
+}
+
+#[test]
+fn the_part_check_proves_the_bytes_and_names_a_bad_crc_or_a_failed_download() {
+    let url = "/dl/pack/soundcap.af99a150bd.z";
+    let doc = |crc: u32| {
+        serde_json::json!({
+            "option": [{"id": "soundcap", "pak": "soundcap.vpk"}],
+            "files": {"soundcap.vpk": {"title": "Sound stack update cap", "parts": [
+                {"name": "pak03_dir.vpk", "size": SOUNDCAP_SIZE, "crc": crc,
+                 "csize": SOUNDCAP_CSIZE, "url": url}
+            ]}}
+        })
+        .to_string()
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::copy(soundcap_fixture(), dir.path().join("soundcap.af99a150bd.z"))
+        .expect("the fixture");
+    assert_eq!(complock::check_parts(&doc(SOUNDCAP_CRC), dir.path()), []);
+    let bad_crc = complock::check_parts(&doc(SOUNDCAP_CRC ^ 1), dir.path());
+    assert!(
+        matches!(bad_crc.as_slice(), [complock::PackProblem::PartFailed { reason, .. }] if reason.contains("CRC")),
+        "{bad_crc:?}"
+    );
+    std::fs::remove_file(dir.path().join("soundcap.af99a150bd.z")).expect("remove");
+    let missing = complock::check_parts(&doc(SOUNDCAP_CRC), dir.path());
+    assert!(
+        matches!(missing.as_slice(), [complock::PackProblem::PartFailed { reason, .. }] if reason.contains("did not download")),
+        "{missing:?}"
+    );
+}

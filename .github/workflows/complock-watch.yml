@@ -1,96 +1,157 @@
 name: CompLock watch
 
-# Daily: fetch deadlockconfig.com's pack-data, embed their current
-# gameinfo.gi, its build number and their options data (the pack-data minus
-# the gameinfo text), and commit when they changed. The site is the moving
-# source by design; the core tests on the assets (complock::tests) are the
-# parse gates.
+# Daily: fetch deadlockconfig.com's pack-data, check it with the same typed
+# model Shiv uses (shiv-core's complock_watch example: parse, every named
+# pak present, key and option sets unchanged against the last good embed,
+# every part downloaded, unpacked and CRC-checked), then either embed it —
+# their gameinfo.gi, its build number and the options data (the pack-data
+# minus the gameinfo text) — or open one issue saying why not (#20). The
+# issue closes itself on the next green run.
 on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      simulate:
+        description: "Break the fresh data on purpose to prove the red path (none, new-key, bad-crc, missing-pak)"
+        required: false
+        default: none
 
 permissions:
   contents: write
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ISSUE_TITLE: "complock watch: the upstream update does not apply"
+  ISSUE_LABEL: complock-watch
 
 jobs:
   watch:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch the site's pack-data
+      - name: Fetch the site's pack-data and its parts
+        env:
+          SIMULATE: ${{ inputs.simulate || 'none' }}
         run: |
+          mkdir -p "$RUNNER_TEMP/complock/parts"
           python3 - << 'PY'
-          import datetime
-          import json, re, urllib.request, pathlib
+          import json, os, pathlib, re, urllib.error, urllib.request
 
-          req = urllib.request.Request(
-              "https://deadlockconfig.com/",
-              headers={"User-Agent": "shiv-complock-watch"},
-          )
-          html = urllib.request.urlopen(req, timeout=30).read().decode()
+          out = pathlib.Path(os.environ["RUNNER_TEMP"], "complock")
+          agent = {"User-Agent": "shiv-complock-watch"}
+          html = urllib.request.urlopen(
+              urllib.request.Request("https://deadlockconfig.com/", headers=agent), timeout=30
+          ).read().decode()
           m = re.search(r'<script[^>]*id="pack-data"[^>]*>(.*?)</script>', html, re.S)
           assert m, "the site carries no pack-data script"
           data = json.loads(m.group(1))
-
-          gameinfo = data["gameinfo"]
-          game = str(data["game"])
-          assert game.isdigit() and game, "the site names no game build"
-          assert "ConVars" in gameinfo and "SearchPaths" in gameinfo, "not a gameinfo"
-
+          game = str(data.get("game", ""))
+          assert game.isdigit(), "the site names no game build"
           options = {k: v for k, v in data.items() if k != "gameinfo"}
-          assert isinstance(options.get("option"), list) and options["option"], "no options"
-          assert isinstance(options.get("group"), list), "no groups"
-          files = options.get("files")
-          assert isinstance(files, dict) and files, "no files"
 
-          def pak_names(card):
-              if "pak" in card:
-                  yield card["pak"]
-              for choice in card.get("choice", []):
-                  yield from pak_names(choice)
+          simulate = os.environ["SIMULATE"]
+          if simulate == "new-key":
+              options["option"][0]["simulated_key"] = True
+          elif simulate == "bad-crc":
+              first = next(iter(options["files"].values()))
+              first["parts"][0]["crc"] ^= 1
+          elif simulate == "missing-pak":
+              card = next(o for o in options["option"] if "pak" in o)
+              options["files"].pop(card["pak"], None)
 
-          def check_pak(name):
-              pak = files.get(name)
-              assert pak, f"pak {name} is missing from files"
-              for part in pak["parts"]:
-                  assert part["name"].endswith(".vpk"), f"{name}: {part['name']} is no vpk"
-                  urls = part["url"] if isinstance(part["url"], list) else [part["url"]]
-                  assert urls, f"{name}: {part['name']} has no url"
-                  assert isinstance(part["crc"], int), f"{name}: {part['name']} has no crc"
-                  assert isinstance(part["size"], int), f"{name}: {part['name']} has no size"
+          (out / "gameinfo.gi").write_text(data.get("gameinfo", ""))
+          (out / "options.json").write_text(json.dumps(options, indent=1) + "\n")
+          (out / "game").write_text(game)
 
-          for card in options["option"] + options.get("base", []):
-              for name in pak_names(card):
-                  check_pak(name)
-              for name in (card.get("variants") or {}).values():
-                  check_pak(name)
-
-          pathlib.Path("crates/shiv-core/assets/complock-gameinfo.gi").write_text(gameinfo)
-          pathlib.Path("crates/shiv-core/assets/complock-options.json").write_text(
-              json.dumps(options, indent=1) + "\n"
-          )
-          meta = {
-              "game": game,
-              "fetched": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
-          }
-          pathlib.Path("crates/shiv-core/assets/complock.json").write_text(
-              json.dumps(meta, indent=2) + "\n"
-          )
-          print(
-              f"pack-data build {game}, {len(gameinfo)} bytes of gameinfo, "
-              f"{len(options['option'])} options"
-          )
+          failed = []
+          seen = set()
+          for pak in options.get("files", {}).values():
+              for part in pak.get("parts", []):
+                  urls = part.get("url") or []
+                  for url in urls if isinstance(urls, list) else [urls]:
+                      if url in seen:
+                          continue
+                      seen.add(url)
+                      dest = out / "parts" / url.rsplit("/", 1)[-1]
+                      try:
+                          req = urllib.request.Request("https://deadlockconfig.com" + url, headers=agent)
+                          dest.write_bytes(urllib.request.urlopen(req, timeout=120).read())
+                      except (urllib.error.URLError, OSError) as e:
+                          failed.append(f"- `{url}`: {e}")
+          (out / "downloads.md").write_text("\n".join(failed) + ("\n" if failed else ""))
+          print(f"pack-data build {game}, {len(options.get('option', []))} options, {len(seen)} part urls, {len(failed)} failed")
           PY
-      - name: Commit when the build changed
+      - name: Install build dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev libxkbcommon-dev libwayland-dev pkg-config
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Check with Shiv's own model
+        id: check
+        run: |
+          t="$RUNNER_TEMP/complock"
+          set +e
+          cargo run --release -p shiv-core --example complock_watch -- \
+            "$t/options.json" "$t/gameinfo.gi" crates/shiv-core/assets/complock-options.json \
+            "$t/parts" "$t/report.md"
+          code=$?
+          set -e
+          cat "$t/downloads.md" >> "$t/report.md" 2>/dev/null || true
+          if [ "$code" -eq 0 ] && [ ! -s "$t/downloads.md" ]; then
+            echo "green=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -le 1 ]; then
+            echo "green=false" >> "$GITHUB_OUTPUT"
+          else
+            exit "$code"
+          fi
+      - name: Embed the update
+        if: steps.check.outputs.green == 'true'
+        run: |
+          t="$RUNNER_TEMP/complock"
+          cp "$t/gameinfo.gi" crates/shiv-core/assets/complock-gameinfo.gi
+          cp "$t/options.json" crates/shiv-core/assets/complock-options.json
+          game=$(cat "$t/game")
+          printf '{\n  "game": "%s",\n  "fetched": "%s"\n}\n' "$game" "$(date -u +%F)" \
+            > crates/shiv-core/assets/complock.json
           git config user.name "shiv-complock-watch"
           git config user.email "actions@users.noreply.github.com"
-          if git diff --quiet -- crates/shiv-core/assets; then
+          if git diff --quiet -- crates/shiv-core/assets/complock-gameinfo.gi crates/shiv-core/assets/complock-options.json; then
+            git checkout -- crates/shiv-core/assets
             echo "The embedded CompLock data is current."
             exit 0
           fi
-          game=$(python3 -c "import json; print(json.load(open('crates/shiv-core/assets/complock.json'))['game'])")
           git add crates/shiv-core/assets
           git commit -m "chore(complock): gameinfo build ${game} (deadlockconfig.com)"
           git push
+      - name: Open, update or close the watch issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GREEN: ${{ steps.check.outputs.green }}
+        run: |
+          t="$RUNNER_TEMP/complock"
+          run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          open=$(gh issue list --label "$ISSUE_LABEL" --state open --json number --jq '.[0].number // empty')
+          if [ "$GREEN" = "true" ]; then
+            if [ -n "$open" ]; then
+              gh issue close "$open" --comment "The watch is green again: $run"
+            fi
+            exit 0
+          fi
+          digest=$(sha256sum "$t/report.md" | cut -c1-16)
+          body=$(printf '%s\n\nThe daily watch did not embed the site'"'"'s update (build %s). What failed:\n\n%s\n\nRun: %s\n' \
+            "<!-- complock-watch:$digest -->" "$(cat "$t/game")" "$(cat "$t/report.md")" "$run")
+          if [ -z "$open" ]; then
+            gh label create "$ISSUE_LABEL" --color d93f0b --description "The CompLock watch could not apply an upstream update" 2>/dev/null || true
+            gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body "$body"
+            exit 0
+          fi
+          seen=$(gh issue view "$open" --json body,comments --jq '[.body] + [.comments[].body] | map(select(contains("complock-watch:"))) | last')
+          if printf '%s' "$seen" | grep -q "complock-watch:$digest"; then
+            echo "Issue #$open already reports this failure."
+          else
+            gh issue comment "$open" --body "$body"
+          fi
