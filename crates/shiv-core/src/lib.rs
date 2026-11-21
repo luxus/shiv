@@ -18,6 +18,7 @@ pub mod install;
 pub mod interchange;
 pub mod launch;
 pub mod link;
+pub mod mount;
 pub mod perf;
 mod platform;
 pub mod profiles;
