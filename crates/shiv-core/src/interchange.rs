@@ -745,14 +745,20 @@ pub fn import(
         }
         // Duplicate: this key is already a Shiv mod (the ledger of an
         // earlier import, the catalog for GameBanana keys, or Shiv's own
-        // extension for a re-imported Shiv bundle).
+        // extension for a re-imported Shiv bundle). A local id is only
+        // unique per folder (`local-<seconds>-<n>`), so it names the same
+        // mod only when that sidecar also carries the mod's name.
         let mine = m
             .extensions
             .as_ref()
             .and_then(|e| e.get("shiv"))
             .and_then(|s| s.get("modId"))
             .and_then(|v| v.as_str())
-            .map(str::to_owned);
+            .map(str::to_owned)
+            .filter(|id| {
+                !sidecar::is_local(id)
+                    || sidecar::read(addons, id).is_ok_and(|s| s.is_some_and(|s| s.name == name))
+            });
         let existing = known(&m.key)
             .or_else(|| ledger.get(&m.key).cloned())
             .or(mine);
