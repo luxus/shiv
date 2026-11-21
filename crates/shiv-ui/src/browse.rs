@@ -2476,6 +2476,7 @@ mod dev_probe {
             return;
         }
         scroll_probe();
+        search_probe();
         let Some(id) = std::env::var("SHIV_OPEN_MOD")
             .ok()
             .filter(|v| !v.is_empty())
@@ -2539,6 +2540,39 @@ mod dev_probe {
             });
         });
         TIMERS.with(|t| t.borrow_mut().push(scroll));
+    }
+
+    /// `SHIV_SEARCH_PROBE=<query>` types the query into Browse's search
+    /// with 60 ms between letters, logging the wall time from each letter
+    /// to the list's rebuild as `SHIV_SEARCH_MS <micros>` lines on
+    /// stderr, then quits. A harness collects the per-letter latency.
+    fn search_probe() {
+        let Some(query) = std::env::var("SHIV_SEARCH_PROBE")
+            .ok()
+            .filter(|v| !v.is_empty())
+        else {
+            return;
+        };
+        let letters: Vec<char> = query.chars().collect();
+        let index = std::cell::Cell::new(0usize);
+        let timer = Timer::default();
+        let search = std::rc::Rc::new(timer);
+        let handle = search.clone();
+        search.start(TimerMode::Repeated, Duration::from_millis(60), move || {
+            let at = index.replace(index.get() + 1);
+            if at >= letters.len() {
+                handle.stop();
+                slint::quit_event_loop();
+                return;
+            }
+            let typed: String = letters[..=at].iter().collect();
+            with_browse(|b| {
+                let started = std::time::Instant::now();
+                b.search_edited(&typed);
+                eprintln!("SHIV_SEARCH_MS {}", started.elapsed().as_micros());
+            });
+        });
+        TIMERS.with(|t| t.borrow_mut().push(search));
     }
 }
 
