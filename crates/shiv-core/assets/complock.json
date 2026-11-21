@@ -1,4 +1,4 @@
 {
   "game": "6860",
-  "fetched": "2026-11-21"
+  "fetched": "$(date -u +%F)"
 }
