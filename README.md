@@ -92,6 +92,14 @@ To verify any number: its commands are recorded beside it in
 - **Crosshairs** with a live preview, applied as `citadel_crosshair_*` values.
 - **Performance presets** (pretty, balanced, sweaty, potato) and per-setting editing,
   written to the game's `GameInfo` file.
+- **CompLock** from [deadlockconfig.com](https://deadlockconfig.com/) (by jcStani and HoppCX):
+  stage their engine settings like a preset, and build their pack inside Shiv: the HUD++
+  base with its damage-number choice, the FOV slider, the convar options (with their off
+  values) and the optional paks, downloaded straight from the site, CRC-checked and
+  installed as mods with progress on Downloads. A re-install updates in place. The data
+  ships with Shiv and a daily watch keeps it at the site's build. The paks replace whole
+  files, so they don't mix with QOL Lock and similar packs, and No Cloth conflicts with
+  hero-model mods.
 - NSFW mods are blurred until you turn them on, and that setting resets every session.
 
 ## Quality

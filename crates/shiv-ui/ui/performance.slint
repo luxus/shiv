@@ -26,6 +26,43 @@ export struct PerfComplock {
     available: bool,
 }
 
+// What one row in the CompLock options list is.
+export enum PerfPackKind { heading, option, hud, fov }
+
+// One row of the CompLock options list: a group heading, an option, the
+// HUD++ base (its damage-number choices and pak) or the FOV slider.
+export struct PerfPackRow {
+    kind: PerfPackKind,
+    // The option's id ("soundcap", "hud", "fov"); "" for headings.
+    id: string,
+    title: string,
+    // "avg +9.7% · low +11.1%", or the group's blurb for a heading.
+    detail: string,
+    // One line of the option's description.
+    text: string,
+    // The option's warning, in the danger colour.
+    warn: string,
+    // The option stages convars: a switch.
+    has-toggle: bool,
+    checked: bool,
+    // The option (or the HUD base) installs a pak.
+    has-pak: bool,
+    installed: bool,
+    // "Install · 7.5 MB", "Update" or "Installing 42%".
+    install-label: string,
+    // A download is in flight for this row's pak.
+    installing: bool,
+    // The choice titles, when the option has versions.
+    choices: [string],
+    choice-index: int,
+    // The FOV slider's value and range.
+    number: float,
+    minimum: float,
+    maximum: float,
+    step: float,
+    value-text: string,
+}
+
 // One setting in the searchable list.
 export struct PerfRow {
     name: string,
@@ -87,6 +124,7 @@ export global PerfState {
     in property <PerfComplock> complock;
     // The CompLock set is what is staged (the tiers are not).
     in property <bool> complock-staged: false;
+    in property <[PerfPackRow]> pack-rows;
     in property <[PerfRow]> rows;
     in property <string> list-note;
     in property <PerfEditor> editor;
@@ -108,6 +146,10 @@ export global PerfState {
     callback select(int);
     callback pick-tier(int);
     callback stage-complock();
+    callback toggle-pack(string);
+    callback pick-pack-choice(string, int);
+    callback install-pack(string);
+    callback set-fov(float);
     callback set-text(string);
     callback set-number(float);
     callback toggle();
@@ -217,6 +259,139 @@ component CompLockCard inherits Rectangle {
         enabled: root.card.available;
         mouse-cursor: root.card.available ? pointer : default;
         clicked => { root.clicked(); }
+    }
+}
+
+// One row of the CompLock options list: a heading, an option (switch,
+// choices and install), the HUD++ base or the FOV slider.
+component PackRow inherits Rectangle {
+    in property <PerfPackRow> item;
+    callback toggled;
+    callback picked(int);
+    callback installed;
+    callback fov-changed(float);
+
+    accessible-role: list-item;
+    accessible-label: root.item.title;
+
+    height: root.item.kind == PerfPackKind.heading ? 44px : 64px;
+    background: ta.has-hover && root.item.kind != PerfPackKind.heading ? Theme.hover : transparent;
+
+    VerticalLayout {
+        padding-left: Theme.s2;
+        padding-right: Theme.s2;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 1px;
+
+        if root.item.kind == PerfPackKind.heading: HorizontalLayout {
+            spacing: Theme.s1;
+            alignment: start;
+            Text {
+                text: root.item.title;
+                color: Theme.text;
+                font-size: Theme.text-md;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.item.detail;
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        if root.item.kind != PerfPackKind.heading: HorizontalLayout {
+            spacing: Theme.s2;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 1px;
+                HorizontalLayout {
+                    spacing: Theme.s1;
+                    alignment: start;
+                    Text {
+                        text: root.item.title;
+                        color: Theme.text;
+                        font-size: Theme.text-md;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.item.detail;
+                        visible: root.item.detail != "";
+                        color: Theme.text-muted;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                Text {
+                    text: root.item.text;
+                    visible: root.item.text != "";
+                    color: Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.item.warn;
+                    visible: root.item.warn != "";
+                    color: Theme.danger;
+                    font-size: Theme.text-sm;
+                    overflow: elide;
+                }
+            }
+
+            if root.item.choices.length > 0: Dropdown {
+                width: 190px;
+                label: root.item.title;
+                options: root.item.choices;
+                current-index: root.item.choice-index;
+                selected(i) => { root.picked(i); }
+            }
+
+            if root.item.has-toggle: Switch {
+                label: root.item.title;
+                checked: root.item.checked;
+                toggled => { root.toggled(); }
+            }
+
+            if root.item.kind == PerfPackKind.fov: Slider {
+                width: 190px;
+                label: "Field of view";
+                value: root.item.number;
+                minimum: root.item.minimum;
+                maximum: root.item.maximum;
+                step: root.item.step;
+                value-text: root.item.value-text;
+                changed(v) => { root.fov-changed(v); }
+            }
+
+            if root.item.has-pak: Button {
+                width: 150px;
+                text: root.item.install-label;
+                disabled: root.item.installing;
+                clicked => { root.installed(); }
+            }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: root.item.kind == PerfPackKind.heading ? default : pointer;
+        clicked => {
+            if (root.item.kind == PerfPackKind.option && !root.item.has-toggle && root.item.choices.length == 0 && !root.item.has-pak) {
+                root.toggled();
+            }
+        }
     }
 }
 
@@ -554,6 +729,30 @@ export component PerformancePage inherits Rectangle {
             card: PerfState.complock;
             active: PerfState.complock-staged;
             clicked => { PerfState.stage-complock(); }
+        }
+
+        // The site's options under their card: group headings, options with
+        // their convar switches, choice dropdowns and pak installs, the
+        // HUD++ base and the FOV slider.
+        if PerfState.load-state == LoadState.ready: Rectangle {
+            height: 198px;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border;
+            clip: true;
+            ListView {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: parent.height - 2px;
+                for pack[i] in PerfState.pack-rows: PackRow {
+                    item: pack;
+                    toggled => { PerfState.toggle-pack(pack.id); }
+                    picked(c) => { PerfState.pick-pack-choice(pack.id, c); }
+                    installed => { PerfState.install-pack(pack.id); }
+                    fov-changed(v) => { PerfState.set-fov(v); }
+                }
+            }
         }
 
         if PerfState.load-state == LoadState.ready: HorizontalLayout {

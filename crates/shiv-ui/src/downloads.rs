@@ -106,9 +106,12 @@ pub(crate) fn attach_with(app: &App, rows: &Rc<dyn TransferRows>) {
     DOWNLOADS.with(|c| *c.borrow_mut() = Some(controller));
     state.on_cancel(|id| {
         let id = id.as_str();
-        // Link installs belong to the Installed screen, catalog ones to Browse.
+        // Link installs belong to the Installed screen, CompLock paks to the
+        // Performance screen, catalog ones to Browse.
         if id.starts_with("link-") {
             crate::installed::cancel_link(id);
+        } else if crate::performance::is_pack_id(id) {
+            crate::performance::cancel_pack(id);
         } else {
             crate::browse::cancel_install(id);
         }
@@ -117,6 +120,8 @@ pub(crate) fn attach_with(app: &App, rows: &Rc<dyn TransferRows>) {
         let id = id.as_str();
         if id.starts_with("link-") {
             crate::installed::retry_link(id);
+        } else if crate::performance::is_pack_id(id) {
+            crate::performance::retry_pack(id);
         } else {
             crate::browse::retry_install(id);
         }

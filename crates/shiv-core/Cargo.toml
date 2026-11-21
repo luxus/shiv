@@ -28,6 +28,10 @@ zip = { version = "6.0.0", default-features = false, features = [
     "lzma",
     "ppmd",
 ] }
+# CompLock's pack parts arrive as raw-DEFLATE streams (zlib wbits=-15):
+# the same flate2/zlib-rs build zip already compiles in, so this adds no
+# code to the binary, only names the dependency shiv-core now uses itself.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 unrar = "0.5.8"
 # Reading only: `compress` is the lzma encoder and `util` the
 # extract-to-path helpers; `aes256` cannot help without a password UI

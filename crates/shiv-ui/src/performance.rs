@@ -10,26 +10,38 @@
 //! keeps the pending changes.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use shiv_api::Client;
 use shiv_core::complock;
+use shiv_core::install::{self, ModMeta};
 use shiv_core::perf::{
     self, Catalog, CatalogCache, ConfigEntry, ConvarKind, ConvarMeta, ConvarStatus, Tier,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
-use crate::browse::{catalog_error_text, game_error_text};
+use crate::browse::{catalog_error_text, fmt_size, game_error_text, install_error_text};
 use crate::installed::{Locate, Running};
 use crate::{
-    App, LoadState, PerfChange, PerfComplock, PerfControl, PerfEditor, PerfRow, PerfState, PerfTier,
+    App, LoadState, PerfChange, PerfComplock, PerfControl, PerfEditor, PerfPackKind, PerfPackRow,
+    PerfRow, PerfState, PerfTier,
 };
 
 /// `perf_catalog(etag)`: `Ok(None)` when the cached copy is current.
 pub(crate) type Fetch =
     Arc<dyn Fn(Option<&str>) -> Result<Option<(String, Vec<u8>)>, String> + Send + Sync>;
+
+/// One pak piece download: `url` to `dest`, stopping once `cancel` is set,
+/// reporting bytes done and the total when known.
+pub(crate) type PackDownload = Arc<
+    dyn Fn(&str, &PathBuf, &AtomicBool, &mut dyn FnMut(u64, Option<u64>)) -> Result<(), String>
+        + Send
+        + Sync,
+>;
 
 /// Injectable so tests never touch the real install, the network or the
 /// user's cache.
@@ -39,11 +51,13 @@ pub(crate) struct Deps {
     pub running: Running,
     pub fetch: Fetch,
     pub cache: Option<CatalogCache>,
+    pub pack_download: PackDownload,
 }
 
 impl Deps {
     fn system(api_url: &str) -> Self {
         let client = Arc::new(Client::new(api_url));
+        let download = client.clone();
         Deps {
             locate: Arc::new(crate::locate_game),
             running: Arc::new(shiv_core::game::is_running),
@@ -53,6 +67,11 @@ impl Deps {
                     .map_err(|e| catalog_error_text(&e))
             }),
             cache: CatalogCache::default_dir().map(CatalogCache::new),
+            pack_download: Arc::new(move |url, dest, cancel, progress| {
+                download
+                    .fetch_cancellable(url, dest, cancel, progress)
+                    .map_err(|e| e.to_string())
+            }),
         }
     }
 }
@@ -60,7 +79,159 @@ impl Deps {
 const GAME_RUNNING_TEXT: &str = "Deadlock is running. Close it, then apply again.";
 const CONVARS: &str = "ConVars";
 const COMPLOCK_TITLE: &str = "CompLock engine settings";
-const COMPLOCK_NOTE: &str = "From their site: cloth-off conflicts with mods that replace hero models. Their mod paks are not managed here.";
+const COMPLOCK_NOTE: &str = "From their site: their paks replace whole files and do not mix with QOL Lock and similar packs; cloth-off conflicts with mods that replace hero models. A HUD++ update can hide other mods' entries in its settings menu until those mods update.";
+/// Prefix of the mod ids Shiv gives the CompLock paks it installs: stable
+/// per option, so re-installing an option updates it in place through
+/// `install::install_files` on the same id (the Downloads rows and the
+/// cancel routing key on it too).
+const PACK_PREFIX: &str = "complock-";
+const PACK_HUD_ID: &str = "hud";
+const PACK_FOV_ID: &str = "fov";
+
+/// The mod id of a CompLock pak: `complock-<option id>`, or
+/// `complock-hud` for the HUD++ base whatever damage numbers it carries.
+fn pack_mod_id(option_id: &str) -> String {
+    format!("{PACK_PREFIX}{option_id}")
+}
+
+/// Whether a mod id names a CompLock pak (Downloads routing).
+#[must_use]
+pub fn is_pack_id(mod_id: &str) -> bool {
+    mod_id.starts_with(PACK_PREFIX)
+}
+
+/// One pak install: what to download and how the result is recorded.
+#[derive(Clone)]
+struct PackTask {
+    mod_id: String,
+    name: String,
+    pak: complock::Pak,
+}
+
+/// Everything a row in the CompLock options list is built from.
+struct PackRowInfo<'a> {
+    kind: PerfPackKind,
+    id: &'a str,
+    title: &'a str,
+    detail: String,
+    text: Option<&'a str>,
+    warn: Option<&'a str>,
+    convars: &'a [ConfigEntry],
+    choices: &'a [complock::Choice],
+    pak: Option<&'a complock::Pak>,
+}
+
+impl PackTask {
+    fn of(mod_id: String, name: String, pak: &complock::Pak) -> Self {
+        PackTask {
+            mod_id,
+            name,
+            pak: pak.clone(),
+        }
+    }
+}
+
+/// What a pack-install worker reports while it runs.
+enum PackUpdate {
+    Progress { done: u64, total: Option<u64> },
+    Installing,
+    Done(Result<(), (String, bool)>),
+}
+
+/// A pack install stopped before it finished; matches what the Downloads
+/// screen shows for a cancelled transfer.
+const CANCELLED_TEXT: &str = "Cancelled";
+
+/// The pack-install worker: download the pak's pieces (a big pak arrives in
+/// numbered pieces that concatenate into one raw-DEFLATE stream), unpack
+/// and CRC-gate them into a VPK, then install it as a mod through the same
+/// lock every install takes. Mirrors Browse's `run_install`: the game is
+/// checked before the download so it is not wasted, and progress reports
+/// percent steps over the pack's declared download size.
+fn run_pack_install(
+    deps: &Deps,
+    task: PackTask,
+    cancel: &AtomicBool,
+    mut report: impl FnMut(PackUpdate),
+) -> Result<(), (String, bool)> {
+    let fail = |text: String| (text, false);
+    let paths = (deps.locate)().map_err(|e| fail(game_error_text(&e)))?;
+    if (deps.running)() {
+        return Err((
+            install_error_text(&install::InstallError::GameRunning),
+            true,
+        ));
+    }
+    let dir = tempfile::Builder::new()
+        .prefix("shiv-pack-")
+        .tempdir()
+        .map_err(|e| fail(format!("Could not create a temporary folder: {e}")))?;
+    let total = task.pak.download_size();
+    let mut done = 0u64;
+    let mut last_step = u64::MAX;
+    let mut vpks = Vec::new();
+    for part in &task.pak.parts {
+        let mut pieces = Vec::new();
+        for (n, url) in part.urls.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err((CANCELLED_TEXT.into(), false));
+            }
+            let full = complock::part_url(url).ok_or_else(|| {
+                fail(format!(
+                    "The pack data's url {url} does not resolve on the site"
+                ))
+            })?;
+            let piece = dir.path().join(format!("piece-{n}.z"));
+            let base = done;
+            {
+                let mut tick = |bytes: u64, _piece_total: Option<u64>| {
+                    done = base + bytes;
+                    let step = done.saturating_mul(100) / total;
+                    if step != last_step {
+                        last_step = step;
+                        report(PackUpdate::Progress {
+                            done,
+                            total: Some(total),
+                        });
+                    }
+                };
+                (deps.pack_download)(&full, &piece, cancel, &mut tick).map_err(fail)?;
+            }
+            done = base
+                + std::fs::metadata(&piece)
+                    .map(|m| m.len())
+                    .map_err(|e| fail(e.to_string()))?;
+            report(PackUpdate::Progress {
+                done,
+                total: Some(total),
+            });
+            pieces.push(piece);
+        }
+        let dest = dir.path().join(&part.name);
+        complock::unpack_pak(&pieces, &dest, part.crc, part.size).map_err(fail)?;
+        vpks.push(dest);
+    }
+    report(PackUpdate::Installing);
+    let running = deps.running.clone();
+    let _guard = install::INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cancel.load(Ordering::Relaxed) {
+        return Err(("Cancelled".into(), false));
+    }
+    let meta = ModMeta {
+        mod_id: task.mod_id.clone(),
+        name: task.name,
+        version: None,
+        thumbnail_url: None,
+        nsfw: false,
+        hero: None,
+        category: None,
+    };
+    install::install_files(&vpks, meta, &paths, move || running())
+        .map_err(|e| fail(install_error_text(&e)))
+        .map(|_| ())
+}
 
 thread_local! {
     static PERF: RefCell<Option<Rc<Perf>>> = const { RefCell::new(None) };
@@ -70,6 +241,16 @@ fn with_perf(f: impl FnOnce(&Rc<Perf>)) {
     if let Some(p) = PERF.with(|p| p.borrow().clone()) {
         f(&p);
     }
+}
+
+/// Stop the pack install behind a Downloads-screen row.
+pub(crate) fn cancel_pack(id: &str) {
+    with_perf(|p| p.cancel_pack(id));
+}
+
+/// Start a cancelled or failed pack install again (Downloads screen).
+pub(crate) fn retry_pack(id: &str) {
+    with_perf(|p| p.retry_pack(id));
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +417,11 @@ fn entry_path(name: &str) -> Vec<String> {
     vec![CONVARS.into(), name.into()]
 }
 
+/// Whether two convar paths name the same setting, ignoring case.
+fn paths_equal(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
+}
+
 /// The CompLock card's state: their set as the catalog admits it, with the
 /// build, the fetch date, the admitted count and the left-out count beside
 /// it. Without a catalog, or with nothing left after admission, the card is
@@ -285,9 +471,14 @@ enum Origin {
 }
 
 type CatalogLoad = Result<(Arc<Catalog>, Origin), String>;
-/// The file's `ConVars` (`lowercase name -> (name, value)`), or why it could
-/// not be read, and whether the game runs.
-type FileLoad = (Result<HashMap<String, (String, String)>, String>, bool);
+/// The file's `ConVars` (`lowercase name -> (name, value)`), whether the
+/// game runs, and which CompLock pak mods have a sidecar — or why the file
+/// could not be read, with the other two still filled in as far as known.
+type FileLoad = (
+    Result<HashMap<String, (String, String)>, String>,
+    bool,
+    BTreeSet<String>,
+);
 
 fn load_catalog(deps: &Deps) -> CatalogLoad {
     let cached = deps.cache.as_ref().and_then(CatalogCache::load);
@@ -327,11 +518,23 @@ fn convars_of(entries: Vec<ConfigEntry>) -> HashMap<String, (String, String)> {
 
 fn load_file(deps: &Deps) -> FileLoad {
     let running = (deps.running)();
-    let current = (deps.locate)()
-        .map_err(|e| game_error_text(&e))
-        .and_then(|paths| perf::read_current(&paths).map_err(|e| sentence(&e.to_string())))
+    let located = (deps.locate)();
+    let current = located
+        .as_ref()
+        .map_err(game_error_text)
+        .and_then(|paths| perf::read_current(paths).map_err(|e| sentence(&e.to_string())))
         .map(convars_of);
-    (current, running)
+    let packs = located
+        .as_ref()
+        .map(|paths| {
+            shiv_core::sidecar::group(&paths.addons)
+                .into_iter()
+                .filter_map(|m| m.sidecar.map(|s| s.mod_id))
+                .filter(|id| is_pack_id(id))
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    (current, running, packs)
 }
 
 /// `Err((text, game_running))`.
@@ -382,6 +585,30 @@ struct Perf {
     loading: Cell<bool>,
     /// The screen is showing; the catalog and list are only kept while it is.
     on_screen: Cell<bool>,
+    /// The CompLock options list.
+    pack_rows: Rc<VecModel<PerfPackRow>>,
+    /// The ids of the rows in `pack_rows`, in order.
+    pack_ids: RefCell<Vec<String>>,
+    /// CompLock pak mods that have a sidecar (`complock-<option>`).
+    pack_installed: RefCell<BTreeSet<String>>,
+    /// The choice each option with versions has picked, by option id.
+    pack_choices: RefCell<BTreeMap<String, usize>>,
+    /// Pack installs by Downloads-screen id.
+    pack_jobs: RefCell<HashMap<String, PackJob>>,
+    pack_generation: Cell<u64>,
+}
+
+/// A pack install, addressable from the Downloads screen. `generation`
+/// tells a late worker answer from a cancelled attempt apart after a retry.
+#[derive(Clone)]
+struct PackJob {
+    task: PackTask,
+    cancel: Arc<AtomicBool>,
+    generation: u64,
+    /// A worker is running for this row.
+    active: bool,
+    /// The worker was cancelled and has not answered yet.
+    stopping: bool,
 }
 
 /// Wire the Performance screen to `app` using the real game and API.
@@ -408,11 +635,18 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
         note: RefCell::new(String::new()),
         loading: Cell::new(false),
         on_screen: Cell::new(false),
+        pack_rows: Rc::new(VecModel::default()),
+        pack_ids: RefCell::new(Vec::new()),
+        pack_installed: RefCell::new(BTreeSet::new()),
+        pack_choices: RefCell::new(BTreeMap::new()),
+        pack_jobs: RefCell::new(HashMap::new()),
+        pack_generation: Cell::new(0),
     });
     PERF.with(|p| *p.borrow_mut() = Some(controller.clone()));
     let state = app.global::<PerfState>();
     state.set_rows(ModelRc::from(controller.rows.clone()));
     state.set_changes(ModelRc::from(controller.changes.clone()));
+    state.set_pack_rows(ModelRc::from(controller.pack_rows.clone()));
     state.on_shown(|| with_perf(|p| p.shown()));
     state.on_hidden(|| with_perf(|p| p.hidden()));
     state.on_retry(|| with_perf(|p| p.load()));
@@ -425,6 +659,10 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
     state.on_select(|i| with_perf(|p| p.select_row(i)));
     state.on_pick_tier(|i| with_perf(|p| p.pick_tier(i)));
     state.on_stage_complock(|| with_perf(|p| p.stage_complock()));
+    state.on_toggle_pack(|id| with_perf(|p| p.toggle_pack(id.as_str())));
+    state.on_pick_pack_choice(|id, i| with_perf(|p| p.pick_pack_choice(id.as_str(), i)));
+    state.on_install_pack(|id| with_perf(|p| p.install_pack(id.as_str())));
+    state.on_set_fov(|v| with_perf(|p| p.set_fov(f64::from(v))));
     state.on_set_text(|t| with_perf(|p| p.set_text(&t)));
     state.on_set_number(|v| with_perf(|p| p.set_number(f64::from(v))));
     state.on_toggle(|| with_perf(|p| p.toggle()));
@@ -523,6 +761,7 @@ impl Perf {
             s.set_tiers(ModelRc::default());
             s.set_complock(PerfComplock::default());
             s.set_editor(PerfEditor::default());
+            s.set_pack_rows(ModelRc::default());
             s.set_load_state(LoadState::Loading);
         });
         // The catalog was parsed on a worker thread, so glibc keeps its pages
@@ -547,8 +786,9 @@ impl Perf {
             "shiv-perf-load",
             move || (load_catalog(&deps), load_file(&deps)),
             move |result| {
-                let (catalog, file) =
-                    result.unwrap_or_else(|text| (Err(text), (Err(String::new()), false)));
+                let (catalog, file) = result.unwrap_or_else(|text| {
+                    (Err(text), (Err(String::new()), false, BTreeSet::new()))
+                });
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     with_perf(|p| p.loaded(catalog, file));
                 });
@@ -557,7 +797,7 @@ impl Perf {
         if !started {
             self.loaded(
                 Err("Could not start a background thread.".into()),
-                (Err(String::new()), false),
+                (Err(String::new()), false, BTreeSet::new()),
             );
         }
     }
@@ -598,7 +838,7 @@ impl Perf {
             "shiv-perf-read",
             move || load_file(&deps),
             move |result| {
-                let file = result.unwrap_or_else(|text| (Err(text), false));
+                let file = result.unwrap_or_else(|text| (Err(text), false, BTreeSet::new()));
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     with_perf(|p| {
                         p.loading.set(false);
@@ -613,7 +853,7 @@ impl Perf {
         }
     }
 
-    fn file_loaded(&self, (current, running): FileLoad) {
+    fn file_loaded(&self, (current, running, packs): FileLoad) {
         self.with_state(|s| s.set_game_running(running));
         match current {
             Ok(current) => {
@@ -625,12 +865,14 @@ impl Perf {
                 *self.file_error.borrow_mut() = Some(text);
             }
         }
+        *self.pack_installed.borrow_mut() = packs;
         self.prune_pending();
         self.rebuild_items();
         self.refresh_list();
         self.publish_changes();
         self.publish_editor();
         self.publish_status();
+        self.publish_pack_rows();
     }
 
     fn publish_status(&self) {
@@ -678,6 +920,267 @@ impl Perf {
 
     fn publish_complock(&self) {
         self.with_state(|s| s.set_complock(complock_card(self.catalog().as_deref())));
+    }
+
+    /// The value a convar of the file or the staged changes reads now:
+    /// `None` when nothing sets it.
+    fn staged_or_current(&self, key: &str) -> Option<String> {
+        if let Some(e) = self.pending.borrow().get(key) {
+            return e.value.clone();
+        }
+        self.current.borrow().get(key).map(|(_, v)| v.clone())
+    }
+
+    /// Whether an option is on: every convar it writes reads the value it
+    /// writes, staged or already in the file.
+    fn pack_option_is_on(&self, entries: &[ConfigEntry]) -> bool {
+        entries.iter().all(|e| {
+            self.staged_or_current(&e.path[1].to_ascii_lowercase())
+                .is_some_and(|v| perf::values_equal(&v, e.value.as_deref().unwrap_or_default()))
+        }) && !entries.is_empty()
+    }
+
+    /// The FOV the slider shows: staged, else the file's, else the site's
+    /// default.
+    fn fov_shown(&self, fov: &complock::Fov) -> f64 {
+        let key = fov.cvar.to_ascii_lowercase();
+        self.staged_or_current(&key)
+            .or_else(|| Some(fov.default.clone()))
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(fov.from)
+            .clamp(fov.from, fov.to)
+    }
+
+    /// `v` as the FOV field writes it: the site's step precision.
+    fn fov_text(fov: &complock::Fov, v: f64) -> String {
+        let decimals = (-fov.by.log10().floor()).clamp(0.0, 6.0) as usize;
+        trim_number(format!("{v:.decimals$}"))
+    }
+
+    /// The install button of a row with a pak.
+    fn install_label(&self, mod_id: &str, pak: &complock::Pak) -> (String, bool, bool) {
+        let installed = self.pack_installed.borrow().contains(mod_id);
+        if let Some((progress, _)) = crate::downloads::transfer(mod_id) {
+            let label = if progress < 0.0 {
+                "Downloading".to_string()
+            } else {
+                format!("Downloading {:.0}%", progress * 100.0)
+            };
+            return (label, true, installed);
+        }
+        let label = if installed {
+            "Update".to_string()
+        } else {
+            format!("Install · {}", fmt_size(Some(pak.download_size())))
+        };
+        (label, false, installed)
+    }
+
+    /// One row of the options list: the switch state from the staged and
+    /// current values, the picked choice, and the pak install state.
+    fn pack_row(&self, info: PackRowInfo<'_>) -> PerfPackRow {
+        let choice_index = self
+            .pack_choices
+            .borrow()
+            .get(info.id)
+            .copied()
+            .unwrap_or_else(|| {
+                info.choices
+                    .iter()
+                    .position(|c| c.default)
+                    .unwrap_or_default()
+            });
+        let (install_label, installing, installed) =
+            info.pak.map_or((String::new(), false, false), |pak| {
+                self.install_label(&pack_mod_id(info.id), pak)
+            });
+        PerfPackRow {
+            kind: info.kind,
+            id: info.id.into(),
+            title: info.title.into(),
+            detail: info.detail.into(),
+            text: first_line(info.text.unwrap_or_default()).into(),
+            warn: info.warn.unwrap_or_default().into(),
+            has_toggle: !info.convars.is_empty(),
+            checked: !info.convars.is_empty() && self.pack_option_is_on(info.convars),
+            has_pak: info.pak.is_some(),
+            installed,
+            install_label: install_label.into(),
+            installing,
+            choices: ModelRc::new(VecModel::from(
+                info.choices
+                    .iter()
+                    .map(|c| SharedString::from(c.title.as_str()))
+                    .collect::<Vec<_>>(),
+            )),
+            choice_index: choice_index as i32,
+            number: 0.0,
+            minimum: 0.0,
+            maximum: 1.0,
+            step: 0.05,
+            value_text: SharedString::new(),
+        }
+    }
+
+    /// One option row: the switch state from the staged and current values,
+    /// the picked choice, and the pak install state.
+    fn option_row(&self, option: &complock::PackOption) -> PerfPackRow {
+        let choice = self
+            .pack_choices
+            .borrow()
+            .get(&option.id)
+            .copied()
+            .and_then(|i| option.choices.get(i));
+        let gains = |avg: &Option<String>, low: &Option<String>| match (avg, low) {
+            (Some(avg), Some(low)) => format!("avg {avg} · low {low}"),
+            (Some(avg), None) => format!("avg {avg}"),
+            _ => String::new(),
+        };
+        let (avg, low) = choice.map_or((&option.avg, &option.low), |c| (&c.avg, &c.low));
+        self.pack_row(PackRowInfo {
+            kind: PerfPackKind::Option,
+            id: &option.id,
+            title: &option.title,
+            detail: gains(avg, low),
+            text: choice
+                .and_then(|c| c.text.as_deref())
+                .or(option.text.as_deref()),
+            warn: choice
+                .and_then(|c| c.warn.as_deref())
+                .or(option.warn.as_deref()),
+            convars: choice.map_or(&option.convars, |c| &c.convars),
+            choices: &option.choices,
+            pak: choice.and_then(|c| c.pak.as_ref()).or(option.pak.as_ref()),
+        })
+    }
+
+    /// The HUD++ row: its damage-number choices and the pak the picked one
+    /// installs.
+    fn hud_row(&self, hud: &complock::Hud) -> PerfPackRow {
+        let picked = self
+            .pack_choices
+            .borrow()
+            .get(PACK_HUD_ID)
+            .copied()
+            .unwrap_or_else(|| {
+                hud.choices
+                    .iter()
+                    .position(|c| c.default)
+                    .unwrap_or_default()
+            });
+        self.pack_row(PackRowInfo {
+            kind: PerfPackKind::Hud,
+            id: PACK_HUD_ID,
+            title: &hud.title,
+            detail: format!(
+                "avg {} · low {}",
+                hud.avg.clone().unwrap_or_default(),
+                hud.low.clone().unwrap_or_default()
+            ),
+            text: hud.text.as_deref(),
+            warn: None,
+            convars: &[],
+            choices: &hud.choices,
+            pak: hud.pak_of_choice(picked),
+        })
+    }
+
+    /// The FOV row: the slider over the site's range at the value the file
+    /// or the staged changes hold.
+    fn fov_row(&self, fov: &complock::Fov) -> PerfPackRow {
+        let shown = self.fov_shown(fov);
+        let mut row = self.pack_row(PackRowInfo {
+            kind: PerfPackKind::Fov,
+            id: PACK_FOV_ID,
+            title: "Field of view",
+            detail: format!("{} · default {}", fov.cvar, fov.default),
+            text: None,
+            warn: None,
+            convars: &[],
+            choices: &[],
+            pak: None,
+        });
+        row.number = shown as f32;
+        row.minimum = fov.from as f32;
+        row.maximum = fov.to as f32;
+        row.step = fov.by as f32;
+        row.value_text = Self::fov_text(fov, shown).into();
+        row
+    }
+
+    /// The CompLock options list: the HUD++ base, the FOV slider, then the
+    /// options under their group headings, all in the site's order.
+    fn publish_pack_rows(&self) {
+        let mut rows = Vec::new();
+        let mut ids = Vec::new();
+        if let Some(hud) = complock::hud() {
+            rows.push(self.hud_row(hud));
+            ids.push(PACK_HUD_ID.to_string());
+        }
+        if let Some(fov) = complock::fov() {
+            rows.push(self.fov_row(fov));
+            ids.push(PACK_FOV_ID.to_string());
+        }
+        for group in complock::groups() {
+            let options: Vec<&complock::PackOption> = complock::options()
+                .iter()
+                .filter(|o| o.group.as_deref() == Some(group.id.as_str()))
+                .collect();
+            if options.is_empty() {
+                continue;
+            }
+            rows.push(PerfPackRow {
+                kind: PerfPackKind::Heading,
+                id: SharedString::new(),
+                title: group.title.as_str().into(),
+                detail: group.text.as_str().into(),
+                ..self.pack_row(PackRowInfo {
+                    kind: PerfPackKind::Heading,
+                    id: "",
+                    title: "",
+                    detail: String::new(),
+                    text: None,
+                    warn: None,
+                    convars: &[],
+                    choices: &[],
+                    pak: None,
+                })
+            });
+            ids.push(String::new());
+            for option in options {
+                rows.push(self.option_row(option));
+                ids.push(option.id.clone());
+            }
+        }
+        *self.pack_ids.borrow_mut() = ids;
+        self.pack_rows.set_vec(rows);
+    }
+
+    /// Re-draw the pack row of `id` in place, from the same state its
+    /// builder reads.
+    fn refresh_pack_row(&self, id: &str) {
+        let rebuilt = if id == PACK_HUD_ID {
+            complock::hud().map(|hud| self.hud_row(hud))
+        } else if id == PACK_FOV_ID {
+            complock::fov().map(|fov| self.fov_row(fov))
+        } else {
+            complock::options()
+                .iter()
+                .find(|o| o.id == id)
+                .map(|option| self.option_row(option))
+        };
+        let Some(row) = rebuilt else {
+            return;
+        };
+        let index = self
+            .pack_ids
+            .borrow()
+            .iter()
+            .position(|i| i == id)
+            .filter(|&i| i < self.pack_rows.row_count());
+        if let Some(index) = index {
+            self.pack_rows.set_row_data(index, row);
+        }
     }
 
     /// Every catalog convar the game still has, plus any `ConVars` key the file
@@ -1001,6 +1504,7 @@ impl Perf {
         self.refresh_rows(&keys);
         self.publish_changes();
         self.publish_editor();
+        self.publish_pack_rows();
     }
 
     fn publish_changes(&self) {
@@ -1107,6 +1611,318 @@ impl Perf {
         self.publish_editor();
     }
 
+    /// Stage an option's convar side: on stages the values it writes (as
+    /// the catalog admits them), off stages its off values — or comments
+    /// the lines out when the site states none, exactly as its pack builder
+    /// leaves the line out. The switch state itself comes from the staged
+    /// and current values, so this is a toggle in the honest sense.
+    fn toggle_pack(&self, id: &str) {
+        if self.busy() {
+            return;
+        }
+        let Some(option) = complock::options().iter().find(|o| o.id == id) else {
+            return;
+        };
+        let on = self.pack_option_is_on(&option.convars);
+        let staged: Vec<ConfigEntry> = if on && option.off_convars.is_empty() {
+            option
+                .convars
+                .iter()
+                .map(|e| ConfigEntry {
+                    path: e.path.clone(),
+                    value: None,
+                })
+                .collect()
+        } else if on {
+            option.off_convars.clone()
+        } else {
+            option.convars.clone()
+        };
+        let Some(catalog) = self.catalog() else {
+            return;
+        };
+        let admission = catalog.admitted(&staged);
+        for entry in admission.entries {
+            self.stage(
+                &entry.path[1].to_ascii_lowercase(),
+                &entry.path[1],
+                entry.value,
+            );
+        }
+        self.note.borrow_mut().clear();
+        let mut detail = format!("{} {}.", option.title, if on { "off" } else { "on" });
+        if admission.skipped > 0 {
+            detail.push_str(&format!(
+                " {} of its settings are left out: blocked by the game or refused by the catalog's rules.",
+                admission.skipped
+            ));
+        }
+        self.with_state(|s| {
+            s.set_result_title("CompLock option staged".into());
+            s.set_result_detail(detail.into());
+            s.set_result_error(false);
+        });
+        self.refresh_after_edit();
+    }
+
+    /// Pick a choice: records it, stages the convar lines that choice
+    /// writes (commenting out the ones its off values name), and re-draws
+    /// the row so Install uses the picked pak.
+    fn pick_pack_choice(&self, id: &str, index: i32) {
+        if self.busy() {
+            return;
+        }
+        let picked = usize::try_from(index).ok().filter(|&i| {
+            complock::options()
+                .iter()
+                .find(|o| o.id == id)
+                .is_some_and(|o| i < o.choices.len())
+                || complock::hud().is_some_and(|hud| id == PACK_HUD_ID && i < hud.choices.len())
+        });
+        let Some(picked) = picked else {
+            return;
+        };
+        self.pack_choices.borrow_mut().insert(id.to_owned(), picked);
+        let choice = complock::options()
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| o.choices.get(picked))
+            .or_else(|| {
+                complock::hud()
+                    .filter(|_| id == PACK_HUD_ID)
+                    .and_then(|hud| hud.choices.get(picked))
+            });
+        if let Some(choice) = choice {
+            let mut staged: Vec<ConfigEntry> = choice.convars.clone();
+            for off in &choice.off_convars {
+                let already = staged.iter().any(|e| paths_equal(&e.path, &off.path));
+                if !already {
+                    staged.push(ConfigEntry {
+                        path: off.path.clone(),
+                        value: None,
+                    });
+                }
+            }
+            if let Some(catalog) = self.catalog() {
+                for entry in catalog.admitted(&staged).entries {
+                    self.stage(
+                        &entry.path[1].to_ascii_lowercase(),
+                        &entry.path[1],
+                        entry.value,
+                    );
+                }
+            }
+        }
+        self.note.borrow_mut().clear();
+        self.refresh_after_edit();
+    }
+
+    /// The FOV slider: stages `r_aspectratio` at the site's step precision.
+    fn set_fov(&self, v: f64) {
+        if self.busy() {
+            return;
+        }
+        let Some(fov) = complock::fov() else {
+            return;
+        };
+        let value = Self::fov_text(fov, v.clamp(fov.from, fov.to));
+        self.stage(&fov.cvar.to_ascii_lowercase(), &fov.cvar, Some(value));
+        self.note.borrow_mut().clear();
+        self.refresh_after_edit();
+    }
+
+    /// Install (or update) a pak: the option's own pak, or the picked
+    /// choice's. The download shows on the Downloads screen under the
+    /// option's stable mod id; a re-install replaces the mod in place.
+    fn install_pack(&self, id: &str) {
+        let task = if id == PACK_HUD_ID {
+            complock::hud().and_then(|hud| {
+                let picked = self
+                    .pack_choices
+                    .borrow()
+                    .get(PACK_HUD_ID)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        hud.choices
+                            .iter()
+                            .position(|c| c.default)
+                            .unwrap_or_default()
+                    });
+                hud.pak_of_choice(picked).map(|pak| {
+                    PackTask::of(pack_mod_id(id), format!("CompLock {}", hud.title), pak)
+                })
+            })
+        } else {
+            complock::options()
+                .iter()
+                .find(|o| o.id == id)
+                .and_then(|option| {
+                    let pak = self
+                        .pack_choices
+                        .borrow()
+                        .get(&option.id)
+                        .copied()
+                        .and_then(|i| option.choices.get(i))
+                        .and_then(|c| c.pak.as_ref())
+                        .or(option.pak.as_ref())?;
+                    Some(PackTask::of(
+                        pack_mod_id(id),
+                        format!("CompLock {}", option.title),
+                        pak,
+                    ))
+                })
+        };
+        let Some(task) = task else {
+            return;
+        };
+        self.spawn_pack_install(task);
+        self.refresh_pack_row(id);
+    }
+
+    /// What a pack-install worker reported, on the event loop. A late answer
+    /// from a cancelled attempt still clears the job's bookkeeping.
+    fn pack_update(&self, id: &str, generation: u64, update: PackUpdate) {
+        let current = self
+            .pack_jobs
+            .borrow()
+            .get(id)
+            .is_some_and(|j| j.generation == generation);
+        match update {
+            PackUpdate::Progress { done, total } => {
+                crate::downloads::progress(id, done, total);
+                if current {
+                    self.refresh_pack_row(self.row_id_of_mod(id));
+                }
+            }
+            PackUpdate::Installing => {
+                crate::downloads::installing(id);
+                if current {
+                    self.refresh_pack_row(self.row_id_of_mod(id));
+                }
+            }
+            PackUpdate::Done(result) => {
+                if current {
+                    self.pack_jobs.borrow_mut().remove(id);
+                }
+                match result {
+                    Ok(()) => {
+                        crate::downloads::finished(id, crate::downloads::Outcome::Done);
+                        self.pack_installed.borrow_mut().insert(id.to_owned());
+                        crate::installed::reload();
+                        crate::launch::refresh();
+                    }
+                    Err((text, running)) => {
+                        let outcome = if text == CANCELLED_TEXT {
+                            crate::downloads::Outcome::Cancelled
+                        } else {
+                            crate::downloads::Outcome::Failed(text)
+                        };
+                        crate::downloads::finished(id, outcome);
+                        if running {
+                            self.with_state(|s| s.set_game_running(true));
+                        }
+                    }
+                }
+                if current {
+                    self.refresh_pack_row(self.row_id_of_mod(id));
+                }
+            }
+        }
+    }
+
+    /// The options-list row id behind a mod id (`complock-soundcap` →
+    /// `soundcap`).
+    fn row_id_of_mod<'a>(&self, mod_id: &'a str) -> &'a str {
+        mod_id.strip_prefix(PACK_PREFIX).unwrap_or(mod_id)
+    }
+
+    /// Stop the pack install behind a Downloads-screen row.
+    pub(crate) fn cancel_pack(&self, id: &str) {
+        let mut jobs = self.pack_jobs.borrow_mut();
+        let Some(job) = jobs.get_mut(id).filter(|j| j.active) else {
+            return;
+        };
+        job.cancel.store(true, Ordering::Relaxed);
+        job.stopping = true;
+        crate::downloads::finished(id, crate::downloads::Outcome::Cancelled);
+    }
+
+    /// Start a cancelled or failed pack install again (Downloads screen):
+    /// the same pak the attempt downloaded, not whatever is picked now.
+    pub(crate) fn retry_pack(&self, id: &str) {
+        let task = {
+            let mut jobs = self.pack_jobs.borrow_mut();
+            let busy = jobs.get(id).is_some_and(|j| j.stopping || j.active);
+            if busy {
+                return;
+            }
+            jobs.remove(id).map(|job| job.task)
+        };
+        match task {
+            Some(task) => {
+                let row = self.row_id_of_mod(id).to_string();
+                self.spawn_pack_install(task);
+                self.refresh_pack_row(&row);
+            }
+            None => {
+                let row = self.row_id_of_mod(id).to_string();
+                self.install_pack(&row);
+            }
+        }
+    }
+
+    /// The worker behind one pack install: downloads with progress on the
+    /// Downloads screen, then the install under the shared lock.
+    fn spawn_pack_install(&self, task: PackTask) {
+        let mut jobs = self.pack_jobs.borrow_mut();
+        if jobs
+            .get(&task.mod_id)
+            .is_some_and(|job| job.active || job.stopping)
+        {
+            return;
+        }
+        let generation = self.pack_generation.get() + 1;
+        self.pack_generation.set(generation);
+        let cancel = Arc::new(AtomicBool::new(false));
+        jobs.insert(
+            task.mod_id.clone(),
+            PackJob {
+                task: task.clone(),
+                cancel: cancel.clone(),
+                generation,
+                active: true,
+                stopping: false,
+            },
+        );
+        drop(jobs);
+        crate::downloads::started(&task.mod_id, &task.name);
+        let deps = self.deps.clone();
+        let weak = self.weak.clone();
+        let mod_id = task.mod_id.clone();
+        let worker_task = task.clone();
+        let failed_id = task.mod_id.clone();
+        let poster = move |update: PackUpdate| {
+            let id = mod_id.clone();
+            let _ = weak.upgrade_in_event_loop(move |_| {
+                with_perf(|p| p.pack_update(&id, generation, update));
+            });
+        };
+        let post = poster.clone();
+        let started = crate::spawn_worker(
+            "shiv-pack-install",
+            move || run_pack_install(&deps, worker_task, &cancel, post),
+            move |result| {
+                poster(PackUpdate::Done(
+                    result.unwrap_or_else(|text| Err((text, false))),
+                ));
+            },
+        );
+        if !started {
+            let text = "Could not start a background thread.".to_string();
+            self.pack_update(&failed_id, generation, PackUpdate::Done(Err((text, false))));
+        }
+    }
+
     fn set_text(&self, text: &str) {
         self.edit_selected(|meta, _| checked_value(meta, text).map(Some));
     }
@@ -1174,7 +1990,7 @@ impl Perf {
                     s.set_complock_staged(false);
                     s.set_game_running(false);
                 });
-                self.file_loaded((Ok(current), false));
+                self.file_loaded((Ok(current), false, BTreeSet::new()));
                 let what = if count == 1 {
                     "1 change".to_string()
                 } else {
@@ -1330,6 +2146,7 @@ mod tests {
             running: Arc::new(|| false),
             fetch,
             cache: Some(cache),
+            pack_download: Arc::new(|_, _, _, _| Err("no pack downloads in unit tests".into())),
         }
     }
 
