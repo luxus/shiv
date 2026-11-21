@@ -293,3 +293,65 @@ fn part_urls_resolve_only_on_the_site() {
     assert_eq!(complock::part_url("dl/pack/hud.z"), None);
     assert_eq!(complock::part_url(""), None);
 }
+
+/// Every pak the embedded pack data names: the options', their choices',
+/// and the HUD base's default and variants.
+fn every_pak() -> Vec<&'static complock::Pak> {
+    let options = complock::options().iter().flat_map(|o| {
+        o.pak
+            .iter()
+            .chain(o.choices.iter().filter_map(|c| c.pak.as_ref()))
+    });
+    let hud = complock::hud().into_iter().flat_map(|h| {
+        h.default_pak
+            .iter()
+            .chain(h.variants.values())
+            .chain(h.choices.iter().filter_map(|c| c.pak.as_ref()))
+    });
+    options.chain(hud).collect()
+}
+
+/// The live parts against the embedded pack data: every part of every pak,
+/// downloaded beforehand into `SHIV_COMPLOCK_PARTS` under its url's file
+/// name (`curl -o parts/$(basename url) https://deadlockconfig.com$url`),
+/// unpacks through [`complock::unpack_pak`] to the declared size and CRC —
+/// the multi-piece paks (nocloth) included. The suite stays offline; this
+/// is the proof run that the embedded asset still describes the site's
+/// bytes.
+#[test]
+#[ignore = "needs the live parts downloaded into SHIV_COMPLOCK_PARTS"]
+fn live_parts_unpack_to_the_declared_vpks() {
+    let dir = PathBuf::from(std::env::var("SHIV_COMPLOCK_PARTS").expect("SHIV_COMPLOCK_PARTS"));
+    let out = tempfile::tempdir().expect("tempdir");
+    let mut checked = BTreeSet::new();
+    for pak in every_pak() {
+        for part in &pak.parts {
+            let pieces: Vec<PathBuf> = part
+                .urls
+                .iter()
+                .map(|url| dir.join(url.rsplit('/').next().expect("a file name")))
+                .collect();
+            let key = pieces.clone();
+            if !checked.insert(key) {
+                continue;
+            }
+            let dest = out.path().join(&part.name);
+            complock::unpack_pak(&pieces, &dest, part.crc, part.size)
+                .unwrap_or_else(|e| panic!("{} ({:?}): {e}", pak.title, part.urls));
+            println!(
+                "{} {} pieces={} size={} crc={}",
+                pak.title,
+                part.name,
+                pieces.len(),
+                part.size,
+                part.crc
+            );
+            std::fs::remove_file(&dest).expect("the unpacked part");
+        }
+    }
+    assert!(
+        checked.iter().any(|pieces| pieces.len() > 1),
+        "the data names a multi-piece part"
+    );
+    println!("{} parts unpacked and CRC-verified", checked.len());
+}
