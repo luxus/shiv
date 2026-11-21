@@ -85,6 +85,15 @@ pub struct ConfigEntry {
     pub value: Option<String>,
 }
 
+/// What [`Catalog::admitted`] lets through, and how much it left out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admission {
+    /// The entries Shiv may write, the last one per path.
+    pub entries: Vec<ConfigEntry>,
+    /// How many of the given entries were left out.
+    pub skipped: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
@@ -378,34 +387,49 @@ impl Catalog {
         )
     }
 
-    /// The entries Shiv writes for `tier`'s preset: its `ConVars` edits, minus
-    /// what the catalog rules deny and convars the game blocks. Edits in engine sections (`SceneSystem`,
-    /// `RenderSystem`, ...) are left out, as the old app leaves them out by
-    /// default: those are the sections Valve's matchmaking warning lists.
-    /// Empty when the catalog has no preset for the tier.
+    /// The entries Shiv writes for `tier`'s preset: its edits as
+    /// [`Catalog::admitted`] filters them. Empty when the catalog has no
+    /// preset for the tier.
     #[must_use]
     pub fn preset(&self, tier: Tier) -> Vec<ConfigEntry> {
         let Some(preset) = self.preset_info(tier) else {
             return Vec::new();
         };
-        let mut out: Vec<ConfigEntry> = Vec::new();
-        for entry in &preset.entries {
+        self.admitted(&preset.entries).entries
+    }
+
+    /// `entries` as Shiv writes them: `ConVars` edits only — engine
+    /// sections such as `SceneSystem` are the ones Valve's matchmaking
+    /// warning lists, so they are left out as the old app left them out —
+    /// minus convars the game blocks and paths the rules refuse, with the
+    /// last entry for a path winning as in a file. Every entry left out is
+    /// counted in [`Admission::skipped`].
+    #[must_use]
+    pub fn admitted(&self, entries: &[ConfigEntry]) -> Admission {
+        let mut admission = Admission {
+            entries: Vec::new(),
+            skipped: 0,
+        };
+        for entry in entries {
             let is_convar = entry.path.len() == 2 && entry.path[0].eq_ignore_ascii_case("ConVars");
-            // The game ignores blocked convars from gameinfo.gi.
             let blocked = is_convar
                 && self
                     .convar(&entry.path[1])
                     .is_some_and(|m| m.status == ConvarStatus::Blocked);
             if !is_convar || blocked || self.writable(&entry.path).is_err() {
+                admission.skipped += 1;
                 continue;
             }
-            // The last entry for a path wins, as in a file.
-            match out.iter_mut().find(|e| path_eq(&e.path, &entry.path)) {
+            match admission
+                .entries
+                .iter_mut()
+                .find(|e| path_eq(&e.path, &entry.path))
+            {
                 Some(existing) => existing.value.clone_from(&entry.value),
-                None => out.push(entry.clone()),
+                None => admission.entries.push(entry.clone()),
             }
         }
-        out
+        admission
     }
 
     /// Why the catalog rules refuse to write `path`, if they do.

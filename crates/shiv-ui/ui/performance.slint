@@ -1,5 +1,6 @@
-// Performance: stage a preset or single settings from the API's perf
-// catalog, review the pending changes, then write them to gameinfo.gi.
+// Performance: stage a preset, the CompLock set or single settings from
+// the API's perf catalog, review the pending changes, then write them to
+// gameinfo.gi.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -12,6 +13,16 @@ export struct PerfTier {
     // The catalog preset behind it, e.g. "DMM Clean by ..."; "" when the catalog has none.
     name: string,
     blurb: string,
+    available: bool,
+}
+
+// The CompLock card below the tiers.
+export struct PerfComplock {
+    title: string,
+    // "deadlockconfig.com · build 6860 · fetched 2026-11-21 · N settings".
+    subtitle: string,
+    // The compatibility note from their site.
+    note: string,
     available: bool,
 }
 
@@ -73,6 +84,9 @@ export global PerfState {
     in property <[PerfTier]> tiers;
     // Index of the staged preset; -1 for none.
     in property <int> active-tier: -1;
+    in property <PerfComplock> complock;
+    // The CompLock set is what is staged (the tiers are not).
+    in property <bool> complock-staged: false;
     in property <[PerfRow]> rows;
     in property <string> list-note;
     in property <PerfEditor> editor;
@@ -93,6 +107,7 @@ export global PerfState {
     callback search(string);
     callback select(int);
     callback pick-tier(int);
+    callback stage-complock();
     callback set-text(string);
     callback set-number(float);
     callback toggle();
@@ -148,6 +163,59 @@ component TierButton inherits Rectangle {
     ta := TouchArea {
         enabled: root.tier.available;
         mouse-cursor: root.tier.available ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+component CompLockCard inherits Rectangle {
+    in property <PerfComplock> card;
+    in property <bool> active;
+    callback clicked;
+
+    accessible-role: button;
+    accessible-label: "CompLock preset";
+    accessible-action-default => {
+        if (root.card.available) {
+            root.clicked();
+        }
+    }
+
+    height: 72px;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : (ta.has-hover && root.card.available ? Theme.border-strong : Theme.border);
+    background: root.active ? Theme.raised : (ta.has-hover && root.card.available ? Theme.hover : transparent);
+    opacity: root.card.available ? 1.0 : 0.4;
+
+    VerticalLayout {
+        padding-left: Theme.s2;
+        padding-right: Theme.s1;
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.card.title;
+            color: root.active ? Theme.accent : Theme.text;
+            font-size: Theme.text-md;
+            font-weight: 600;
+            overflow: elide;
+        }
+        Text {
+            text: root.card.subtitle;
+            color: Theme.text-muted;
+            font-size: Theme.text-sm;
+            overflow: elide;
+        }
+        Text {
+            text: root.card.note;
+            color: Theme.text-muted;
+            font-size: Theme.text-sm;
+            overflow: elide;
+        }
+    }
+
+    ta := TouchArea {
+        enabled: root.card.available;
+        mouse-cursor: root.card.available ? pointer : default;
         clicked => { root.clicked(); }
     }
 }
@@ -480,6 +548,12 @@ export component PerformancePage inherits Rectangle {
                 active: PerfState.active-tier == i;
                 clicked => { PerfState.pick-tier(i); }
             }
+        }
+
+        if PerfState.load-state == LoadState.ready: CompLockCard {
+            card: PerfState.complock;
+            active: PerfState.complock-staged;
+            clicked => { PerfState.stage-complock(); }
         }
 
         if PerfState.load-state == LoadState.ready: HorizontalLayout {

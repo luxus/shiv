@@ -1,7 +1,7 @@
 //! Performance screen controller: loads the perf catalog (API, with the last
 //! good copy cached on disk by `ETag`), lists every setting with its value in
-//! `gameinfo.gi`, stages presets and single edits as pending changes, and
-//! writes them with `shiv_core::perf::apply`.
+//! `gameinfo.gi`, stages presets, the CompLock set and single edits as
+//! pending changes, and writes them with `shiv_core::perf::apply`.
 //!
 //! Network and file work runs on worker threads that post back with
 //! `upgrade_in_event_loop`, like the other screens. Editing is always
@@ -15,6 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use shiv_api::Client;
+use shiv_core::complock;
 use shiv_core::perf::{
     self, Catalog, CatalogCache, ConfigEntry, ConvarKind, ConvarMeta, ConvarStatus, Tier,
 };
@@ -22,7 +23,9 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::browse::{catalog_error_text, game_error_text};
 use crate::installed::{Locate, Running};
-use crate::{App, LoadState, PerfChange, PerfControl, PerfEditor, PerfRow, PerfState, PerfTier};
+use crate::{
+    App, LoadState, PerfChange, PerfComplock, PerfControl, PerfEditor, PerfRow, PerfState, PerfTier,
+};
 
 /// `perf_catalog(etag)`: `Ok(None)` when the cached copy is current.
 pub(crate) type Fetch =
@@ -56,6 +59,8 @@ impl Deps {
 
 const GAME_RUNNING_TEXT: &str = "Deadlock is running. Close it, then apply again.";
 const CONVARS: &str = "ConVars";
+const COMPLOCK_TITLE: &str = "CompLock engine settings";
+const COMPLOCK_NOTE: &str = "From their site: cloth-off conflicts with mods that replace hero models. Their mod paks are not managed here.";
 
 thread_local! {
     static PERF: RefCell<Option<Rc<Perf>>> = const { RefCell::new(None) };
@@ -231,6 +236,43 @@ fn entry_path(name: &str) -> Vec<String> {
     vec![CONVARS.into(), name.into()]
 }
 
+/// The CompLock card's state: their set as the catalog admits it, with the
+/// build, the fetch date, the admitted count and the left-out count beside
+/// it. Without a catalog, or with nothing left after admission, the card is
+/// unavailable and the subtitle says why.
+fn complock_card(catalog: Option<&Catalog>) -> PerfComplock {
+    let unavailable = |subtitle: &str| PerfComplock {
+        title: COMPLOCK_TITLE.into(),
+        subtitle: subtitle.into(),
+        note: COMPLOCK_NOTE.into(),
+        available: false,
+    };
+    let Some(catalog) = catalog else {
+        return unavailable("Needs the performance catalog.");
+    };
+    let admission = catalog.admitted(&complock::entries());
+    if admission.entries.is_empty() {
+        return unavailable("Nothing Shiv may write from their gameinfo.");
+    }
+    let left_out = if admission.skipped > 0 {
+        format!(" · {} left out (blocked or denied)", admission.skipped)
+    } else {
+        String::new()
+    };
+    PerfComplock {
+        title: COMPLOCK_TITLE.into(),
+        subtitle: format!(
+            "deadlockconfig.com · build {} · fetched {} · {} settings{left_out}",
+            complock::game(),
+            complock::fetched(),
+            admission.entries.len()
+        )
+        .into(),
+        note: COMPLOCK_NOTE.into(),
+        available: true,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Worker side
 
@@ -382,6 +424,7 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
     });
     state.on_select(|i| with_perf(|p| p.select_row(i)));
     state.on_pick_tier(|i| with_perf(|p| p.pick_tier(i)));
+    state.on_stage_complock(|| with_perf(|p| p.stage_complock()));
     state.on_set_text(|t| with_perf(|p| p.set_text(&t)));
     state.on_set_number(|v| with_perf(|p| p.set_number(f64::from(v))));
     state.on_toggle(|| with_perf(|p| p.toggle()));
@@ -413,13 +456,17 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
                 return;
             }
             p.pending.borrow_mut().clear();
-            p.with_state(|s| s.set_active_tier(-1));
+            p.with_state(|s| {
+                s.set_active_tier(-1);
+                s.set_complock_staged(false);
+            });
             p.refresh_after_edit();
         });
     });
     state.on_apply(|| with_perf(|p| p.apply()));
     state.on_dismiss_result(|| with_perf(|p| p.show_result("", "", false)));
     controller.publish_tiers();
+    controller.publish_complock();
     controller.publish_changes();
 }
 
@@ -474,6 +521,7 @@ impl Perf {
         self.rows.set_vec(Vec::new());
         self.with_state(|s| {
             s.set_tiers(ModelRc::default());
+            s.set_complock(PerfComplock::default());
             s.set_editor(PerfEditor::default());
             s.set_load_state(LoadState::Loading);
         });
@@ -526,6 +574,7 @@ impl Perf {
                 *self.origin.borrow_mut() = origin;
                 self.with_state(|s| s.set_load_state(LoadState::Ready));
                 self.publish_tiers();
+                self.publish_complock();
                 self.file_loaded(file);
             }
             Err(text) => {
@@ -625,6 +674,10 @@ impl Perf {
             })
             .collect();
         self.with_state(|s| s.set_tiers(ModelRc::new(VecModel::from(tiers))));
+    }
+
+    fn publish_complock(&self) {
+        self.with_state(|s| s.set_complock(complock_card(self.catalog().as_deref())));
     }
 
     /// Every catalog convar the game still has, plus any `ConVars` key the file
@@ -1004,8 +1057,49 @@ impl Perf {
             .unwrap_or_default();
         self.with_state(|s| {
             s.set_active_tier(index);
+            s.set_complock_staged(false);
             s.set_result_title(format!("{} preset staged", tier.label()).into());
             s.set_result_detail(format!("{blurb} Review the pending changes, then apply.").into());
+            s.set_result_error(false);
+        });
+        self.refresh_list();
+        self.publish_changes();
+        self.publish_editor();
+    }
+
+    /// Stage the CompLock set the way a tier stages its preset: it replaces
+    /// whatever was staged, and the result says what admission left out.
+    fn stage_complock(&self) {
+        if self.busy() {
+            return;
+        }
+        let Some(catalog) = self.catalog() else {
+            return;
+        };
+        let admission = catalog.admitted(&complock::entries());
+        if admission.entries.is_empty() {
+            return;
+        }
+        self.pending.borrow_mut().clear();
+        for e in admission.entries {
+            self.stage(&e.path[1].to_ascii_lowercase(), &e.path[1], e.value);
+        }
+        self.note.borrow_mut().clear();
+        let mut detail = format!(
+            "Engine settings from deadlockconfig.com for game build {}. Review the pending changes, then apply.",
+            complock::game()
+        );
+        if admission.skipped > 0 {
+            detail.push_str(&format!(
+                " {} of their settings are left out: blocked by the game or refused by the catalog's rules.",
+                admission.skipped
+            ));
+        }
+        self.with_state(|s| {
+            s.set_active_tier(-1);
+            s.set_complock_staged(true);
+            s.set_result_title("CompLock set staged".into());
+            s.set_result_detail(detail.into());
             s.set_result_error(false);
         });
         self.refresh_list();
@@ -1077,6 +1171,7 @@ impl Perf {
                 self.pending.borrow_mut().clear();
                 self.with_state(|s| {
                     s.set_active_tier(-1);
+                    s.set_complock_staged(false);
                     s.set_game_running(false);
                 });
                 self.file_loaded((Ok(current), false));
@@ -1350,6 +1445,35 @@ mod tests {
         assert!(checked_value(Some(&text), "a\"b").is_err());
         assert!(checked_value(None, "").is_err());
         assert!(checked_value(Some(&meta(ConvarKind::Bool, None, None)), "yes").is_err());
+    }
+
+    #[test]
+    fn the_complock_card_states_the_admitted_and_left_out_counts() {
+        let catalog = Catalog::parse(crate::tests::PERF_CATALOG.as_bytes()).expect("catalog");
+        let admission = catalog.admitted(&complock::entries());
+        assert!(
+            admission.skipped > 0,
+            "the fixture denies some of their set"
+        );
+        let card = complock_card(Some(&catalog));
+        assert!(card.available, "{}", card.subtitle);
+        assert_eq!(card.title.as_str(), "CompLock engine settings");
+        assert!(
+            card.subtitle
+                .contains(&format!("{} settings", admission.entries.len())),
+            "{}",
+            card.subtitle
+        );
+        assert!(
+            card.subtitle
+                .contains(&format!("{} left out", admission.skipped)),
+            "{}",
+            card.subtitle
+        );
+        assert!(card.note.contains("hero models"), "{}", card.note);
+        let bare = complock_card(None);
+        assert!(!bare.available);
+        assert!(bare.subtitle.contains("catalog"), "{}", bare.subtitle);
     }
 
     #[test]

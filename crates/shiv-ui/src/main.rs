@@ -645,7 +645,8 @@ mod tests {
     /// edits are dropped while an apply writes; unapplied edits survive a
     /// re-show; a missing Steam shows a clear error.
     /// A small perf catalog: one preset per tier plus a retired "lean" one
-    /// (skipped), one denied convar.
+    /// (skipped), one denied convar and one deny pattern (which also denies
+    /// some of CompLock's settings, so their admission is not empty).
     pub(crate) const PERF_CATALOG: &str = r#"{"schemaVersion":1,"version":"2026.11.07-1","generatedAt":"x",
       "categories":[{"id":"lighting","label":"Lighting","weight":2}],
       "convars":[
@@ -662,11 +663,13 @@ mod tests {
         {"id":"t","name":"Potato","author":"me","tier":"potato","blurb":"Fastest.","source":{"kind":"bundled"},"entries":[{"path":["ConVars","r_ssao"],"value":"0"}]},
         {"id":"l","name":"Lean","author":"me","tier":"lean","blurb":"Old.","source":{"kind":"bundled"},"entries":[{"path":["ConVars","r_ssao"],"value":"0"}]}
       ],
-      "rules":{"excludedSections":["FileSystem"],"guardedSections":[],"denied":[{"path":["ConVars","sv_cheats"],"reason":"Turns on cheats."}]}}"#;
+      "rules":{"excludedSections":["FileSystem"],"guardedSections":[],"denied":[{"path":["ConVars","sv_cheats"],"reason":"Turns on cheats."},{"pattern":"^ik_","reason":"Inverse kinematics debugging."}]}}"#;
 
     /// Performance against a temp gameinfo.gi and a stub catalog: presets
     /// stage changes, the editor follows kind, range and the deny rules,
-    /// Apply is refused while the game runs and then writes with a backup.
+    /// Apply is refused while the game runs and then writes with a backup;
+    /// the CompLock card stages their set through the same admission and
+    /// Apply writes it.
     fn performance_flow() {
         use shiv_core::perf::CatalogCache;
         use std::sync::Arc;
@@ -866,6 +869,100 @@ mod tests {
         assert_eq!(state.get_changes().row_count(), 2);
         assert_eq!(state.get_active_tier(), 1);
         assert_eq!(state.get_tiers().row_count(), 4);
+
+        // The CompLock card is catalog-gated like the tiers and states the
+        // admission honestly: the fixture's deny pattern leaves their ik_
+        // settings out, the count says so, and the card carries the site's
+        // compatibility note.
+        let fixture = shiv_core::perf::Catalog::parse(PERF_CATALOG.as_bytes()).expect("fixture");
+        let complock = fixture.admitted(&shiv_core::complock::entries());
+        assert!(
+            complock.skipped > 0,
+            "the fixture's deny pattern bites their set"
+        );
+        assert!(
+            complock
+                .entries
+                .iter()
+                .all(|e| !e.path[1].starts_with("ik_")),
+            "denied entries are not admitted"
+        );
+        let card = state.get_complock();
+        assert_eq!(card.title.as_str(), "CompLock engine settings");
+        assert!(card.available, "{}", card.subtitle);
+        assert!(
+            card.subtitle
+                .contains(&format!("build {}", shiv_core::complock::game())),
+            "{}",
+            card.subtitle
+        );
+        assert!(
+            card.subtitle.contains(shiv_core::complock::fetched()),
+            "{}",
+            card.subtitle
+        );
+        assert!(
+            card.subtitle
+                .contains(&format!("{} settings", complock.entries.len())),
+            "{}",
+            card.subtitle
+        );
+        assert!(
+            card.subtitle
+                .contains(&format!("{} left out", complock.skipped)),
+            "{}",
+            card.subtitle
+        );
+        assert!(card.note.contains("hero models"), "{}", card.note);
+
+        // Staging CompLock works like staging a preset: it replaces the
+        // staged set, and nothing is written until Apply.
+        click(&app, "CompLock preset");
+        assert!(state.get_complock_staged());
+        assert_eq!(
+            state.get_active_tier(),
+            -1,
+            "staging CompLock replaces the staged preset"
+        );
+        assert_eq!(state.get_result_title().as_str(), "CompLock set staged");
+        assert!(
+            state.get_result_detail().contains("left out"),
+            "{}",
+            state.get_result_detail()
+        );
+        assert_eq!(
+            state.get_changes().row_count(),
+            complock.entries.len() - 1,
+            "their fps_max 400 is already the file's value"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&paths.gameinfo).expect("read"),
+            original,
+            "nothing is written until Apply"
+        );
+
+        // Apply writes their set and reports it.
+        state.invoke_apply();
+        assert!(run_until(&app, Duration::from_secs(20), idle));
+        assert!(!state.get_result_error(), "{}", state.get_result_detail());
+        assert_eq!(state.get_result_title().as_str(), "Settings applied");
+        assert_eq!(state.get_changes().row_count(), 0);
+        assert!(!state.get_complock_staged());
+        let written = shiv_core::perf::read_current(&paths).expect("written");
+        for e in &complock.entries {
+            assert!(
+                written.contains(e),
+                "{} missing from the written file",
+                e.path[1]
+            );
+        }
+        assert!(
+            state
+                .get_status()
+                .contains(&format!("{} settings set", complock.entries.len() + 1)),
+            "{}",
+            state.get_status()
+        );
     }
 
     fn crosshair_flow() {

@@ -125,6 +125,32 @@ fn preset_returns_entries_for_each_tier() {
 }
 
 #[test]
+fn admitted_counts_what_it_leaves_out() {
+    let catalog = Catalog::parse(catalog_json(1).as_bytes()).unwrap();
+    let admitted = catalog.admitted(&[
+        entry(&["ConVars", "r_ssao"], Some("1")),
+        entry(&["ConVars", "r_ssao"], Some("0")),
+        entry(&["ConVars", "fps_max"], None),
+        entry(&["ConVars", "sv_cheats"], Some("1")),
+        entry(&["ConVars", "host_timescale"], Some("2")),
+        entry(&["ConVars", "r_blocked"], Some("1")),
+        entry(&["SceneSystem", "CSMCascadeResolution"], Some("512")),
+        entry(&["FileSystem", "x"], Some("1")),
+    ]);
+    // The last entry for a path wins without counting as left out; denied
+    // (by path and by pattern), blocked and non-ConVars entries are left
+    // out and counted.
+    assert_eq!(
+        admitted.entries,
+        vec![
+            entry(&["ConVars", "r_ssao"], Some("0")),
+            entry(&["ConVars", "fps_max"], None),
+        ]
+    );
+    assert_eq!(admitted.skipped, 5);
+}
+
+#[test]
 fn apply_changes_only_listed_keys() {
     let (_d, paths) = fixture(GAMEINFO);
     perf::apply(
