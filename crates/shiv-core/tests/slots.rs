@@ -263,3 +263,50 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
     install::install_files(&[a2, b2], meta("two"), &e.paths, || false).unwrap();
     assert_eq!(vpks_of(&e, "two"), ["pak02_dir.vpk", "pak99_dir.vpk"]);
 }
+
+/// Kai deleted paks by hand, leaving sidecars that still name their slots
+/// (Thicker Outlines on pak10, file gone). A mod moved or installed onto
+/// such a slot was read back as the stale record and lost its own: the
+/// live smoke's Improved Quickbuy did.
+#[test]
+fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
+    let e = env();
+    let gone = vpk(&e.work, "gone", "pak01_dir.vpk", false);
+    install::install_files(&gone, meta("gone"), &e.paths, || false).unwrap();
+    assert_eq!(vpks_of(&e, "gone"), ["pak01_dir.vpk"]);
+    fs::remove_file(e.paths.addons.join("pak01_dir.vpk")).unwrap();
+
+    let next = vpk(&e.work, "next", "pak01_dir.vpk", false);
+    install::install_files(&next, meta("next"), &e.paths, || false).unwrap();
+    assert_eq!(
+        vpks_of(&e, "next"),
+        ["pak02_dir.vpk"],
+        "not the stale pak01"
+    );
+
+    // Eviction above the pack skips a stale claim too: with HUD++ in, a
+    // mod lands on pak08 and its file is deleted by hand; moving `next`
+    // off pak02 for Particle Pruning must pass over pak08.
+    let hud = vpk(&e.work, "hud", "pak01_dir.vpk", false);
+    install::install_files_in_slots(&hud, meta("complock-hud"), &e.paths, || false, 7).unwrap();
+    let stale = vpk(&e.work, "stale", "pak01_dir.vpk", false);
+    install::install_files(&stale, meta("stale"), &e.paths, || false).unwrap();
+    assert_eq!(vpks_of(&e, "stale"), ["pak08_dir.vpk"]);
+    fs::remove_file(e.paths.addons.join("pak08_dir.vpk")).unwrap();
+    let particles = vpk(&e.work, "particles", "pak02_dir.vpk", false);
+    install::install_files_in_slots(
+        &particles,
+        meta("complock-particles"),
+        &e.paths,
+        || false,
+        7,
+    )
+    .unwrap();
+    assert_eq!(vpks_of(&e, "next"), ["pak09_dir.vpk"]);
+    let mods = sidecar::group(&e.paths.addons);
+    let next_mod = mods
+        .iter()
+        .find(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == "next"))
+        .expect("next keeps its own record");
+    assert_eq!(next_mod.vpks.len(), 1);
+}

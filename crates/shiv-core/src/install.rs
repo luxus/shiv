@@ -313,7 +313,7 @@ fn place_in_slots(
     let wanted = wanted_slots(staged, reserved);
     let claimed: BTreeSet<u32> = wanted.iter().flatten().copied().collect();
     let mods = sidecar::group(addons_dir);
-    let mut used: BTreeSet<u32> = addons::used_pak_numbers(addons_dir)?.into_iter().collect();
+    let mut used = taken_paks(addons_dir)?;
     used.extend(&claimed);
     let mut above = (reserved + 1..=addons::PAK_CAPACITY).filter(|n| !used.contains(n));
     let mut moves: Vec<(&addons::InstalledVpk, u32)> = Vec::new();
@@ -641,7 +641,7 @@ fn allocate_paks(addons_dir: &Path, count: usize) -> Result<Vec<u32>, InstallErr
         Err(AddonsError::Full { .. }) => return Err(InstallError::AddonsFull),
         Err(e) => return Err(e.into()),
     }
-    let used: BTreeSet<u32> = addons::used_pak_numbers(addons_dir)?.into_iter().collect();
+    let used = taken_paks(addons_dir)?;
     let reserved = if uses_complock(addons_dir) {
         crate::complock::last_slot().min(addons::PAK_CAPACITY)
     } else {
@@ -658,6 +658,32 @@ fn allocate_paks(addons_dir: &Path, count: usize) -> Result<Vec<u32>, InstallErr
     // A mod's own paks keep their order even when they spill below.
     free.sort_unstable();
     Ok(free)
+}
+
+/// Pak numbers that are not free: carried by a file in `addons`, or named
+/// by a sidecar whose file is gone (deleted by hand). Giving such a number
+/// to another mod would make that sidecar claim the new file, and the mod
+/// would lose its own record.
+fn taken_paks(addons_dir: &Path) -> Result<BTreeSet<u32>, InstallError> {
+    let mut used: BTreeSet<u32> = addons::used_pak_numbers(addons_dir)?.into_iter().collect();
+    let Ok(dir) = fs::read_dir(addons_dir.join(SHIV_DIR)) else {
+        return Ok(used);
+    };
+    for entry in dir.flatten() {
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
+            continue;
+        };
+        if let Ok(Some(sidecar)) = sidecar::read(addons_dir, id) {
+            used.extend(
+                sidecar
+                    .vpks
+                    .iter()
+                    .filter_map(|v| parse_pak(v).map(|(n, _)| n)),
+            );
+        }
+    }
+    Ok(used)
 }
 
 /// Whether any CompLock pak (a `complock-*` sidecar) is installed in `addons`.
