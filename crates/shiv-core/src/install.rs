@@ -9,7 +9,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -65,6 +65,13 @@ fn tally_disk_write(bytes: u64) {
 pub const MAX_EXTRACTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Default cap on archive entries.
 pub const MAX_ENTRIES: usize = 100_000;
+/// Bytes staged per file write while extracting, and the size of the read
+/// buffer under the zip reader. The archive readers hand out small reads
+/// (the zip entry reader returns 8 KiB a call), and writing them as they
+/// come costs tens of thousands of small file writes on a large archive;
+/// staging them into writes of this size measured 2.2× faster end to end
+/// (tests/install_probe.rs, docs/perf-results.md).
+const ENTRY_COPY_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
@@ -660,8 +667,18 @@ impl<R: Read> Read for Budgeted<'_, R> {
     }
 }
 
-/// Copy `reader` into a new file at `dest` (creating parents), counting the budget.
-fn write_entry(reader: impl Read, dest: &Path, budget: &mut Budget) -> Result<(), InstallError> {
+/// Copy `reader` into a new file at `dest` (creating parents), counting
+/// the budget. `scratch` is the write buffer, reused across entries: the
+/// archive readers hand out small reads (the zip entry reader returns
+/// 8 KiB a call), and staging them into full scratch-sized writes keeps a
+/// large archive's file writes in the hundreds, not the tens of
+/// thousands (docs/perf-results.md).
+fn write_entry(
+    reader: impl Read,
+    dest: &Path,
+    budget: &mut Budget,
+    scratch: &mut [u8],
+) -> Result<(), InstallError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(io_err(parent))?;
     }
@@ -670,13 +687,34 @@ fn write_entry(reader: impl Read, dest: &Path, budget: &mut Budget) -> Result<()
         inner: reader,
         budget,
     };
-    match io::copy(&mut limited, &mut out) {
-        Ok(written) => {
-            tally_disk_write(written);
-            Ok(())
+    let mut staged = 0usize;
+    let outcome = loop {
+        if staged == scratch.len() {
+            if let Err(e) = out.write_all(scratch) {
+                break Err(e);
+            }
+            tally_disk_write(scratch.len() as u64);
+            staged = 0;
         }
+        match limited.read(&mut scratch[staged..]) {
+            Ok(0) => {
+                if staged > 0 {
+                    if let Err(e) = out.write_all(&scratch[..staged]) {
+                        break Err(e);
+                    }
+                    tally_disk_write(staged as u64);
+                }
+                break Ok(());
+            }
+            Ok(n) => staged += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => break Err(e),
+        }
+    };
+    match outcome {
         Err(_) if limited.budget.exceeded => Err(InstallError::TooLarge),
         Err(e) => Err(io_err(dest)(e)),
+        Ok(()) => Ok(()),
     }
 }
 
@@ -780,8 +818,9 @@ fn extract_zip(
     limits: Limits,
     budget: &mut Budget,
 ) -> Result<(), InstallError> {
+    let mut scratch = vec![0u8; ENTRY_COPY_BYTES];
     let file = File::open(archive).map_err(io_err(archive))?;
-    let mut zip = zip::ZipArchive::new(file)?;
+    let mut zip = zip::ZipArchive::new(BufReader::with_capacity(scratch.len(), file))?;
 
     // Pass 1: validate every entry and the declared sizes before writing anything.
     let mut seen = 0;
@@ -811,7 +850,7 @@ fn extract_zip(
             continue;
         }
         let dest_path = dest.join(relative_entry_path(entry.name(), false)?);
-        write_entry(entry, &dest_path, budget)?;
+        write_entry(entry, &dest_path, budget, &mut scratch)?;
     }
     Ok(())
 }
@@ -847,12 +886,13 @@ fn extract_7z(
     }
 
     let mut failure: Option<InstallError> = None;
+    let mut scratch = vec![0u8; ENTRY_COPY_BYTES];
     let result = reader.for_each_entries(|entry, data| {
         if entry.is_directory() || entry.is_anti_item() || !is_vpk_name(entry.name()) {
             return Ok(true);
         }
         let outcome = relative_entry_path(entry.name(), false)
-            .and_then(|rel| write_entry(data, &dest.join(rel), budget));
+            .and_then(|rel| write_entry(data, &dest.join(rel), budget, &mut scratch));
         match outcome {
             Ok(()) => Ok(true),
             Err(e) => {

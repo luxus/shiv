@@ -40,9 +40,9 @@ Wayland), the linked run 2026-11-20, the Nix flake package at
 | Memory — 60 s full-list scroll | post-scroll within 10 % of loaded | 138 MB loaded → 151 MB peak (+9.4 %) | [lea, 2026-11-21](docs/perf-results.md#scroll-peak-experiments-lea-2026-11-21) |
 | Scroll — frame budget while flinging | no frame > 16 ms at 144 Hz | not yet recorded (needs a frame-tap probe) | [issue #4](https://github.com/luxus/shiv/issues/4) |
 | Search — keystroke → list updated | < 16 ms on 10k mods | 3.3–3.4 ms steady, 6.6 ms first letter | [lea, 2026-11-21](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
-| Install — 100 MB archive | extraction > 60 % of disk-read speed; cancel responds < 50 ms | not yet recorded (needs a timed-install probe) | [issue #4](https://github.com/luxus/shiv/issues/4) |
+| Install — 100 MB archive | extraction > 60 % of disk-read speed; cancel responds < 50 ms | 7.4–7.6 GB/s: 51 % of the warm raw read (the copy ceiling), ~110 % of the disk's cold read; cancel 88 µs in the download phase, extraction not cancellable | [lea, 2026-11-21](docs/perf-results.md#install-probe-lea-2026-11-21) |
 
-The scroll, search and install gates, and the AppImage size from a release
+The scroll and search gates, and the AppImage size from a release
 build, are what [issue #1](https://github.com/luxus/shiv/issues/1) is still
 recording on lea; the 45 MB above is the Nix store path, not the AppImage.
 Two core paths are also held by criterion benches, recorded 2026-11-20 on the

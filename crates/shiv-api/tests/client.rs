@@ -176,6 +176,56 @@ fn fetch_cancellable_set_before_start_does_not_request() {
     assert!(!dir.path().join("m.zip.part").exists());
 }
 
+/// The download-phase cancel latency, the cancellable half of the install
+/// gate's cancel budget (docs/perf-results.md, issue #10): how long
+/// `fetch_cancellable` takes to return `Cancelled` once the flag is set,
+/// against a loopback stub. The flag is checked before every 64 KiB
+/// chunk, so this measures the floor — one in-flight chunk; a real
+/// network bounds the return by that chunk's arrival, not by the check.
+/// Print-only like the install probe: run with `--release --nocapture`
+/// on the machine being recorded. The extraction that follows a download
+/// has no flag check at all; that verdict is recorded in
+/// docs/perf-results.md, not measured here.
+#[test]
+#[ignore = "a timing probe: run with --release --nocapture, record in docs/perf-results.md"]
+fn cancelled_fetch_returns_within_one_chunk() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let payload = vec![7u8; 64 * 1024 * 1024];
+    let url = stub(1, move |_| Response::from_data(payload.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("m.zip");
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let first_chunk = Arc::new(AtomicBool::new(false));
+    let (returned, outcome) = mpsc::channel();
+    let (worker_cancel, worker_first_chunk) = (cancel.clone(), first_chunk.clone());
+    thread::spawn(move || {
+        let r = Client::new(&url).fetch_cancellable(
+            &format!("{url}/f"),
+            &dest,
+            &worker_cancel,
+            |_, _| worker_first_chunk.store(true, Ordering::Relaxed),
+        );
+        returned.send(r).unwrap();
+    });
+    while !first_chunk.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_micros(100));
+    }
+    let started = Instant::now();
+    cancel.store(true, Ordering::Relaxed);
+    let r = outcome.recv().unwrap();
+    let latency = started.elapsed();
+    assert!(matches!(r, Err(ApiError::Cancelled)), "{r:?}");
+    assert!(!dir.path().join("m.zip").exists());
+    println!(
+        "cancel → Err(Cancelled) in {latency:.3?} (loopback stub, 64 MiB body, 64 KiB chunks)"
+    );
+}
+
 #[test]
 fn fetch_rejects_empty_body() {
     let url = stub(1, |_| Response::from_data(Vec::new()));

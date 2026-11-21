@@ -41,10 +41,14 @@ const RUNS: usize = 3;
 /// A minimal VPK: the v2 signature followed by some payload bytes.
 const VPK: &[u8] = b"\x34\x12\xaa\x55\x02\x00\x00\x00payload";
 
-/// Ceiling: 96,000 = 70,691 observed 2026-11-21 (Apple M1 Pro, macOS,
-/// debug profile) + slack for fixture variance (temp-path lengths differ
-/// between machines; run-to-run totals drift a few bytes).
-const INSTALL_LOCAL_ZIP_CEILING: u64 = 96_000;
+/// Ceiling: 620,288 = 594,965 observed 2026-11-21 (Apple M1 Pro, macOS,
+/// debug profile) + the same fixture-variance slack as before. The step
+/// up from 70,691 is the extraction's two 256 KiB buffers (write staging
+/// and the zip read buffer, `install.rs` `ENTRY_COPY_BYTES`): writing
+/// archive entries in 8 KiB pieces cost tens of thousands of small file
+/// writes on a large archive, and staging them measured 2.2× faster end
+/// to end (docs/perf-results.md, issue #10).
+const INSTALL_LOCAL_ZIP_CEILING: u64 = 620_288;
 
 /// Ceiling: 80,000 = 57,957 observed 2026-11-21 (Apple M1 Pro, macOS,
 /// debug profile) + slack for fixture variance (temp-path lengths differ

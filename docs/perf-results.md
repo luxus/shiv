@@ -507,3 +507,108 @@ hundred KB; estimate, not a measurement).
 - **`build-std`/`panic_immediate_abort`: not measured, nightly-gated**
   (no nightly on the machine). It is bounded by the abort arm's win and
   cost, so it only matters if the abort question reopens.
+
+## Install probe (lea, 2026-11-21)
+
+Machine: lea (NixOS, Linux 7.3.0-rc6-cachyos, 8 cores, 60 GiB RAM, root
+on a WD_BLACK SN850X NVMe), release profile, tree at the issue #10 commit.
+The probe is committed: `shiv-core/tests/install_probe.rs`, an `#[ignore]d`
+test that builds its fixture, measures, prints, and asserts the
+invariants the number stands on — the mod lands whole (dir vpk plus every
+chunk in `addons`), every archive byte is written to disk exactly once,
+and the fixture stays incompressible so the read baseline and the
+extraction move the same bytes. Timing asserts are absent on purpose:
+wall-clock asserts flake, and the numbers live here with the machine and
+date. Run on the machine being recorded:
+
+```sh
+cargo test --release -p shiv-core --test install_probe -- --ignored --nocapture
+cargo test --release -p shiv-api --test client cancelled_fetch_returns_within_one_chunk -- --ignored --nocapture
+```
+
+The fixture: one mod shaped like a large real one — a small
+`pak01_dir.vpk` plus its 20 `pak01_<digits>.vpk` chunk VPKs, real VPKs
+packed by vpkmanager, 104,924,900 bytes of pseudorandom content (deflate
+degenerates to stored blocks, so the 104,959,189-byte archive is the size
+it extracts) — zipped as the catalog serves zips. Both sides run
+page-cache warm, the state the real flow is in: a catalog install
+extracts the archive the download just wrote. The download itself is
+network and is not measured; the running-game check is injected as
+`false` (a process-table walk is not archive work).
+
+### Extraction throughput against the raw read
+
+| Path (100 MiB of VPKs) | Median of 5 | Throughput |
+|---|---|---|
+| `std::fs::read` of the archive | 6–7 ms | 14,600–15,600 MB/s |
+| `install_local_with`, before the fix | 24 ms | 4,328 MB/s |
+| `install_local_with`, after the fix | 13–14 ms | 7,399–7,606 MB/s |
+
+Against the warm `fs::read` baseline the extraction runs at
+**50.7–50.9 %** — below the 60 % gate, and at the ceiling that reading
+allows: an install writes what it reads, so a zero-overhead copy can
+never pass ~50 % of a pure read (read + write is twice the traffic, with
+CRC32 and stored-block inflate on top). Against the disk's actual read
+speed — cold, caches dropped (`sudo sh -c 'echo 3 >
+/proc/sys/vm/drop_caches'`, then `dd` of a 100 MiB random file on the
+same filesystem: 6.6–6.9 GB/s, two runs) — the warm extraction runs at
+**~110 % of disk-read speed**: on this machine the install path is not
+the bottleneck, the disk is.
+
+### The fix the probe forced
+
+`write_entry` handed the archive readers' output straight to `io::copy`,
+which writes what it gets — and the zip entry reader returns 8 KiB per
+`read` call (read-size histogram on the dev workstation for this
+fixture: 6,400 reads of 8,192 bytes and 6,400 of 8,187; the 8 KiB
+`BufReader` sits inside the zip crate and cannot be resized through its
+API). A 100 MB archive paid ~12,800 small file writes. The fix:
+`write_entry` stages reads into a 256 KiB buffer, one per extraction and
+reused across entries (`ENTRY_COPY_BYTES`), writing only full buffers,
+and `extract_zip` reads through a `BufReader` of the same size. lea:
+24 → 13–14 ms (1.7×); the dev workstation: 102 → 40–51 ms (2.2×).
+Buffer-size sweep on the dev workstation: 8 KiB 100 ms, 64 KiB 47 ms,
+128 KiB 46 ms, 256 KiB 40–41 ms, 1 MiB 47 ms — 256 KiB is the knee.
+
+The `install_local_with` allocation ceiling rose with the written reason
+(`tests/alloc_ceilings.rs`): +524,288 B, exactly the two 256 KiB
+extraction buffers. The single-write invariant
+(`install_writes_each_archive_byte_once`) still pins each archive byte
+written exactly once.
+
+### Cancel
+
+- **Extraction is not cancellable at all — a finding, not a number.**
+  `run_install` (shiv-ui `browse.rs`) checks the flag before the
+  download, after it, and after taking the install lock, but
+  `install_with_limits`/`extract` have no flag check inside the
+  extraction loop: a Cancel pressed during extraction changes nothing
+  until the install finishes, and a finished install is kept ("a fact
+  about the disk even if the job was cancelled late", `job_update`). The
+  Downloads row itself flips in the same event-loop turn as the click —
+  `cancel()` removes the job and reports `Outcome::Cancelled`
+  synchronously — so the observable latency is 0 by construction, not by
+  measurement. Cancellable extraction is its own issue if the maintainer
+  wants it: the loop would check a flag between entries (staging cleanup
+  already exists).
+- **The download phase is cancellable and measured.**
+  `fetch_cancellable` checks the flag before every 64 KiB chunk. The
+  probe (`shiv-api/tests/client.rs`, the same ignored print-only
+  pattern) sets the flag after the first chunk arrives and times the
+  return: lea **88 µs**, dev workstation 328 µs (loopback stub, 64 MiB
+  body). On a real network the return is bounded by the in-flight
+  chunk's arrival, not by the check.
+
+### Verdict
+
+- Extraction gate (> 60 % of disk-read speed): **50.7–50.9 % of the warm
+  raw read; ~110 % of the cold disk read.** The warm-`fs::read` reading
+  is structurally capped at ~50 % for any implementation that writes
+  what it reads; the cold-read reading passes with margin. Recorded
+  recommendation: the gate's baseline is the disk's read speed (cold),
+  with the warm comparison kept as the copy-ceiling context.
+- Cancel gate (< 50 ms): holds where cancellation exists (88 µs loopback
+  floor on lea; the row flip is synchronous); unsatisfiable for
+  extraction as the code stands, because extraction has no cancellation.
+  Re-scoped to its own issue unless the maintainer prefers to build
+  cancellable extraction now.
