@@ -80,6 +80,11 @@ pub(crate) fn attach_with(app: &App, locate: Locate) {
     });
 }
 
+/// Load the saved sources and their catalogs (at startup).
+pub(crate) fn load() {
+    with_sources(|s| s.refresh());
+}
+
 impl Sources {
     fn with_state(&self, f: impl FnOnce(&SourcesState<'_>)) {
         if let Some(app) = self.weak.upgrade() {

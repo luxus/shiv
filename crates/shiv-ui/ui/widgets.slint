@@ -183,6 +183,9 @@ export component Dropdown inherits Rectangle {
                 for option[i] in root.options: Rectangle {
                     height: Theme.control-h;
                     background: ota.has-hover ? Theme.hover : transparent;
+                    accessible-role: list-item;
+                    accessible-label: option;
+                    accessible-item-selected: i == root.current-index;
                     Text {
                         x: Theme.s2;
                         width: parent.width - 2 * Theme.s2;

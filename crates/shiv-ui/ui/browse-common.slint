@@ -99,6 +99,11 @@ export global BrowseState {
     in property <string> author-filter;
     in-out property <int> sort-index: 0;
     in-out property <int> category-index: 0;
+    in property <[string]> sources: ["All sources"];
+    in-out property <int> source-index: 0;
+    // The source filter includes the GameBanana catalog: its loading and
+    // failure states only stand in for the list then.
+    in property <bool> catalog-shown: true;
     // The list's scroll offset, kept while the detail page is open.
     in-out property <length> list-scroll;
     // NSFW thumbnails shown unblurred; off at every start.
@@ -136,6 +141,7 @@ export global BrowseState {
     callback search-edited(string);
     callback sort-selected(int);
     callback category-selected(int);
+    callback source-selected(int);
     callback hero-toggled(int);
     // Show only the open mod's author's mods.
     callback author-selected();

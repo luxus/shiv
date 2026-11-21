@@ -258,10 +258,20 @@ export component BrowsePage inherits Rectangle {
                     font-weight: 600;
                     horizontal-stretch: 1;
                 }
+                Dropdown {
+                    y: (parent.height - self.height) / 2;
+                    width: 240px;
+                    horizontal-stretch: 0;
+                    label: "Source";
+                    options: BrowseState.sources;
+                    current-index <=> BrowseState.source-index;
+                    selected(i) => { BrowseState.source-selected(i); }
+                }
                 HorizontalLayout {
                     horizontal-stretch: 0;
                     spacing: Theme.s1;
                     padding-right: Theme.s3;
+                    padding-left: Theme.s2;
                     Text {
                         horizontal-stretch: 0;
                         text: "Show NSFW";
@@ -353,11 +363,11 @@ export component BrowsePage inherits Rectangle {
             Rectangle {
                 vertical-stretch: 1;
 
-                if BrowseState.load-state == LoadState.loading: CenteredMessage {
+                if BrowseState.load-state == LoadState.loading && BrowseState.catalog-shown: CenteredMessage {
                     title: "Loading mods";
                 }
 
-                if BrowseState.load-state == LoadState.failed: VerticalLayout {
+                if BrowseState.load-state == LoadState.failed && BrowseState.catalog-shown: VerticalLayout {
                     alignment: center;
                     spacing: Theme.s2;
                     CenteredMessage {
@@ -374,13 +384,13 @@ export component BrowsePage inherits Rectangle {
                     }
                 }
 
-                if BrowseState.load-state == LoadState.ready && BrowseState.mods.length == 0: CenteredMessage {
+                if (BrowseState.load-state == LoadState.ready || !BrowseState.catalog-shown) && BrowseState.mods.length == 0: CenteredMessage {
                     title: "No mods match";
                     detail: "Try a different search or category.";
                 }
 
                 mod-list := ListView {
-                    visible: BrowseState.load-state == LoadState.ready && BrowseState.mods.length > 0;
+                    visible: (BrowseState.load-state == LoadState.ready || !BrowseState.catalog-shown) && BrowseState.mods.length > 0;
                     content-y <=> BrowseState.list-scroll;
                     for row in BrowseState.mods: ModRowView {
                         item: row;

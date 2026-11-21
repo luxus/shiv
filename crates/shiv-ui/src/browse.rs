@@ -20,11 +20,11 @@ use slint::{
     SharedString, Timer, TimerMode, VecModel, Weak,
 };
 
-use crate::thumbs;
 use crate::{
     App, BrowseState, DownloadRow, GalleryThumb, HeroOption, ImageState, InstallState, LoadState,
     ModDetail, ModRow,
 };
+use crate::{source_filter, thumbs};
 
 const SORTS: [(&str, SortKey); 5] = [
     ("Newest", SortKey::Newest),
@@ -1067,17 +1067,19 @@ fn installed_ids(locate: &Locate) -> HashSet<String> {
 /// The registry rows Browse shows: one per installable listing of every
 /// added source, after its catalog. A failed registry shows nothing here;
 /// its error is the Sources banner.
-fn registry_entries() -> Vec<Entry> {
-    let mut entries = Vec::new();
-    for (source, listings) in crate::sources::catalogs() {
-        entries.extend(
-            listings
+/// Every added source's installable mods, per source.
+fn registry_entries() -> Vec<(shiv_core::registry::AddedSource, Vec<Entry>)> {
+    crate::sources::catalogs()
+        .into_iter()
+        .map(|(source, listings)| {
+            let entries = listings
                 .into_iter()
                 .filter(shiv_api::NativeListing::installable)
-                .filter_map(|l| registry_entry(&source, l)),
-        );
-    }
-    entries
+                .filter_map(|l| registry_entry(&source, l))
+                .collect();
+            (source, entries)
+        })
+        .collect()
 }
 
 fn registry_entry(
@@ -1244,6 +1246,13 @@ pub struct Browse {
     /// Ids the loaded catalog marks NSFW; `None` until it has loaded.
     nsfw_ids: RefCell<Option<HashSet<String>>>,
     categories: RefCell<Vec<String>>,
+    /// The source the list is narrowed to (remembered across restarts).
+    source: RefCell<source_filter::SourceKey>,
+    /// The user picked a source this run: the remembered one, read in the
+    /// background, no longer applies.
+    source_chosen: Cell<bool>,
+    /// The source dropdown's keys, index-aligned with its labels.
+    source_keys: RefCell<Vec<source_filter::SourceKey>>,
     /// Heroes in the catalog, in the order of `hero_model`.
     heroes: RefCell<Vec<String>>,
     hero_model: Rc<VecModel<HeroOption>>,
@@ -1338,6 +1347,9 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
             page_size: usize::MAX,
             ..ModQuery::default()
         }),
+        source: RefCell::new(source_filter::SourceKey::All),
+        source_chosen: Cell::new(false),
+        source_keys: RefCell::new(Vec::new()),
         load_generation: Cell::new(0),
         installed_generation: Cell::new(0),
         next_job: Cell::new(0),
@@ -1376,6 +1388,7 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
     state.on_search_edited(|text| with_browse(|b| b.search_edited(text.as_str())));
     state.on_sort_selected(|i| with_browse(|b| b.sort_selected(i)));
     state.on_category_selected(|i| with_browse(|b| b.category_selected(i)));
+    state.on_source_selected(|i| with_browse(|b| b.source_selected(i)));
     state.on_author_selected(|| with_browse(|b| b.author_selected()));
     state.on_author_filter_cleared(|| with_browse(|b| b.author_filter_cleared()));
     state.on_open_donation(|| with_browse(|b| b.open_donation()));
@@ -1412,6 +1425,12 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
     state.on_open_link(handle(|b| b.open_link()));
 
     browse.load();
+    let loaded = weak.clone();
+    crate::spawn_worker("shiv-load-source", source_filter::load, move |key| {
+        if let Ok(key) = key {
+            let _ = loaded.upgrade_in_event_loop(move |_| with_browse(|b| b.source_loaded(key)));
+        }
+    });
     cache
 }
 
@@ -1580,13 +1599,50 @@ impl Browse {
     fn refresh(&self) {
         let catalog = self.catalog.borrow().clone();
         let page = apply_query(&catalog, &self.query.borrow());
-        let total = catalog.len();
-        let shown = page.total;
-        let mut entries: Vec<Entry> = page.items.into_iter().map(Entry::from_dto).collect();
-        entries.extend(registry_entries());
+        let key = self.source.borrow().clone();
+        let registry = registry_entries();
+        let options = source_filter::Options::new(
+            catalog.len(),
+            &registry
+                .iter()
+                .map(|(s, e)| (s.clone(), e.len()))
+                .collect::<Vec<_>>(),
+            &key,
+        );
+        let mut total = catalog.len();
+        let mut entries: Vec<Entry> = if key.shows_catalog() {
+            page.items.into_iter().map(Entry::from_dto).collect()
+        } else {
+            Vec::new()
+        };
+        let search = self.query.borrow().search.as_deref().map(str::to_lowercase);
+        for (source, mods) in registry {
+            total += mods.len();
+            if key.shows_source(&source) {
+                entries.extend(mods.into_iter().filter(|e| {
+                    search.as_deref().is_none_or(|q| {
+                        e.name.to_lowercase().contains(q.trim())
+                            || e.byline.to_lowercase().contains(q.trim())
+                    })
+                }));
+            }
+        }
+        let shown = entries.len();
         self.list.set_entries(entries);
+        let index = options.index_of(&key);
+        let labels: Vec<SharedString> = options.labels.iter().map(|l| l.as_str().into()).collect();
+        *self.source_keys.borrow_mut() = options.keys;
+        self.with_state(|s| {
+            s.set_sources(ModelRc::new(VecModel::from(labels)));
+            s.set_source_index(index as i32);
+            s.set_catalog_shown(key.shows_catalog());
+        });
         let summary = if shown == total {
-            format!("{} mods", fmt_count(total as u64))
+            format!(
+                "{} {}",
+                fmt_count(total as u64),
+                if total == 1 { "mod" } else { "mods" }
+            )
         } else {
             format!(
                 "{} of {} mods",
@@ -1663,6 +1719,31 @@ impl Browse {
     fn heroes_cleared(&self) {
         self.query.borrow_mut().heroes.clear();
         self.sync_heroes();
+        self.refresh();
+    }
+
+    fn source_selected(&self, index: i32) {
+        let key = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.source_keys.borrow().get(i).cloned())
+            .unwrap_or_default();
+        let saved = key.clone();
+        crate::spawn_worker(
+            "shiv-save-source",
+            move || source_filter::save(&saved),
+            |_| {},
+        );
+        self.source_chosen.set(true);
+        *self.source.borrow_mut() = key;
+        self.refresh();
+    }
+
+    /// The remembered source filter, read at start.
+    fn source_loaded(&self, key: source_filter::SourceKey) {
+        if self.source_chosen.get() || *self.source.borrow() == key {
+            return;
+        }
+        *self.source.borrow_mut() = key;
         self.refresh();
     }
 

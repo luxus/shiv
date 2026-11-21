@@ -228,3 +228,38 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
         ]
     );
 }
+
+/// Kai's gap: once the pack is in, a Browse install must not take a pack
+/// slot (pak03 here, free because that option is not installed) that the
+/// pack's next install would only evict it from again.
+#[test]
+fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
+    let e = env();
+    // Without CompLock nothing is held back.
+    let first = vpk(&e.work, "first", "pak01_dir.vpk", false);
+    install::install_files(&first, meta("first"), &e.paths, || false).unwrap();
+    assert_eq!(vpks_of(&e, "first"), ["pak01_dir.vpk"]);
+
+    let hud = vpk(&e.work, "hud", "pak01_dir.vpk", false);
+    install::install_files_in_slots(&hud, meta("complock-hud"), &e.paths, || false, 7).unwrap();
+    assert_eq!(vpks_of(&e, "first"), ["pak08_dir.vpk"]);
+
+    let browse = vpk(&e.work, "browse", "pak01_dir.vpk", false);
+    install::install_files(&browse, meta("browse"), &e.paths, || false).unwrap();
+    assert_eq!(vpks_of(&e, "browse"), ["pak09_dir.vpk"], "not pak02");
+
+    // Fill 10..=98, leaving one slot above the pack; a two-VPK mod takes it
+    // and the lowest free pack slot, in its own order.
+    for n in 10..=98 {
+        fs::write(e.paths.addons.join(format!("pak{n:02}_dir.vpk")), b"x").unwrap();
+    }
+    let dir = e.work.join("two");
+    fs::create_dir_all(&dir).unwrap();
+    let a = vpk(&e.work, "two-a", "pak01_dir.vpk", false).remove(0);
+    let b = vpk(&e.work, "two-b", "pak01_dir.vpk", false).remove(0);
+    let (a2, b2) = (dir.join("pak01_dir.vpk"), dir.join("pak02_dir.vpk"));
+    fs::rename(a, &a2).unwrap();
+    fs::rename(b, &b2).unwrap();
+    install::install_files(&[a2, b2], meta("two"), &e.paths, || false).unwrap();
+    assert_eq!(vpks_of(&e, "two"), ["pak02_dir.vpk", "pak99_dir.vpk"]);
+}
