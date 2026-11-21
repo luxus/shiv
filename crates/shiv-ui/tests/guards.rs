@@ -80,6 +80,10 @@ const MODULES_UNDER_GUARD: &[&str] = &[
 /// sound: recorded here rather than silently skipped.
 const MODULES_OUTSIDE_THE_GUARDS: &[(&str, &str)] = &[
     (
+        "cli",
+        "pure argument parsing; main prints its answer before the event loop exists",
+    ),
+    (
         "describe",
         "pure view-model text; it performs no I/O of any kind",
     ),

@@ -21,6 +21,7 @@ pub use generated::*;
 use shiv_core::game::{self, GameError, GamePaths};
 
 mod browse;
+mod cli;
 mod conflict;
 mod crosshair;
 mod describe;
@@ -133,6 +134,20 @@ pub(crate) fn game_running() -> bool {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Flags print and exit before anything opens a window or a log.
+    match cli::parse(std::env::args_os().skip(1)) {
+        cli::Cli::Run => {}
+        cli::Cli::Print(text) => {
+            use std::io::Write as _;
+            let _ = std::io::stdout().write_all(text.as_bytes());
+            return Ok(());
+        }
+        cli::Cli::Fail(text) => {
+            use std::io::Write as _;
+            let _ = std::io::stderr().write_all(text.as_bytes());
+            std::process::exit(2);
+        }
+    }
     log::init();
     let result = run();
     if let Err(e) = &result {
