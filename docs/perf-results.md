@@ -229,6 +229,10 @@ run-to-run spread is loopback scheduling, not parse).
   and 0 model resets — a per-tick `set_vec` rebuild shows as 100 resets
   and 3000 row builds and fails. Numbers below.
 
+The one issue #4 item still open: the `perf.yml` job runs these gates
+and the two criterion suites on every push, but does not yet post the
+bench diff against the recorded baseline file.
+
 ## Allocation ceilings — 2026-11-21, the dev workstation (issue #6)
 
 Machine: Apple M1 Pro (arm64, 10 cores), 16 GB RAM, macOS 27.3 — the

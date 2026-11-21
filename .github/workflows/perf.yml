@@ -1,0 +1,33 @@
+name: perf
+
+on:
+  push:
+    branches: [main]
+  # A fork does not run push workflows until Actions is enabled in its
+  # Actions tab; dispatch makes the gates runnable by hand either way.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev libxkbcommon-dev libwayland-dev pkg-config
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Bench (reorder)
+        run: cargo bench -p shiv-core --bench reorder -- --warm-up-time 2 --measurement-time 2
+      - name: Bench (catalog)
+        run: cargo bench -p shiv-api --bench catalog -- --warm-up-time 2 --measurement-time 2
+      - name: Allocation gates
+        run: cargo test -p shiv-core --test alloc_ceilings --test interchange_import_peak
