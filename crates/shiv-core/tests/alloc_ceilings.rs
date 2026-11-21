@@ -160,6 +160,7 @@ fn sidecar_claiming(id: &str, vpk: &str) -> Sidecar {
         category: None,
         notes: None,
         source: None,
+        stamps: None,
     }
 }
 

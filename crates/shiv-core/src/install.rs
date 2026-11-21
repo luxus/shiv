@@ -269,16 +269,18 @@ fn place_and_record(
     let numbers = allocate_paks(addons_dir, staged.len())?;
     let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut new_names = Vec::with_capacity(staged.len());
+    let mut placed: Vec<Vec<PathBuf>> = Vec::with_capacity(staged.len());
     for (vpk, number) in staged.iter().zip(&numbers) {
         let dir_name = format!("pak{number:02}_dir.vpk");
+        let mut files = vec![addons_dir.join(&dir_name)];
         plan.push((vpk.file.clone(), addons_dir.join(&dir_name)));
         for (digits, chunk) in &vpk.chunks {
-            plan.push((
-                chunk.clone(),
-                addons_dir.join(format!("pak{number:02}_{digits}.vpk")),
-            ));
+            let to = addons_dir.join(format!("pak{number:02}_{digits}.vpk"));
+            files.push(to.clone());
+            plan.push((chunk.clone(), to));
         }
         new_names.push(dir_name);
+        placed.push(files);
     }
 
     let mut moved: Vec<PathBuf> = Vec::new();
@@ -295,6 +297,17 @@ fn place_and_record(
         moved.push(to.clone());
     }
 
+    let stamps = match placed
+        .iter()
+        .map(|files| sidecar::Stamp::of_files(files.iter().map(PathBuf::as_path)))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(stamps) => stamps,
+        Err(e) => {
+            rollback(&moved);
+            return Err(e.into());
+        }
+    };
     let new_sidecar = Sidecar {
         mod_id: meta.mod_id,
         name: meta.name,
@@ -306,6 +319,7 @@ fn place_and_record(
         category: meta.category,
         notes: None,
         source: None,
+        stamps: Some(stamps),
     };
     if let Err(e) = sidecar::write(addons_dir, &new_sidecar) {
         rollback(&moved);
@@ -1336,6 +1350,7 @@ pub fn replace_local_with(
             category: None,
             notes: None,
             source,
+            stamps: None,
         }
     };
     if let Err(e) = sidecar::write(addons_dir, &sc) {

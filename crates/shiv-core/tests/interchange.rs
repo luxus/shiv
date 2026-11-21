@@ -175,6 +175,7 @@ fn export_maps_catalog_mods_to_gamebanana_keys() {
             category: None,
             notes: None,
             source: None,
+            stamps: None,
         },
     )
     .unwrap();
@@ -272,6 +273,7 @@ fn import_recognises_a_mod_the_catalog_already_knows() {
             category: None,
             notes: None,
             source: None,
+            stamps: None,
         },
     )
     .unwrap();

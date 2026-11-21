@@ -69,6 +69,65 @@ pub struct Sidecar {
     /// from; used to recognise a newer copy of the same file. Not written when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// What each of `vpks` looked like on disk when Shiv placed it, in the
+    /// same order: the [`Stamp`] a later look compares against to tell a
+    /// pristine install from a replaced or patched one. `None` in sidecars
+    /// written before this field existed and for adopted mods (Shiv did not
+    /// place their files); not written when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamps: Option<Vec<Stamp>>,
+}
+
+/// One installed VPK as it lay on disk: the bytes of the dir VPK and its
+/// chunks together, and the latest modification time among them, in
+/// nanoseconds since the Unix epoch. Renames (enable, disable, load order)
+/// keep both; a file replaced, patched or partly rewritten changes the
+/// time, and almost always the size. Read from metadata only, so taking
+/// one costs no read of the bytes (the install wall-clock gate,
+/// docs/perf-results.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stamp {
+    pub size: u64,
+    pub modified_ns: u64,
+}
+
+impl Stamp {
+    /// The stamp of a dir VPK and its chunk files.
+    ///
+    /// # Errors
+    ///
+    /// [`SidecarError::Io`] when a file's metadata cannot be read.
+    pub fn of_files<'a>(files: impl IntoIterator<Item = &'a Path>) -> Result<Stamp, SidecarError> {
+        let mut stamp = Stamp {
+            size: 0,
+            modified_ns: 0,
+        };
+        for file in files {
+            let meta = fs::metadata(file).map_err(|source| SidecarError::Io {
+                path: file.to_path_buf(),
+                source,
+            })?;
+            stamp.size += meta.len();
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+            stamp.modified_ns = stamp.modified_ns.max(modified);
+        }
+        Ok(stamp)
+    }
+
+    /// The stamp of an installed VPK as it lies now.
+    ///
+    /// # Errors
+    ///
+    /// As [`Stamp::of_files`].
+    pub fn of_vpk(vpk: &InstalledVpk) -> Result<Stamp, SidecarError> {
+        Stamp::of_files(
+            std::iter::once(vpk.file.as_path()).chain(vpk.chunks.iter().map(PathBuf::as_path)),
+        )
+    }
 }
 
 /// Prefix of the ids Shiv gives mods that do not come from the catalog: a VPK
@@ -294,6 +353,7 @@ pub fn adopt(
         category: None,
         notes: notes.filter(|n| !n.trim().is_empty()),
         source: None,
+        stamps: None,
     };
     write(addons, &sidecar)?;
     Ok(sidecar)
