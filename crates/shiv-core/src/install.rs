@@ -225,6 +225,40 @@ pub fn install_files(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
 ) -> Result<Sidecar, InstallError> {
+    install_files_to(files, meta, paths, game_running, None)
+}
+
+/// Like [`install_files`], for a pack whose paks have a fixed load order
+/// (CompLock: HUD++ is pak01): every VPK named `pakNN_dir.vpk` with NN in
+/// `1..=reserved` goes to slot NN, whatever order the pack's paks are
+/// installed in. A VPK already in a wanted slot (another mod, an earlier
+/// version of this one, or a pack pak an older Shiv put there) is first
+/// moved to the lowest free slot above `reserved`, its sidecar kept in
+/// step; an earlier version of this mod is then dropped as usual. Other
+/// VPKs get free slots above `reserved`. The caller holds
+/// [`INSTALL_LOCK`], so slot assignment is serialized.
+///
+/// # Errors
+///
+/// As [`install_files`]; [`InstallError::AddonsFull`] when nothing above
+/// `reserved` is free for a VPK that has to move.
+pub fn install_files_in_slots(
+    files: &[PathBuf],
+    meta: ModMeta,
+    paths: &GamePaths,
+    game_running: impl Fn() -> bool,
+    reserved: u32,
+) -> Result<Sidecar, InstallError> {
+    install_files_to(files, meta, paths, game_running, Some(reserved))
+}
+
+fn install_files_to(
+    files: &[PathBuf],
+    meta: ModMeta,
+    paths: &GamePaths,
+    game_running: impl Fn() -> bool,
+    reserved: Option<u32>,
+) -> Result<Sidecar, InstallError> {
     // Checked first: nothing may be written while the game runs.
     if game_running() {
         return Err(InstallError::GameRunning);
@@ -250,7 +284,59 @@ pub fn install_files(
         tally_disk_write(copied);
     }
     let staged = collect_vpks(staging.path())?;
-    place_and_record(addons_dir, &staged, meta, old)
+    match reserved {
+        None => place_and_record(addons_dir, &staged, meta, old),
+        Some(reserved) => place_in_slots(addons_dir, &staged, meta, reserved),
+    }
+}
+
+/// The slots `staged` wants under `reserved`: its own `pakNN` where NN is
+/// within the pack's range, else `None` for a free slot above it.
+fn wanted_slots(staged: &[StagedVpk], reserved: u32) -> Vec<Option<u32>> {
+    staged
+        .iter()
+        .map(|v| v.original.filter(|n| (1..=reserved).contains(n)))
+        .collect()
+}
+
+/// [`install_files_in_slots`]'s placement: clear the wanted slots, then
+/// place and record as usual on exactly those numbers.
+fn place_in_slots(
+    addons_dir: &Path,
+    staged: &[StagedVpk],
+    meta: ModMeta,
+    reserved: u32,
+) -> Result<Sidecar, InstallError> {
+    if staged.is_empty() {
+        return Err(InstallError::NoVpk);
+    }
+    let wanted = wanted_slots(staged, reserved);
+    let claimed: BTreeSet<u32> = wanted.iter().flatten().copied().collect();
+    let mods = sidecar::group(addons_dir);
+    let mut used: BTreeSet<u32> = addons::used_pak_numbers(addons_dir)?.into_iter().collect();
+    used.extend(&claimed);
+    let mut above = (reserved + 1..=addons::PAK_CAPACITY).filter(|n| !used.contains(n));
+    let mut moves: Vec<(&addons::InstalledVpk, u32)> = Vec::new();
+    for vpk in mods.iter().flat_map(|m| &m.vpks) {
+        if vpk.pak.is_some_and(|n| claimed.contains(&n)) {
+            moves.push((vpk, above.next().ok_or(InstallError::AddonsFull)?));
+        }
+    }
+    let mut numbers = Vec::with_capacity(staged.len());
+    for slot in &wanted {
+        numbers.push(match slot {
+            Some(n) => *n,
+            None => above.next().ok_or(InstallError::AddonsFull)?,
+        });
+    }
+    sidecar::renumber(addons_dir, &mods, &moves)?;
+    // Moving aside may have renamed this mod's own earlier files.
+    let old = match sidecar::read(addons_dir, &meta.mod_id) {
+        Ok(s) => s,
+        Err(SidecarError::Parse { .. }) => None,
+        Err(e) => return Err(e.into()),
+    };
+    place_numbered(addons_dir, staged, &numbers, meta, old)
 }
 
 /// The shared tail of the install paths: give the staged VPKs free pak
@@ -265,12 +351,23 @@ fn place_and_record(
     if staged.is_empty() {
         return Err(InstallError::NoVpk);
     }
-
     let numbers = allocate_paks(addons_dir, staged.len())?;
+    place_numbered(addons_dir, staged, &numbers, meta, old)
+}
+
+/// Move `staged` in on `numbers` (one per VPK), record the sidecar, then
+/// drop the replaced files of `old`.
+fn place_numbered(
+    addons_dir: &Path,
+    staged: &[StagedVpk],
+    numbers: &[u32],
+    meta: ModMeta,
+    old: Option<Sidecar>,
+) -> Result<Sidecar, InstallError> {
     let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut new_names = Vec::with_capacity(staged.len());
     let mut placed: Vec<Vec<PathBuf>> = Vec::with_capacity(staged.len());
-    for (vpk, number) in staged.iter().zip(&numbers) {
+    for (vpk, number) in staged.iter().zip(numbers) {
         let dir_name = format!("pak{number:02}_dir.vpk");
         let mut files = vec![addons_dir.join(&dir_name)];
         plan.push((vpk.file.clone(), addons_dir.join(&dir_name)));

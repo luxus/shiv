@@ -602,6 +602,28 @@ pub fn set_pak(
     apply_plan(addons, &order, &plan)
 }
 
+/// Give single VPKs new pak numbers, leaving every other file where it is:
+/// each `(vpk, number)` renames that VPK with its chunks to `pakNN`, and the
+/// sidecars in `mods` (a [`group`] result) follow. The numbers must be free.
+/// Same rollback as [`move_mod`].
+///
+/// # Errors
+///
+/// As [`move_mod`].
+pub fn renumber(
+    addons: &Path,
+    mods: &[InstalledMod],
+    moves: &[(&InstalledVpk, u32)],
+) -> Result<(), SidecarError> {
+    if moves.is_empty() {
+        return Ok(());
+    }
+    let (vpks, numbers): (Vec<&InstalledVpk>, Vec<u32>) = moves.iter().copied().unzip();
+    let plan = addons::plan_renumber(&vpks, &numbers)?;
+    let order: Vec<&InstalledMod> = mods.iter().collect();
+    apply_plan(addons, &order, &plan)
+}
+
 /// The pak number of a ranked VPK. `ranked` only holds pak-numbered VPKs
 /// (the loop that builds it filters `pak.is_some()`), so this cannot fail;
 /// a panic here would mean the plan is built on a broken invariant.

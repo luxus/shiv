@@ -469,9 +469,15 @@ fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), 
                     hero: None,
                     category: None,
                 };
-                install::install_files(&fetched, meta, &paths, || running())
-                    .map(|_| ())
-                    .map_err(|e| install_error_text(&e))
+                install::install_files_in_slots(
+                    &fetched,
+                    meta,
+                    &paths,
+                    || running(),
+                    complock::last_slot(),
+                )
+                .map(|_| ())
+                .map_err(|e| install_error_text(&e))
             }
             ResetPlan::Registry(r) => registry::install_registry_mod(
                 &paths,
