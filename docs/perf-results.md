@@ -224,6 +224,10 @@ run-to-run spread is loopback scheduling, not parse).
   12 MiB largest VPK imports and adopts with total allocation under
   1.2× that VPK — the manifest is the only whole-file read, hashing is
   chunked, nothing re-buffers a VPK. Numbers below.
+- `progress_storm_flow` (shiv-ui downloads.rs): 100 progress ticks
+  against a 30-row model are exactly 100 `row_changed` notifications
+  and 0 model resets — a per-tick `set_vec` rebuild shows as 100 resets
+  and 3000 row builds and fails. Numbers below.
 
 ## Allocation ceilings — 2026-11-21, the dev workstation (issue #6)
 
@@ -295,6 +299,29 @@ gate exists for) would add the full 12 MiB and land past 1.5×. The
 remaining per-mod cost — `addons::list` and the by-size map are rebuilt
 per mod — is bounded by the same pak capacity and stays well under the
 gate.
+
+## Downloads progress storm — 2026-11-21, the dev workstation (issue #4)
+
+The finding: `Downloads::sync()` rebuilt the whole `VecModel` on every
+event — `set_vec` is a model reset, so each progress tick re-read all 30
+rows. The model exists for the row update; `progress` now updates the
+one row it moved (`set_row_data`, the pattern `installed.rs`'s
+`transfer_changed` uses), and the whole list is replaced only when
+membership changes (a transfer appears, ends or leaves the history
+bound). Pinned by `downloads::storm::progress_storm_flow` (run from the
+UI harness): 30 rows, one download reporting one update per percent,
+100 ticks.
+
+| Path (100 ticks, 30 rows) | row_changed | model resets | row builds |
+|---|---|---|---|
+| before (set_vec per tick) | 0 | 100 | 3000 |
+| after (set_row_data per tick) | 100 | 0 | 0 |
+
+Per tick: 1 row update instead of a reset rebuilding all 30 — O(1), not
+O(rows). The counts are exact (a counting sink behind the same
+`TransferRows` trait the Slint model implements), so the gate cannot
+flake; phase changes still update one row, and only a membership change
+resets the model.
 
 ## Scroll-peak experiments (lea, 2026-11-21)
 

@@ -292,6 +292,7 @@ mod tests {
         repair_flow();
         crosshair_flow();
         performance_flow();
+        downloads::storm::progress_storm_flow(&app);
     }
 
     /// A tiny install for the repair engine (as in shiv-repair's own tests):
