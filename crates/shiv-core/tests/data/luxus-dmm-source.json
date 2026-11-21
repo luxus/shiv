@@ -1,0 +1,22 @@
+{
+  "format": "dmm-source",
+  "protocolVersion": "1.0",
+  "sourceId": "luxus",
+  "name": "luxus Deadlock Mods",
+  "gameId": "deadlock",
+  "catalog": {
+    "kind": "static",
+    "indexUrl": "./catalog.json"
+  },
+  "networkOrigins": {
+    "api": [
+      "https://luxus.github.io"
+    ],
+    "downloads": [
+      "https://github.com",
+      "https://objects.githubusercontent.com",
+      "https://release-assets.githubusercontent.com"
+    ],
+    "media": []
+  }
+}

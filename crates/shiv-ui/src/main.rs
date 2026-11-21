@@ -555,6 +555,526 @@ mod tests {
         app.hide().expect("hide");
     }
 
+    /// Real-artifact check for CompLock pak installs: the Performance
+    /// screen with the app's own dependencies (real client, real site, real
+    /// game-running check), only `locate` pointed at a temp copy of an
+    /// addons folder and gameinfo.gi (`SHIV_ADDONS_COPY`,
+    /// `SHIV_GAMEINFO_COPY`). Initialises the Slint platform: run it alone.
+    #[test]
+    #[ignore = "network; needs SHIV_ADDONS_COPY and SHIV_GAMEINFO_COPY"]
+    fn real_complock_paks_install_through_the_ui() {
+        use std::sync::Arc;
+        let (Ok(addons), Ok(gameinfo)) = (
+            std::env::var("SHIV_ADDONS_COPY"),
+            std::env::var("SHIV_GAMEINFO_COPY"),
+        ) else {
+            return;
+        };
+        i_slint_backend_testing::init_integration_test_with_system_time();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = shiv_core::game::GamePaths::from_root(temp.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        assert!(
+            std::process::Command::new("cp")
+                .arg("-a")
+                .arg(format!("{addons}/."))
+                .arg(&paths.addons)
+                .status()
+                .expect("cp")
+                .success()
+        );
+        std::fs::copy(&gameinfo, &paths.gameinfo).expect("gameinfo");
+        let mut deps = performance::Deps::system(DEFAULT_API_URL);
+        let located = paths.clone();
+        deps.locate = Arc::new(move || Ok(located.clone()));
+        let app = App::new().expect("app");
+        downloads::attach(&app);
+        performance::attach_with(&app, deps);
+        app.show().expect("show");
+        app.set_screen(4);
+        app.global::<PerfState>().invoke_shown();
+        assert!(run_until(&app, Duration::from_secs(60), |a| {
+            let s = a.global::<PerfState>();
+            s.get_load_state() == LoadState::Ready && s.get_pack_rows().row_count() > 0
+        }));
+        let rows: Vec<_> = app.global::<PerfState>().get_pack_rows().iter().collect();
+        let paks: Vec<String> = rows
+            .iter()
+            .filter(|r| r.has_pak)
+            .map(|r| r.id.to_string())
+            .collect();
+        eprintln!("pak rows: {paks:?}");
+        for id in &paks {
+            app.global::<PerfState>()
+                .invoke_install_pack(id.as_str().into());
+        }
+        let settled = |a: &App| {
+            let rows: Vec<_> = a.global::<DownloadsState>().get_rows().iter().collect();
+            !rows.is_empty()
+                && rows.iter().all(|r| {
+                    matches!(
+                        r.phase,
+                        DownloadPhase::Done | DownloadPhase::Failed | DownloadPhase::Cancelled
+                    )
+                })
+        };
+        let done = run_until(&app, Duration::from_secs(300), settled);
+        for r in app.global::<DownloadsState>().get_rows().iter() {
+            eprintln!("download {} {:?} {}", r.id, r.phase, r.detail);
+        }
+        for m in shiv_core::sidecar::group(&paths.addons) {
+            eprintln!(
+                "{:?} {:?}",
+                m.sidecar.map(|s| s.mod_id),
+                m.vpks.iter().map(|v| v.file.clone()).collect::<Vec<_>>()
+            );
+        }
+        assert!(done, "the downloads settled");
+        for r in app.global::<DownloadsState>().get_rows().iter() {
+            assert_eq!(r.phase, DownloadPhase::Done, "{}: {}", r.id, r.detail);
+        }
+        app.hide().expect("hide");
+    }
+
+    /// Renders the Performance page at the default window size with the
+    /// software renderer and the live CompLock catalog, to
+    /// `SHIV_RENDER_OUT` (a PNG path); `SHIV_SMOKE_SEED` gives `gameinfo.gi`
+    /// and `addons/`. `SHIV_RENDER_SECTION=1` shows All settings instead.
+    /// Initialises the Slint platform: run it alone.
+    #[test]
+    #[ignore = "network; needs SHIV_RENDER_OUT and SHIV_SMOKE_SEED"]
+    fn real_render_performance_page() {
+        use i_slint_backend_testing::{TestingBackend, TestingBackendOptions};
+        use std::sync::Arc;
+        let (Ok(out), Ok(seed)) = (
+            std::env::var("SHIV_RENDER_OUT"),
+            std::env::var("SHIV_SMOKE_SEED"),
+        ) else {
+            return;
+        };
+        slint::platform::set_platform(Box::new(TestingBackend::new(TestingBackendOptions {
+            mock_time: false,
+            threading: true,
+            renderer_name: Some("software".into()),
+        })))
+        .expect("platform");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = GamePaths::from_root(temp.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let seed = std::path::PathBuf::from(seed);
+        assert!(
+            std::process::Command::new("cp")
+                .arg("-a")
+                .arg(seed.join("addons/."))
+                .arg(&paths.addons)
+                .status()
+                .expect("cp")
+                .success()
+        );
+        std::fs::copy(seed.join("gameinfo.gi"), &paths.gameinfo).expect("gameinfo");
+        let app = App::new().expect("app");
+        let located = paths.clone();
+        let mut perf = performance::Deps::system(DEFAULT_API_URL);
+        perf.locate = Arc::new(move || Ok(located.clone()));
+        performance::attach_with(&app, perf);
+        app.window()
+            .set_size(slint::LogicalSize::new(1120.0, 760.0));
+        app.show().expect("show");
+        app.set_screen(4);
+        app.global::<PerfState>().invoke_shown();
+        let section = std::env::var("SHIV_RENDER_SECTION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        app.global::<PerfState>().set_section(section);
+        assert!(run_until(&app, Duration::from_secs(60), |a| {
+            let s = a.global::<PerfState>();
+            s.get_load_state() == LoadState::Ready && s.get_pack_rows().row_count() > 0
+        }));
+        run_until(&app, Duration::from_millis(300), |_| false);
+        let shot = app.window().take_snapshot().expect("snapshot");
+        image::RgbaImage::from_raw(shot.width(), shot.height(), shot.as_bytes().to_vec())
+            .expect("image")
+            .save(&out)
+            .expect("png");
+        eprintln!("rendered {}x{} to {out}", shot.width(), shot.height());
+        app.hide().expect("hide");
+    }
+
+    /// End-to-end smoke of the release against live sources, in a temp
+    /// game root seeded from copies (`SHIV_SMOKE_SEED`: a folder holding
+    /// `addons/`, `gameinfo.gi` and optionally a saved `shiv-sources.json`).
+    /// Every screen gets the app's own dependencies except `locate`. Each
+    /// flow is recorded pass/fail; the test fails if any flow failed.
+    /// Initialises the Slint platform: run it alone.
+    #[test]
+    #[ignore = "network; needs SHIV_SMOKE_SEED"]
+    #[allow(clippy::too_many_lines, reason = "one scripted smoke, flow by flow")]
+    fn real_end_to_end_smoke() {
+        use shiv_core::registry::Registry;
+        use std::sync::Arc;
+        let Ok(seed) = std::env::var("SHIV_SMOKE_SEED") else {
+            return;
+        };
+        i_slint_backend_testing::init_integration_test_with_system_time();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = GamePaths::from_root(temp.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let seed = std::path::PathBuf::from(seed);
+        assert!(
+            std::process::Command::new("cp")
+                .arg("-a")
+                .arg(seed.join("addons/."))
+                .arg(&paths.addons)
+                .status()
+                .expect("cp")
+                .success()
+        );
+        std::fs::copy(seed.join("gameinfo.gi"), &paths.gameinfo).expect("gameinfo");
+        if seed.join("shiv-sources.json").is_file() {
+            std::fs::copy(
+                seed.join("shiv-sources.json"),
+                paths.root.join("shiv-sources.json"),
+            )
+            .expect("sources");
+        }
+
+        let app = App::new().expect("app");
+        let located = paths.clone();
+        let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
+        let cache = browse::attach_with(&app, DEFAULT_API_URL, &locate);
+        sources::attach_with(&app, locate.clone());
+        let client = Arc::new(shiv_api::Client::new(DEFAULT_API_URL));
+        installed::attach_with(
+            &app,
+            cache,
+            installed::Deps {
+                locate: locate.clone(),
+                running: Arc::new(shiv_core::game::is_running),
+                download: Arc::new(move |url, dest| {
+                    client
+                        .fetch_cancellable(
+                            url,
+                            dest,
+                            &std::sync::atomic::AtomicBool::new(false),
+                            |_, _| {},
+                        )
+                        .map_err(|e| e.to_string())
+                }),
+            },
+        );
+        let mut perf = performance::Deps::system(DEFAULT_API_URL);
+        perf.locate = locate.clone();
+        performance::attach_with(&app, perf);
+        downloads::attach(&app);
+        app.show().expect("show");
+
+        let mut table: Vec<(&str, bool, String)> = Vec::new();
+        let wait = |secs: u64, cond: Box<dyn Fn(&App) -> bool>| {
+            run_until(&app, Duration::from_secs(secs), move |a| cond(a))
+        };
+
+        // Sources: the saved list loads, and our live descriptor is added.
+        app.set_screen(2);
+        let loaded = wait(
+            20,
+            Box::new(|a| {
+                let s = a.global::<crate::SourcesState>();
+                s.get_banner_text().is_empty() && s.get_add_error().is_empty()
+            }),
+        );
+        let sources = app.global::<crate::SourcesState>();
+        table.push((
+            "sources: saved list loads",
+            loaded && sources.get_banner_text().is_empty(),
+            sources.get_banner_text().to_string(),
+        ));
+        sources.set_add_url("https://luxus.github.io/deadlock-mods/dmm-source.json".into());
+        sources.invoke_add();
+        let reviewed = wait(
+            30,
+            Box::new(|a| {
+                a.global::<crate::SourcesState>().get_review_open()
+                    || !a.global::<crate::SourcesState>().get_add_error().is_empty()
+            }),
+        );
+        let review_ok = reviewed && sources.get_review_open();
+        let review_detail = format!("{} {}", sources.get_review_name(), sources.get_add_error());
+        if review_ok {
+            sources.invoke_confirm_add();
+        }
+        let added = review_ok
+            && wait(10, Box::new(|_| true))
+            && Registry::load(&paths).is_ok_and(|r| {
+                r.sources().iter().any(|s| {
+                    s.descriptor_url.ends_with("/deadlock-mods/dmm-source.json")
+                        && !s.api_origins.is_empty()
+                })
+            });
+        table.push((
+            "sources: add our dmm-source.json",
+            added,
+            format!("{review_detail} {}", sources.get_add_error()),
+        ));
+
+        // Browse: our registry's mod is listed.
+        let registry = Registry::load(&paths).ok();
+        let source = registry
+            .as_ref()
+            .and_then(|r| r.sources().iter().find(|s| s.source_id == "luxus").cloned());
+        let iqb = source
+            .as_ref()
+            .map(|s| s.mod_id_of("improved-quickbuy"))
+            .unwrap_or_default();
+        app.set_screen(0);
+        let wanted = iqb.clone();
+        let listed = !iqb.is_empty()
+            && wait(
+                60,
+                Box::new(move |a| {
+                    let mods = a.global::<BrowseState>().get_mods();
+                    (0..mods.row_count())
+                        .filter_map(|i| mods.row_data(i))
+                        .any(|r| r.id.as_str() == wanted)
+                }),
+            );
+        table.push(("browse: registry mod listed", listed, iqb.clone()));
+
+        // Install the registry mod from Browse.
+        app.global::<BrowseState>()
+            .invoke_install(iqb.as_str().into());
+        let sidecar = paths.addons.join(format!(".shiv/{iqb}.json"));
+        let s2 = sidecar.clone();
+        let installed_ok = listed && wait(120, Box::new(move |_| s2.is_file()));
+        let version = shiv_core::sidecar::read(&paths.addons, &iqb)
+            .ok()
+            .flatten()
+            .and_then(|s| s.version);
+        table.push((
+            "browse: install registry mod",
+            installed_ok,
+            format!("{version:?}"),
+        ));
+
+        // CompLock: HUD++ and the two-part pak through Performance.
+        app.set_screen(4);
+        app.global::<PerfState>().invoke_shown();
+        let perf_ready = wait(
+            60,
+            Box::new(|a| {
+                let s = a.global::<PerfState>();
+                s.get_load_state() == LoadState::Ready && s.get_pack_rows().row_count() > 0
+            }),
+        );
+        let multi = shiv_core::complock::options()
+            .iter()
+            .find(|o| {
+                o.pak.as_ref().is_some_and(|p| {
+                    p.parts.iter().any(|part| part.urls.len() > 1) || p.parts.len() > 1
+                })
+            })
+            .map(|o| o.id.clone())
+            .unwrap_or_default();
+        let mut pack_ok = perf_ready;
+        let mut pack_detail = String::new();
+        // An option whose pak sits on its choices (Particle Pruning): the
+        // default choice's pak installs without a pick.
+        let on_choices = shiv_core::complock::options()
+            .iter()
+            .find(|o| o.pak.is_none() && o.choices.iter().any(|c| c.pak.is_some()))
+            .map(|o| o.id.clone())
+            .unwrap_or_default();
+        for id in ["hud".to_owned(), multi.clone(), on_choices.clone()] {
+            app.global::<PerfState>()
+                .invoke_install_pack(id.as_str().into());
+            let mod_id = format!("complock-{id}");
+            let m2 = mod_id.clone();
+            let settled = wait(
+                180,
+                Box::new(move |a| {
+                    a.global::<crate::DownloadsState>()
+                        .get_rows()
+                        .iter()
+                        .any(|r| {
+                            r.id.as_str() == m2
+                                && matches!(r.phase, DownloadPhase::Done | DownloadPhase::Failed)
+                        })
+                }),
+            );
+            let row = app
+                .global::<crate::DownloadsState>()
+                .get_rows()
+                .iter()
+                .find(|r| r.id.as_str() == mod_id);
+            let done = settled && row.as_ref().is_some_and(|r| r.phase == DownloadPhase::Done);
+            pack_detail.push_str(&format!(
+                "{id}: {} ",
+                row.map(|r| r.detail.to_string()).unwrap_or_default()
+            ));
+            pack_ok &= done
+                && shiv_core::sidecar::read(&paths.addons, &mod_id)
+                    .ok()
+                    .flatten()
+                    .is_some();
+        }
+        table.push((
+            "complock: install HUD++, a multi-part pak and a choice pak",
+            pack_ok,
+            pack_detail,
+        ));
+
+        // CompLock: stage their convars and apply them to gameinfo.gi.
+        app.global::<PerfState>().invoke_stage_complock();
+        app.global::<PerfState>().invoke_apply();
+        let applied = wait(
+            30,
+            Box::new(|a| {
+                let s = a.global::<PerfState>();
+                !s.get_busy()
+                    && (s.get_result_title() == "Settings applied" || s.get_result_error())
+            }),
+        );
+        let perf = app.global::<PerfState>();
+        table.push((
+            "complock: apply convars",
+            applied && perf.get_result_title() == "Settings applied",
+            format!("{} {}", perf.get_result_title(), perf.get_result_detail()),
+        ));
+
+        // Update in place: HUD++ again is still one mod.
+        app.global::<PerfState>().invoke_install_pack("hud".into());
+        let updated = wait(
+            120,
+            Box::new(|a| {
+                a.global::<PerfState>()
+                    .get_pack_rows()
+                    .iter()
+                    .any(|r| r.id == "hud" && !r.installing && r.install_label == "Update")
+            }),
+        );
+        let hud_mods = shiv_core::sidecar::group(&paths.addons)
+            .iter()
+            .filter(|m| {
+                m.sidecar
+                    .as_ref()
+                    .is_some_and(|s| s.mod_id == "complock-hud")
+            })
+            .count();
+        table.push((
+            "complock: update HUD++ in place",
+            updated && hud_mods == 1,
+            format!("{hud_mods} hud mods"),
+        ));
+
+        // Installed: modify the registry mod, reset to release, restore.
+        app.set_screen(1);
+        let file = shiv_core::sidecar::group(&paths.addons)
+            .into_iter()
+            .find(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == iqb))
+            .map(|m| m.vpks[0].file.clone());
+        let mut reset_ok = false;
+        let mut reset_detail = String::new();
+        if let Some(file) = file {
+            let published = std::fs::read(&file).unwrap_or_default();
+            let mut edited = published.clone();
+            edited.extend_from_slice(b"smoke edit");
+            std::fs::write(&file, &edited).expect("edit");
+            app.global::<crate::InstalledState>().invoke_refresh();
+            let id = iqb.clone();
+            let modified = wait(
+                30,
+                Box::new(move |a| {
+                    let s = a.global::<crate::InstalledState>();
+                    !s.get_busy()
+                        && s.get_rows()
+                            .iter()
+                            .any(|r| r.id.as_str() == id && r.can_reset)
+                }),
+            );
+            reset_detail.push_str(&format!("modified={modified} "));
+            app.global::<crate::InstalledState>()
+                .invoke_reset(iqb.as_str().into());
+            let id = iqb.clone();
+            let reset = wait(
+                120,
+                Box::new(move |a| {
+                    let s = a.global::<crate::InstalledState>();
+                    !s.get_busy()
+                        && s.get_rows()
+                            .iter()
+                            .any(|r| r.id.as_str() == id && r.can_restore && r.drift.is_empty())
+                }),
+            );
+            let now = shiv_core::sidecar::group(&paths.addons)
+                .into_iter()
+                .find(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == iqb))
+                .map(|m| std::fs::read(&m.vpks[0].file).unwrap_or_default());
+            reset_detail.push_str(&format!(
+                "reset={reset} bytes={} banner={:?} ",
+                now.as_deref() == Some(published.as_slice()),
+                app.global::<crate::InstalledState>().get_banner_text()
+            ));
+            app.global::<crate::InstalledState>()
+                .invoke_restore(iqb.as_str().into());
+            let id = iqb.clone();
+            let restored = wait(
+                60,
+                Box::new(move |a| {
+                    let s = a.global::<crate::InstalledState>();
+                    !s.get_busy()
+                        && s.get_rows()
+                            .iter()
+                            .any(|r| r.id.as_str() == id && r.can_reset)
+                }),
+            );
+            reset_detail.push_str(&format!("restored={restored}"));
+            reset_ok =
+                modified && reset && now.as_deref() == Some(published.as_slice()) && restored;
+        }
+        table.push((
+            "installed: modified -> reset -> restore",
+            reset_ok,
+            reset_detail,
+        ));
+
+        // Installed: uninstall the registry mod and HUD++.
+        let mut gone = true;
+        for id in [iqb.clone(), "complock-hud".to_owned()] {
+            app.global::<crate::InstalledState>()
+                .invoke_uninstall(id.as_str().into());
+            let i2 = id.clone();
+            gone &= wait(
+                30,
+                Box::new(move |a| {
+                    let s = a.global::<crate::InstalledState>();
+                    !s.get_busy() && !s.get_rows().iter().any(|r| r.id.as_str() == i2)
+                }),
+            );
+            gone &= shiv_core::sidecar::read(&paths.addons, &id)
+                .ok()
+                .flatten()
+                .is_none();
+        }
+        table.push((
+            "installed: uninstall",
+            gone,
+            app.global::<crate::InstalledState>()
+                .get_banner_text()
+                .to_string(),
+        ));
+
+        eprintln!("\n| flow | result | detail |\n|---|---|---|");
+        for (flow, ok, detail) in &table {
+            eprintln!(
+                "| {flow} | {} | {} |",
+                if *ok { "PASS" } else { "FAIL" },
+                detail.trim()
+            );
+        }
+        app.hide().expect("hide");
+        assert!(table.iter().all(|(_, ok, _)| *ok), "a flow failed");
+    }
+
     /// A tiny install for the repair engine (as in shiv-repair's own tests):
     /// the game ships two heroes; the installed mod carries an outdated copy
     /// of the table without the newer one, which a repair restores.
@@ -1017,6 +1537,29 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&paths.gameinfo).expect("read"),
             original
+        );
+
+        // At the default window size the CompLock options fill the page
+        // below the card: no small box of its own (it was 198 px).
+        app.window()
+            .set_size(slint::LogicalSize::new(1120.0, 760.0));
+        run_until(&app, Duration::from_millis(50), |_| false);
+        assert_eq!(
+            state.get_section(),
+            0,
+            "CompLock options are the first view"
+        );
+        let options = ElementHandle::find_by_element_id(&app, "PerformancePage::complock-options")
+            .next()
+            .expect("the CompLock options list");
+        let bottom = options.absolute_position().y + options.size().height;
+        assert!(options.size().height > 360.0, "{:?}", options.size());
+        assert!(bottom > 760.0 - 40.0, "reaches the page bottom: {bottom}");
+        click(&app, "All settings");
+        assert_eq!(state.get_section(), 1);
+        assert_eq!(
+            ElementHandle::find_by_element_id(&app, "PerformancePage::complock-options").count(),
+            0
         );
 
         // The editor follows the convar's kind and range.
@@ -1488,6 +2031,50 @@ mod tests {
             .filter(|n| n.starts_with("complock-"))
             .collect();
         assert_eq!(sidecars, ["complock-soundcap.json"], "one mod, same id");
+
+        // Particle Pruning publishes its paks only on its choices: untouched,
+        // its default choice is the one Install fetches. The stub serves the
+        // soundcap bytes, so the CRC gate refuses them, and the failure is
+        // told here on the Performance screen, not only on Downloads.
+        let particles = complock::options()
+            .iter()
+            .find(|o| o.pak.is_none() && o.choices.iter().any(|c| c.pak.is_some()))
+            .expect("an option whose paks hang off its choices");
+        let row = app
+            .global::<PerfState>()
+            .get_pack_rows()
+            .iter()
+            .find(|r| r.id.as_str() == particles.id)
+            .expect("its row");
+        assert!(row.has_pak, "Install shows before any choice is picked");
+        assert!(
+            row.install_label.starts_with("Install"),
+            "{}",
+            row.install_label
+        );
+        state.invoke_install_pack(particles.id.as_str().into());
+        let mod_id = format!("complock-{}", particles.id);
+        let failed_id = mod_id.clone();
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            a.global::<crate::DownloadsState>()
+                .get_rows()
+                .iter()
+                .any(|r| r.id.as_str() == failed_id && r.phase == DownloadPhase::Failed)
+        }));
+        let failure = app
+            .global::<crate::DownloadsState>()
+            .get_rows()
+            .iter()
+            .find(|r| r.id.as_str() == mod_id)
+            .expect("the Downloads row")
+            .detail;
+        assert!(state.get_result_error());
+        assert!(
+            state.get_result_title().contains(particles.title.as_str()),
+            "{}",
+            state.get_result_title()
+        );
+        assert_eq!(state.get_result_detail(), failure);
     }
 
     fn crosshair_flow() {
@@ -2112,6 +2699,16 @@ mod tests {
         );
         app.show().expect("show");
 
+        // A list saved by Shiv 0.2.0 (no origins recorded) for this same
+        // source loads, and the review below replaces its entry.
+        std::fs::write(
+            paths.root.join("shiv-sources.json"),
+            format!(
+                r#"[{{"descriptor_url":"{url}/old.json","origin":"{url}","source_id":"my-community","name":"Old Name"}}]"#
+            ),
+        )
+        .expect("legacy list");
+
         // Adding a source reviews the descriptor before saving it.
         let state = app.global::<crate::SourcesState>();
         state.set_add_url(format!("{url}/d.json").into());
@@ -2184,6 +2781,11 @@ mod tests {
         let reloaded = Registry::load(&GamePaths::from_root(game_root)).expect("registry");
         assert_eq!(reloaded.sources().len(), 1);
         assert_eq!(reloaded.sources()[0].source_id, "my-community");
+        assert_eq!(
+            reloaded.sources()[0].descriptor_url,
+            format!("{url}/d.json")
+        );
+        assert!(!reloaded.sources()[0].predates_origins());
         assert!(paths.addons.join("pak01_dir.vpk").is_file());
     }
 
