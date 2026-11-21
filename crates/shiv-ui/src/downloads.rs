@@ -86,24 +86,23 @@ fn with_downloads(f: impl FnOnce(&Rc<Downloads>)) {
 }
 
 pub fn attach(app: &App) {
-    attach_with(
-        app,
-        Rc::new(VecModelRows {
-            model: Rc::new(VecModel::default()),
-        }),
-    );
+    let rows: Rc<dyn TransferRows> = Rc::new(VecModelRows {
+        model: Rc::new(VecModel::default()),
+    });
+    attach_with(app, &rows);
 }
 
 /// Wire the Downloads screen to `app`, writing its rows through `rows`
 /// (the storm test passes a counting sink; `attach` passes the Slint model).
-pub(crate) fn attach_with(app: &App, rows: Rc<dyn TransferRows>) {
+pub(crate) fn attach_with(app: &App, rows: &Rc<dyn TransferRows>) {
+    let model = rows.model();
     let controller = Rc::new(Downloads {
         weak: app.as_weak(),
         rows: rows.clone(),
         items: RefCell::new(Vec::new()),
     });
     let state = app.global::<DownloadsState>();
-    state.set_rows(rows.model());
+    state.set_rows(model);
     DOWNLOADS.with(|c| *c.borrow_mut() = Some(controller));
     state.on_cancel(|id| {
         let id = id.as_str();
@@ -323,10 +322,9 @@ impl Downloads {
             }
             !ended || finished <= HISTORY
         });
-        if items.len() != before {
-            PhaseOutcome::List
-        } else {
-            PhaseOutcome::Row(index)
+        match items.len() {
+            len if len != before => PhaseOutcome::List,
+            _ => PhaseOutcome::Row(index),
         }
     }
 
@@ -449,7 +447,7 @@ pub(crate) mod storm {
     /// fails this.
     pub(crate) fn progress_storm_flow(app: &App) {
         let counting = Rc::new(CountingRows::default());
-        attach_with(app, counting.clone());
+        attach_with(app, &(counting.clone() as Rc<dyn TransferRows>));
 
         for i in 0..29 {
             started(&format!("finished-{i}"), &format!("Finished {i}"));
