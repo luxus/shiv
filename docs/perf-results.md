@@ -263,6 +263,21 @@ fixture variance — temp-path lengths differ (`/tmp` on CI against a
 the author removes the allocation or raises the ceiling with a written
 reason (what the bytes are, why the flow needs them).
 
+## Scroll-peak experiments (lea, 2026-11-21)
+
+The scroll gate held with 0.6 pp margin (138 loaded → 151 peak, +9.4 %).
+The obvious lever — the 24 MiB thumbnail cache budget — was A/B-tested at
+16 MiB: loaded 138.9 MB, peak 154.9 MB. **No improvement**; the peak comes
+from the scroll rendering itself (decode intermediates, layout), not the
+cache's standing bytes, and the run-to-run spread (~4 MB in fetch order)
+is wider than the budget's effect. The budget stays at 24 MiB; a smaller
+cache would only re-decode more thumbnails while scrolling.
+
+Commands: the scroll probe (`SHIV_SCROLL_SECS=60`, dev-probe build) over
+the live 10k catalog, `VmRSS`/`VmHWM` read from `/proc/<pid>/status`,
+budget edited in `crates/shiv-ui/src/browse.rs` (`THUMB_BUDGET`) between
+runs.
+
 ## Profile experiments (issue #8) — 2026-11-21, the dev workstation
 
 Machine: emily, the same one as the bench baselines above (Apple M1 Pro,
