@@ -293,7 +293,266 @@ mod tests {
         crosshair_flow();
         performance_flow();
         complock_options_flow();
+        drift_reset_flow();
         downloads::storm::progress_storm_flow(&app);
+    }
+
+    /// Drift on the Installed screen (issue #21) over a temp game: a
+    /// CompLock pak installed from the soundcap fixture shows nothing; a
+    /// hand-added pak whose addoninfo names a pack entry CompLock retired
+    /// shows Retired with no reset; edited files show Modified, Reset to
+    /// release reinstalls the published bytes and keeps the edited ones,
+    /// Restore previous puts them back, and both refuse while Deadlock runs.
+    fn drift_reset_flow() {
+        use shiv_core::complock;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = shiv_core::game::GamePaths::from_root(temp.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let work = temp.path().join("work");
+        std::fs::create_dir_all(&work).expect("work");
+        let served = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../shiv-core/tests/data/complock-soundcap-part.z"
+        ))
+        .expect("the soundcap fixture");
+        let id = "complock-soundcap";
+        let pak = complock::release_for(id, None).expect("soundcap is published");
+        let piece = work.join("piece.z");
+        std::fs::write(&piece, &served).expect("piece");
+        let release = work.join(&pak.parts[0].name);
+        complock::unpack_pak(
+            std::slice::from_ref(&piece),
+            &release,
+            pak.parts[0].crc,
+            pak.parts[0].size,
+        )
+        .expect("unpack the fixture");
+        let meta = shiv_core::install::ModMeta {
+            mod_id: id.into(),
+            name: "Sound cap".into(),
+            version: Some(complock::revision(pak)),
+            thumbnail_url: None,
+            nsfw: false,
+            hero: None,
+            category: None,
+        };
+        shiv_core::install::install_files(std::slice::from_ref(&release), meta, &paths, || false)
+            .expect("install soundcap");
+        let installed = || {
+            shiv_core::sidecar::group(&paths.addons)
+                .into_iter()
+                .find(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == id))
+                .expect("soundcap installed")
+                .vpks[0]
+                .file
+                .clone()
+        };
+        let src = tempfile::tempdir().expect("src");
+        std::fs::write(
+            src.path().join("addoninfo.txt"),
+            "\"AddonInfo\"\n{\n    addontitle \"Thicker outlines (Vulkan) - HoppCX\"\n    addonauthor \"HoppCX\"\n}\n",
+        )
+        .expect("addoninfo");
+        vpkmanager::pack_directory(src.path(), &paths.addons.join("pak58_dir.vpk"))
+            .expect("retired pak");
+
+        let running = Arc::new(AtomicBool::new(false));
+        let downloads = Arc::new(AtomicUsize::new(0));
+        let (flag, count, located) = (running.clone(), downloads.clone(), paths.clone());
+        let app = App::new().expect("app");
+        installed::attach_with(
+            &app,
+            Arc::new(thumbs::Cache::with_fetcher(1 << 20, |_| None)),
+            installed::Deps {
+                locate: Arc::new(move || Ok(located.clone())),
+                running: Arc::new(move || flag.load(Ordering::Relaxed)),
+                download: Arc::new(move |url, dest| {
+                    assert!(
+                        url.starts_with("https://deadlockconfig.com/dl/"),
+                        "the part url resolved on the site: {url}"
+                    );
+                    count.fetch_add(1, Ordering::Relaxed);
+                    std::fs::write(dest, &served).map_err(|e| e.to_string())
+                }),
+            },
+        );
+        app.show().expect("show");
+        let row = |a: &App, key: &str| {
+            a.global::<InstalledState>()
+                .get_rows()
+                .iter()
+                .find(|r| r.id.as_str() == key)
+        };
+        let settled = |a: &App| {
+            let s = a.global::<InstalledState>();
+            s.get_load_state() == LoadState::Ready && !s.get_busy()
+        };
+        app.set_screen(1);
+        assert!(run_until(&app, Duration::from_secs(20), settled));
+        let pristine = row(&app, id).expect("soundcap row");
+        assert_eq!(pristine.drift.as_str(), "");
+        assert!(!pristine.can_reset && !pristine.can_restore);
+        let retired = row(&app, "pak58_dir.vpk").expect("the hand-added pak");
+        assert_eq!(
+            retired.drift.as_str(),
+            installed::drift_text(shiv_core::drift::Drift::Retired)
+        );
+        assert!(!retired.can_reset && !retired.can_restore);
+
+        let published = std::fs::read(installed()).expect("installed bytes");
+        let mut edited = published.clone();
+        edited.extend_from_slice(b"edited by hand");
+        std::fs::write(installed(), &edited).expect("edit");
+        app.global::<InstalledState>().invoke_refresh();
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            settled(a)
+                && row(a, id).is_some_and(|r| {
+                    r.can_reset
+                        && r.drift.as_str()
+                            == installed::drift_text(shiv_core::drift::Drift::Modified)
+                })
+        }));
+
+        running.store(true, Ordering::Relaxed);
+        click(&app, "Reset to release");
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy() && s.get_banner_text().contains("running")
+        }));
+        assert_eq!(std::fs::read(installed()).expect("read"), edited);
+        assert_eq!(
+            downloads.load(Ordering::Relaxed),
+            0,
+            "refused before the download"
+        );
+        running.store(false, Ordering::Relaxed);
+        app.global::<InstalledState>().invoke_refresh();
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            settled(a) && !a.global::<InstalledState>().get_game_running()
+        }));
+
+        click(&app, "Reset to release");
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            settled(a)
+                && row(a, id)
+                    .is_some_and(|r| r.drift.as_str() == "" && r.can_restore && !r.can_reset)
+        }));
+        assert_eq!(std::fs::read(installed()).expect("read"), published);
+        assert_eq!(downloads.load(Ordering::Relaxed), pak.parts[0].urls.len());
+        assert_eq!(
+            app.global::<InstalledState>().get_banner_text().as_str(),
+            ""
+        );
+
+        running.store(true, Ordering::Relaxed);
+        click(&app, "Restore previous");
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<InstalledState>();
+            !s.get_busy() && s.get_banner_text().contains("running")
+        }));
+        assert_eq!(std::fs::read(installed()).expect("read"), published);
+        running.store(false, Ordering::Relaxed);
+        app.global::<InstalledState>().invoke_refresh();
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            settled(a) && !a.global::<InstalledState>().get_game_running()
+        }));
+
+        click(&app, "Restore previous");
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            settled(a)
+                && row(a, id).is_some_and(|r| {
+                    r.can_reset
+                        && r.drift.as_str()
+                            == installed::drift_text(shiv_core::drift::Drift::Modified)
+                })
+        }));
+        assert_eq!(std::fs::read(installed()).expect("read"), edited);
+        app.hide().expect("hide");
+    }
+
+    /// Real-artifact check for issue #21: the Installed screen over a temp
+    /// copy of an addons folder (`SHIV_ADDONS_COPY`, never the live one)
+    /// prints every row's drift; a pak whose addoninfo names a pack entry
+    /// CompLock retired (Thicker outlines) shows Retired with no reset.
+    /// Initialises the Slint platform, so run it on its own.
+    #[test]
+    #[ignore = "needs SHIV_ADDONS_COPY, a copy of a real addons folder"]
+    fn real_addons_show_their_drift() {
+        use std::sync::Arc;
+        let Ok(copy) = std::env::var("SHIV_ADDONS_COPY") else {
+            return;
+        };
+        i_slint_backend_testing::init_integration_test_with_system_time();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = shiv_core::game::GamePaths::from_root(temp.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let status = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(format!("{copy}/."))
+            .arg(&paths.addons)
+            .status()
+            .expect("cp");
+        assert!(status.success());
+        let located = paths.clone();
+        let app = App::new().expect("app");
+        installed::attach_with(
+            &app,
+            Arc::new(thumbs::Cache::with_fetcher(1 << 20, |_| None)),
+            installed::Deps {
+                locate: Arc::new(move || Ok(located.clone())),
+                running: Arc::new(|| false),
+                download: Arc::new(|_, _| Err("no network in this check".into())),
+            },
+        );
+        app.show().expect("show");
+        app.set_screen(1);
+        assert!(run_until(&app, Duration::from_secs(60), |a| {
+            let s = a.global::<InstalledState>();
+            s.get_load_state() == LoadState::Ready && !s.get_busy()
+        }));
+        let rows: Vec<_> = app.global::<InstalledState>().get_rows().iter().collect();
+        for r in &rows {
+            eprintln!(
+                "{:<28} {:<40} drift={:?} reset={} restore={}",
+                r.id, r.name, r.drift, r.can_reset, r.can_restore
+            );
+        }
+        let retired = installed::drift_text(shiv_core::drift::Drift::Retired);
+        let outline_ids: Vec<String> = shiv_core::sidecar::group(&paths.addons)
+            .iter()
+            .filter(|m| {
+                m.vpks.iter().any(|v| {
+                    shiv_core::complock::identify(&v.file)
+                        .is_some_and(|i| i.title.starts_with("Thicker outlines"))
+                })
+            })
+            .map(|m| {
+                m.sidecar.as_ref().map_or_else(
+                    || {
+                        m.vpks[0]
+                            .file
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned()
+                    },
+                    |s| s.mod_id.clone(),
+                )
+            })
+            .collect();
+        let outlines: Vec<_> = rows
+            .iter()
+            .filter(|r| outline_ids.iter().any(|id| id == r.id.as_str()))
+            .collect();
+        assert!(
+            !outlines.is_empty(),
+            "the copy has the Thicker outlines pak"
+        );
+        assert!(outlines.iter().all(|r| r.drift == retired && !r.can_reset));
+        app.hide().expect("hide");
     }
 
     /// A tiny install for the repair engine (as in shiv-repair's own tests):
@@ -586,6 +845,7 @@ mod tests {
             installed::Deps {
                 locate: Arc::new(move || Ok(located.clone())),
                 running: Arc::new(|| false),
+                download: Arc::new(|_, _| Err("no network in tests".into())),
             },
         );
         app.set_screen(1);
@@ -1847,6 +2107,7 @@ mod tests {
             installed::Deps {
                 locate,
                 running: Arc::new(|| false),
+                download: Arc::new(|_, _| Err("no network in tests".into())),
             },
         );
         app.show().expect("show");
@@ -1985,6 +2246,7 @@ mod tests {
                 }
                 flag.load(Ordering::Relaxed)
             }),
+            download: Arc::new(|_, _| Err("no network in tests".into())),
         };
         let app = App::new().expect("app");
         let cache = Arc::new(thumbs::Cache::with_fetcher(1 << 20, |_| None));
@@ -2648,6 +2910,7 @@ mod tests {
                     }
                 }),
                 running: Arc::new(|| false),
+                download: Arc::new(|_, _| Err("no network in tests".into())),
             },
         );
         app2.show().expect("show");
@@ -3221,6 +3484,7 @@ mod tests {
             installed::Deps {
                 locate: Arc::new(move || Ok(located.clone())),
                 running: Arc::new(|| false),
+                download: Arc::new(|_, _| Err("no network in tests".into())),
             }
         };
         let width = |a: &App, name: &str| {

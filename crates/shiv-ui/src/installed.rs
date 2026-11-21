@@ -15,11 +15,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use shiv_api::{ApiError, Client};
+use shiv_api::{ApiError, Client, NativeListing};
 use shiv_core::addons::{self, AddonsError};
+use shiv_core::complock;
+use shiv_core::drift::{self, Drift, Published};
 use shiv_core::game::{self, GameError, GamePaths};
 use shiv_core::install::{self, InstallError, MatchReason};
 use shiv_core::interchange;
+use shiv_core::registry::{self, AddedSource};
+use shiv_core::reset::{self, ResetError};
 use shiv_core::sidecar::{self, InstalledMod, Move};
 use shiv_repair::OverlayState;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
@@ -33,6 +37,8 @@ use crate::{
 
 pub(crate) type Locate = Arc<dyn Fn() -> Result<GamePaths, GameError> + Send + Sync>;
 pub(crate) type Running = Arc<dyn Fn() -> bool + Send + Sync>;
+/// Fetches one URL to a file; a reset downloads the release through it.
+pub(crate) type Download = Arc<dyn Fn(&str, &Path) -> Result<(), String> + Send + Sync>;
 
 /// Where the game is and whether it runs; injectable so tests never touch the
 /// real install or depend on a running game.
@@ -40,6 +46,7 @@ pub(crate) type Running = Arc<dyn Fn() -> bool + Send + Sync>;
 pub(crate) struct Deps {
     pub locate: Locate,
     pub running: Running,
+    pub download: Download,
 }
 
 impl Deps {
@@ -47,6 +54,11 @@ impl Deps {
         Deps {
             locate: Arc::new(crate::locate_game),
             running: Arc::new(game::is_running),
+            download: Arc::new(|url, dest| {
+                Client::new(crate::DEFAULT_API_URL)
+                    .fetch_cancellable(url, dest, &AtomicBool::new(false), |_, _| {})
+                    .map_err(|e| format!("The download failed. {e}"))
+            }),
         }
     }
 }
@@ -120,6 +132,132 @@ pub(crate) struct Entry {
     pub raw_name: String,
     /// Enabled-form file names, for the edit and adopt dialogs.
     pub files: Vec<String>,
+    /// What the worker read from disk for the drift check.
+    pub facts: Facts,
+    /// How the files compare with what the source publishes.
+    pub drift: Drift,
+    /// A reset can reinstall the published release.
+    pub can_reset: bool,
+}
+
+/// The disk side of a row's drift, read on the worker: whether the files
+/// still match their install stamps, the CompLock title inside a pak Shiv
+/// did not install from a source (hand-added, adopted or from a file), and
+/// whether a reset left a backup to restore.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Facts {
+    pub untouched: Option<bool>,
+    pub complock_title: Option<String>,
+    pub has_backup: bool,
+}
+
+fn facts(addons: &Path, m: &InstalledMod) -> Facts {
+    let id = key(m);
+    let sourced = id.starts_with(complock::MOD_PREFIX) || registry::split_mod_id(&id).is_some();
+    let complock_title = if sourced {
+        None
+    } else {
+        m.vpks
+            .iter()
+            .find_map(|v| complock::identify(&v.file))
+            .map(|i| i.title)
+    };
+    Facts {
+        untouched: drift::files_untouched(m),
+        complock_title,
+        has_backup: m.sidecar.is_some() && reset::latest_backup(addons, &id).is_some(),
+    }
+}
+
+/// What a reset reinstalls, captured on the event loop from the pack data
+/// or the loaded registry catalog.
+#[derive(Debug, Clone)]
+enum ResetPlan {
+    CompLock { pak: &'static complock::Pak },
+    Registry(Box<RegistryPlan>),
+}
+
+/// A registry release with a direct artifact, and what its sidecar records.
+#[derive(Debug, Clone)]
+struct RegistryPlan {
+    source: AddedSource,
+    listing_id: String,
+    title: String,
+    revision: String,
+    url: String,
+    sha256: Option<String>,
+    filename: String,
+    thumb: Option<String>,
+    nsfw: bool,
+}
+
+/// Who publishes the row's mod and what: CompLock's pack data for its own
+/// ids and for other paks whose `addoninfo.txt` names it, the loaded
+/// registry catalog for registry ids (a source not loaded is unknown, a
+/// listing it no longer carries or without a release is retired).
+fn published(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Published {
+    if e.id.starts_with(complock::MOD_PREFIX) {
+        return complock::published(&e.id);
+    }
+    if let Some((source_id, listing_id)) = registry::split_mod_id(&e.id) {
+        let Some((_, listings)) = catalogs.iter().find(|(s, _)| s.source_id == source_id) else {
+            return Published::Unknown;
+        };
+        return listings
+            .iter()
+            .find(|l| l.id == listing_id && !l.removed)
+            .and_then(|l| l.release.as_ref())
+            .map_or(Published::Gone, |r| {
+                Published::Current(std::iter::once(r.content_revision.clone()).collect())
+            });
+    }
+    e.facts
+        .complock_title
+        .as_deref()
+        .map_or(Published::Unknown, complock::published_for_title)
+}
+
+/// The release a reset of the row installs, when one can be fetched
+/// directly: a CompLock pak, or a registry release with a direct artifact.
+fn reset_plan(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Option<ResetPlan> {
+    if !e.managed {
+        return None;
+    }
+    if e.id.starts_with(complock::MOD_PREFIX) {
+        return complock::release_for(&e.id, e.version.as_deref())
+            .map(|pak| ResetPlan::CompLock { pak });
+    }
+    let (source_id, listing_id) = registry::split_mod_id(&e.id)?;
+    let (source, listings) = catalogs.iter().find(|(s, _)| s.source_id == source_id)?;
+    let listing = listings.iter().find(|l| l.id == listing_id && !l.removed)?;
+    let release = listing.release.as_ref()?;
+    let [artifact] = release.artifacts.as_slice() else {
+        return None;
+    };
+    if artifact.resolver_url.is_some() || artifact.url.is_empty() {
+        return None;
+    }
+    Some(ResetPlan::Registry(Box::new(RegistryPlan {
+        source: source.clone(),
+        listing_id: listing.id.clone(),
+        title: listing.title.clone(),
+        revision: release.content_revision.clone(),
+        url: artifact.url.clone(),
+        sha256: artifact.sha256.clone(),
+        filename: artifact.filename.clone(),
+        thumb: e.thumb_url.clone(),
+        nsfw: listing.nsfw.unwrap_or(false),
+    })))
+}
+
+/// The badge a row shows for its drift; empty when there is nothing to say.
+pub(crate) fn drift_text(d: Drift) -> &'static str {
+    match d {
+        Drift::Modified => "Modified: the files differ from the release",
+        Drift::UpdateAvailable => "A newer release is published",
+        Drift::Retired => "Retired upstream: no longer published",
+        Drift::Pristine | Drift::Untracked => "",
+    }
 }
 
 /// Whether the catalog's file version is newer than the installed one. Both
@@ -183,6 +321,9 @@ fn entry(m: &InstalledMod) -> Entry {
             can_up: false,
             can_down: false,
             pak: m.vpks.iter().filter_map(|v| v.pak).min().unwrap_or(0),
+            facts: Facts::default(),
+            drift: Drift::Untracked,
+            can_reset: false,
         };
     };
     let mut parts: Vec<String> = Vec::new();
@@ -226,6 +367,9 @@ fn entry(m: &InstalledMod) -> Entry {
         can_up: false,
         can_down: false,
         pak: m.vpks.iter().filter_map(|v| v.pak).min().unwrap_or(0),
+        facts: Facts::default(),
+        drift: Drift::Untracked,
+        can_reset: false,
     }
 }
 
@@ -268,6 +412,8 @@ struct Loaded {
     /// The repair package no longer matches the mods (after a toggle or an
     /// uninstall, say) but still loads.
     repair_stale: bool,
+    /// Each mod's drift facts, in `mods` order.
+    facts: Vec<Facts>,
 }
 
 /// `addons::list` runs first: `sidecar::group` swallows an unreadable folder
@@ -275,11 +421,121 @@ struct Loaded {
 fn load(deps: &Deps) -> Result<Loaded, String> {
     let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
     addons::list(&paths.addons).map_err(|e| format!("The addons folder could not be read. {e}"))?;
+    let mods = sidecar::group(&paths.addons);
     Ok(Loaded {
-        mods: sidecar::group(&paths.addons),
+        facts: mods.iter().map(|m| facts(&paths.addons, m)).collect(),
+        mods,
         running: (deps.running)(),
         repair_stale: shiv_repair::overlay_state(&paths) == OverlayState::Stale,
     })
+}
+
+fn reset_error_text(name: &str, e: &ResetError) -> String {
+    match e {
+        ResetError::GameRunning => GAME_RUNNING_TEXT.into(),
+        ResetError::Install(detail) => format!("Could not reset {name}. {detail}"),
+        other => format!("Could not reset {name}. {other}"),
+    }
+}
+
+/// Download the plan's release and reinstall it through `reset::reset_with`,
+/// which sets the current files aside first and puts them back on failure.
+fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), String> {
+    let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+    if (deps.running)() {
+        return Err(GAME_RUNNING_TEXT.into());
+    }
+    let dir = tempfile::Builder::new()
+        .prefix("shiv-reset-")
+        .tempdir()
+        .map_err(|e| format!("Could not create a temporary folder: {e}"))?;
+    let fetched = fetch_release(deps, dir.path(), plan)?;
+    let running = deps.running.clone();
+    let _guard = install::INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset::reset_with(
+        &paths,
+        id,
+        || running(),
+        || match plan {
+            ResetPlan::CompLock { pak } => {
+                let meta = install::ModMeta {
+                    mod_id: id.to_owned(),
+                    name: name.to_owned(),
+                    version: Some(complock::revision(pak)),
+                    thumbnail_url: None,
+                    nsfw: false,
+                    hero: None,
+                    category: None,
+                };
+                install::install_files(&fetched, meta, &paths, || running())
+                    .map(|_| ())
+                    .map_err(|e| install_error_text(&e))
+            }
+            ResetPlan::Registry(r) => registry::install_registry_mod(
+                &paths,
+                &r.source,
+                &r.listing_id,
+                &r.title,
+                &r.revision,
+                r.thumb.as_deref(),
+                r.nsfw,
+                &r.filename,
+                &fetched[0],
+                true,
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        },
+    )
+    .map(|_| ())
+    .map_err(|e| reset_error_text(name, &e))
+}
+
+/// The plan's release on disk in `dir`: a CompLock pak's VPKs unpacked and
+/// CRC-checked, or a registry artifact checked against its sha256.
+fn fetch_release(deps: &Deps, dir: &Path, plan: &ResetPlan) -> Result<Vec<PathBuf>, String> {
+    match plan {
+        ResetPlan::CompLock { pak } => {
+            let mut vpks = Vec::new();
+            for part in &pak.parts {
+                let mut pieces = Vec::new();
+                for (n, url) in part.urls.iter().enumerate() {
+                    let full = complock::part_url(url).ok_or_else(|| {
+                        format!("The pack data's url {url} does not resolve on the site")
+                    })?;
+                    let piece = dir.join(format!("piece-{}-{n}.z", vpks.len()));
+                    (deps.download)(&full, &piece)?;
+                    pieces.push(piece);
+                }
+                let dest = dir.join(&part.name);
+                complock::unpack_pak(&pieces, &dest, part.crc, part.size)?;
+                vpks.push(dest);
+            }
+            Ok(vpks)
+        }
+        ResetPlan::Registry(r) => {
+            let dest = dir.join("archive");
+            (deps.download)(&r.url, &dest)?;
+            registry::verify_download(&dest, r.sha256.as_deref()).map_err(|e| e.to_string())?;
+            Ok(vec![dest])
+        }
+    }
+}
+
+fn run_restore(deps: &Deps, id: &str, name: &str) -> Result<(), String> {
+    let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+    let running = deps.running.clone();
+    let _guard = install::INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset::restore_previous(&paths, id, || running())
+        .map(|_| ())
+        .map_err(|e| match e {
+            ResetError::GameRunning => GAME_RUNNING_TEXT.into(),
+            other => format!("Could not restore {name}. {other}"),
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -424,6 +680,8 @@ struct Installed {
     rows: Rc<VecModel<InstalledRow>>,
     mods: RefCell<Vec<InstalledMod>>,
     entries: RefCell<Vec<Entry>>,
+    /// What Reset reinstalls, by row id, for the rows that can reset.
+    plans: RefCell<HashMap<String, ResetPlan>>,
     generation: Cell<u64>,
     /// A re-read of the folder is running.
     refreshing: Cell<bool>,
@@ -492,6 +750,7 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         rows: rows.clone(),
         mods: RefCell::new(Vec::new()),
         entries: RefCell::new(Vec::new()),
+        plans: RefCell::new(HashMap::new()),
         generation: Cell::new(0),
         refreshing: Cell::new(false),
         acting: Cell::new(false),
@@ -523,6 +782,8 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         with_installed(|i| i.act(id.as_str(), Action::Move(to)));
     });
     state.on_update(|id| crate::browse::update_mod(id.as_str()));
+    state.on_reset(|id| with_installed(|i| i.reset_mod(id.as_str())));
+    state.on_restore(|id| with_installed(|i| i.restore_mod(id.as_str())));
     state.on_open_detail(|id| {
         with_installed(|i| {
             if !crate::browse::show_detail_from(id.as_str(), 1) {
@@ -985,6 +1246,9 @@ impl Installed {
             row.update = true;
             row.tag = "Update available".into();
         }
+        row.drift = drift_text(e.drift).into();
+        row.can_reset = e.can_reset;
+        row.can_restore = e.facts.has_backup;
         if let Some(img) = e.thumb_url.as_deref().and_then(|u| self.cache.get(u)) {
             let nsfw = is_nsfw(e.nsfw, crate::browse::catalog_nsfw(&e.id));
             let shown = if nsfw && !crate::browse::show_nsfw() {
@@ -1061,7 +1325,24 @@ impl Installed {
             Ok(l) => l,
             Err(text) => return self.fail(text),
         };
-        let list = entries(&loaded.mods);
+        let mut list = entries(&loaded.mods);
+        let catalogs = crate::sources::catalogs();
+        let mut plans = HashMap::new();
+        for (e, f) in list.iter_mut().zip(loaded.facts) {
+            e.facts = f;
+            e.drift = drift::state(
+                e.facts.untouched,
+                e.version.as_deref(),
+                &published(e, &catalogs),
+            );
+            if matches!(e.drift, Drift::Modified | Drift::UpdateAvailable)
+                && let Some(plan) = reset_plan(e, &catalogs)
+            {
+                e.can_reset = true;
+                plans.insert(e.id.clone(), plan);
+            }
+        }
+        *self.plans.borrow_mut() = plans;
         self.rows
             .set_vec(list.iter().map(|e| self.build_row(e)).collect::<Vec<_>>());
         self.set_flags(Some(false), None);
@@ -1920,6 +2201,56 @@ impl Installed {
         }
     }
 
+    /// Reinstall the published release over a drifted mod, keeping its files
+    /// as a backup that Restore previous puts back.
+    fn reset_mod(&self, id: &str) {
+        let Some(plan) = self.plans.borrow().get(id).cloned() else {
+            return;
+        };
+        let deps = self.deps.clone();
+        let id = id.to_owned();
+        self.run_job(&id.clone(), move |name| run_reset(&deps, &id, name, &plan));
+    }
+
+    /// Swap a reset mod back to the files its last reset set aside.
+    fn restore_mod(&self, id: &str) {
+        let deps = self.deps.clone();
+        let id = id.to_owned();
+        self.run_job(&id.clone(), move |name| run_restore(&deps, &id, name));
+    }
+
+    /// An action on one row that is not an [`Action`]: same busy guard,
+    /// worker and follow-up refresh.
+    fn run_job(&self, id: &str, job: impl FnOnce(&str) -> Result<(), String> + Send + 'static) {
+        if self.weak.upgrade().is_none() || self.refreshing.get() || self.acting.get() {
+            return;
+        }
+        let Some(name) = self
+            .entries
+            .borrow()
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.name.clone())
+        else {
+            return;
+        };
+        self.set_flags(None, Some(true));
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-installed-action",
+            move || job(&name),
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.acted(result));
+                });
+            },
+        );
+        if !started {
+            self.acted(Err("Could not start a background thread.".into()));
+        }
+    }
+
     /// Success or failure, re-read the folder: that also refreshes the
     /// game-running state (a game-running refusal means it just started).
     fn acted(&self, result: Result<(), String>) {
@@ -1942,6 +2273,7 @@ impl Installed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shiv_api::{NativeArtifact, NativeRelease};
     use shiv_core::addons::InstalledVpk;
     use shiv_core::sidecar::Sidecar;
     use std::path::PathBuf;
@@ -1982,6 +2314,73 @@ mod tests {
         assert!(!update_available(old, None), "mod not in the catalog");
         assert!(!update_available(Some(""), new));
         assert!(!update_available(old, Some("")));
+    }
+
+    #[test]
+    fn a_registry_row_is_published_by_its_loaded_listing() {
+        let source = AddedSource {
+            descriptor_url: "https://reg.test/d.json".into(),
+            origin: "https://reg.test".into(),
+            source_id: "reg".into(),
+            name: "Reg".into(),
+            api_origins: Vec::new(),
+            download_origins: Vec::new(),
+        };
+        let row = |listing: &str| {
+            let m = InstalledMod {
+                sidecar: Some(sidecar(&source.mod_id_of(listing), "Listed")),
+                vpks: vec![vpk("pak01_dir.vpk", Some(1), true)],
+            };
+            entries(std::slice::from_ref(&m)).remove(0)
+        };
+        let artifact = |resolver: Option<&str>| NativeArtifact {
+            filename: "a.zip".into(),
+            url: "https://reg.test/a.zip".into(),
+            resolver_url: resolver.map(Into::into),
+            ..NativeArtifact::default()
+        };
+        let listing = |id: &str, revision: Option<&str>, resolver: Option<&str>| NativeListing {
+            id: id.into(),
+            title: id.into(),
+            release: revision.map(|r| NativeRelease {
+                content_revision: r.into(),
+                artifacts: vec![artifact(resolver)],
+                ..NativeRelease::default()
+            }),
+            ..NativeListing::default()
+        };
+        let catalogs = vec![(
+            source.clone(),
+            vec![
+                listing("live", Some("sha256-1"), None),
+                listing("bare", None, None),
+                listing("rotating", Some("sha256-2"), Some("https://reg.test/r")),
+            ],
+        )];
+
+        let current = Published::Current(std::iter::once("sha256-1".to_owned()).collect());
+        assert_eq!(published(&row("live"), &catalogs), current);
+        assert_eq!(published(&row("bare"), &catalogs), Published::Gone);
+        assert_eq!(published(&row("dropped"), &catalogs), Published::Gone);
+        assert_eq!(
+            published(&row("live"), &[]),
+            Published::Unknown,
+            "source not loaded"
+        );
+
+        let Some(ResetPlan::Registry(plan)) = reset_plan(&row("live"), &catalogs) else {
+            panic!("a direct release resets");
+        };
+        assert_eq!(
+            (plan.revision.as_str(), plan.url.as_str()),
+            ("sha256-1", "https://reg.test/a.zip")
+        );
+        assert_eq!(plan.source, source);
+        assert!(
+            reset_plan(&row("rotating"), &catalogs).is_none(),
+            "resolver urls rotate"
+        );
+        assert!(reset_plan(&row("bare"), &catalogs).is_none());
     }
 
     #[test]

@@ -29,6 +29,13 @@ export struct InstalledRow {
     can-down: bool,
     // Installed from a local file or adopted: no catalog page or updates.
     local: bool,
+    // How the files compare with the source's release ("" when they match
+    // or nothing is known): modified, a newer release, retired upstream.
+    drift: string,
+    // Reset to release can reinstall the published files.
+    can-reset: bool,
+    // A reset left the previous files to put back.
+    can-restore: bool,
 }
 
 export global InstalledState {
@@ -55,6 +62,10 @@ export global InstalledState {
     callback uninstall(string);
     // Download and install the mod's newer version.
     callback update(string);
+    // Reinstall the published release over drifted files, keeping a backup.
+    callback reset(string);
+    // Put back the files the last reset replaced.
+    callback restore(string);
     callback dismiss-banner();
     // Show the Repair screen.
     callback open-repair();
@@ -216,11 +227,33 @@ component InstalledRowView inherits Rectangle {
                 font-size: Theme.text-md;
                 overflow: elide;
             }
-            if root.item.tag != "": Text {
+            property <bool> drifted: root.item.drift != "" || root.item.can-restore;
+            if root.item.tag != "" && !drifted: Text {
                 text: root.item.tag;
                 color: Theme.text-faint;
                 font-size: Theme.text-sm;
                 overflow: elide;
+            }
+            if drifted: HorizontalLayout {
+                spacing: Theme.s1;
+                alignment: start;
+                if root.item.drift != "": Text {
+                    text: root.item.drift;
+                    color: root.item.can-reset ? Theme.accent : Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.item.can-reset: TextButton {
+                    text: "Reset to release";
+                    disabled: root.frozen;
+                    clicked => { InstalledState.reset(root.item.id); }
+                }
+                if root.item.can-restore: TextButton {
+                    text: "Restore previous";
+                    disabled: root.frozen;
+                    clicked => { InstalledState.restore(root.item.id); }
+                }
             }
         }
 

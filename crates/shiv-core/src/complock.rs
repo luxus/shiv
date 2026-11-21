@@ -766,10 +766,34 @@ pub fn revision(pak: &Pak) -> String {
 #[must_use]
 pub fn published(mod_id: &str) -> crate::drift::Published {
     use crate::drift::Published;
-    let Some(id) = mod_id.strip_prefix(MOD_PREFIX) else {
+    if !mod_id.starts_with(MOD_PREFIX) {
         return Published::Unknown;
+    }
+    let paks = releases(mod_id);
+    if paks.is_empty() {
+        return Published::Gone;
+    }
+    Published::Current(paks.into_iter().map(revision).collect())
+}
+
+/// The pak a reset of `mod_id` reinstalls: the published pak whose
+/// [`revision`] is `version` (the choice the user picked), else the default
+/// (HUD++'s base pak, an option's own pak, else its first choice). `None`
+/// when the pack no longer publishes the mod.
+#[must_use]
+pub fn release_for(mod_id: &str, version: Option<&str>) -> Option<&'static Pak> {
+    let paks = releases(mod_id);
+    paks.iter()
+        .find(|p| version.is_some_and(|v| revision(p) == v))
+        .or_else(|| paks.first())
+        .copied()
+}
+
+fn releases(mod_id: &str) -> Vec<&'static Pak> {
+    let Some(id) = mod_id.strip_prefix(MOD_PREFIX) else {
+        return Vec::new();
     };
-    let paks: Vec<&Pak> = if id == HUD_ID {
+    if id == HUD_ID {
         hud().map_or_else(Vec::new, |h| {
             h.default_pak
                 .iter()
@@ -787,11 +811,7 @@ pub fn published(mod_id: &str) -> crate::drift::Published {
                     .chain(o.choices.iter().filter_map(|c| c.pak.as_ref()))
                     .collect()
             })
-    };
-    if paks.is_empty() {
-        return Published::Gone;
     }
-    Published::Current(paks.into_iter().map(revision).collect())
 }
 
 /// A pak the site built, recognised from the `addoninfo.txt` inside its VPK:

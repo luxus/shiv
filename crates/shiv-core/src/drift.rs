@@ -49,10 +49,23 @@ pub enum Drift {
 /// then a revision the source no longer lists is an update.
 #[must_use]
 pub fn drift(m: &InstalledMod, published: &Published) -> Drift {
+    state(
+        files_untouched(m),
+        m.sidecar.as_ref().and_then(|s| s.version.as_deref()),
+        published,
+    )
+}
+
+/// The drift from its two facts, for a caller that read the files on a
+/// worker ([`files_untouched`]) and asks the source elsewhere: whether the
+/// files are untouched (`None`: nothing to compare), and the revision the
+/// sidecar records. The order is [`drift`]'s.
+#[must_use]
+pub fn state(untouched: Option<bool>, version: Option<&str>, published: &Published) -> Drift {
     if *published == Published::Gone {
         return Drift::Retired;
     }
-    let Some(untouched) = files_untouched(m) else {
+    let Some(untouched) = untouched else {
         return Drift::Untracked;
     };
     if !untouched {
@@ -60,12 +73,7 @@ pub fn drift(m: &InstalledMod, published: &Published) -> Drift {
     }
     match published {
         Published::Current(revisions) => {
-            let current = m
-                .sidecar
-                .as_ref()
-                .and_then(|s| s.version.as_ref())
-                .is_some_and(|v| revisions.contains(v));
-            if current {
+            if version.is_some_and(|v| revisions.contains(v)) {
                 Drift::Pristine
             } else {
                 Drift::UpdateAvailable
