@@ -79,7 +79,7 @@ impl Deps {
 const GAME_RUNNING_TEXT: &str = "Deadlock is running. Close it, then apply again.";
 const CONVARS: &str = "ConVars";
 const COMPLOCK_TITLE: &str = "CompLock engine settings";
-const COMPLOCK_NOTE: &str = "From their site: cloth-off conflicts with mods that replace hero models. Their mod paks are not managed here.";
+const COMPLOCK_NOTE: &str = "From their site: their paks replace whole files and do not mix with QOL Lock and similar packs; cloth-off conflicts with mods that replace hero models. A HUD++ update can hide other mods' entries in its settings menu until those mods update.";
 /// Prefix of the mod ids Shiv gives the CompLock paks it installs: stable
 /// per option, so re-installing an option updates it in place through
 /// `install::install_files` on the same id (the Downloads rows and the
