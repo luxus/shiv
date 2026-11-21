@@ -229,9 +229,46 @@ run-to-run spread is loopback scheduling, not parse).
   and 0 model resets — a per-tick `set_vec` rebuild shows as 100 resets
   and 3000 row builds and fails. Numbers below.
 
-The one issue #4 item still open: the `perf.yml` job runs these gates
-and the two criterion suites on every push, but does not yet post the
-bench diff against the recorded baseline file.
+The `perf.yml` job runs these gates and the two criterion suites on
+every push; the bench diff it posts is graded by the policy below.
+
+### CI regression policy (issue #11)
+
+Every push (and dispatch) benches **two arms of one runner** and posts
+the diff to the run's step summary. A baseline persisted across runs —
+an `actions/cache` of `target/criterion`, or a scheduled artifact —
+would grade runner luck, not the push: GitHub's `ubuntu-latest` pool
+spans runner generations, and the logs of four green runs over
+identical bench code show `move_mod/25` anywhere between 860 µs and
+7.65 ms (9×) depending on which runner picked up the job. So each run
+resolves the push's comparison base (`github.event.before`; the parent
+commit when dispatched), checks it out, benches it with
+`--save-baseline push`, re-checks out the pushed tree and benches it
+with `--baseline-lenient push` — both arms back to back on the same
+machine, the A/B method the tables above were recorded with — and
+`scripts/bench_diff_summary.py` renders criterion's change lines into
+the summary table (per bench: base and push point estimates, the
+change, criterion's verdict).
+
+The gate **fails** a push only when criterion marks a bench
+"Performance has regressed." *and* the change point estimate exceeds
+**+25%**; every other movement reports. The threshold is calibrated by
+the no-op dispatch [44901062246](https://github.com/luxus/shiv/actions/runs/44901062246)
+(identical bench code in both arms): its worst statistically
+significant noise verdict was +10.3% (`set_pak/50`), while
+non-significant spikes reached +46.8% (`set_pak/25`, CI
+[−2.7% +46.8% +153.9%]) — requiring significance absorbs the wide-CI
+spikes, and +25% clears the significant ones. Demonstrated once on the
+throwaway branch `issue-11-bench-diff-gate`, run
+[44901820732](https://github.com/luxus/shiv/actions/runs/44901820732):
+a commit that made `group` parse every sidecar twice moved the three
+`group` benches +79–92% (all "Performance has regressed.") and failed
+the job, while the same run's noise — +36.5% on `move_mod/50` (not
+significant), +20.5% on `set_pak/25` (significant, under the line) —
+passed. A failure that looks like noise is re-dispatched by hand. The
+absolute baselines stay with these tables on the machines that
+recorded them; CI grades each push's direction, not the absolute
+number.
 
 ## Allocation ceilings — 2026-11-21, the dev workstation (issue #6)
 
