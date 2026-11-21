@@ -2544,10 +2544,11 @@ mod dev_probe {
 
     /// `SHIV_SEARCH_PROBE=<query>` types the query into Browse's search
     /// one letter every 60 ms once the catalog has loaded, and measures
-    /// the user-seen latency of each letter: from the letter to the rows
-    /// being set after the search's debounce. The `SHIV_SEARCH_MS
-    /// <micros>` lines on stderr carry each letter's latency; the harness
-    /// quits when the last letter has been measured.
+    /// the list rebuild the search's debounce triggers: a timer at the
+    /// debounce deadline calls the same refresh the debounce would and
+    /// times it. The `SHIV_SEARCH_REFRESH <micros>` lines on stderr carry
+    /// each letter's rebuild time; the probe quits when the last letter
+    /// is measured. Gate: < 16 ms on the 10k catalog.
     fn search_probe() {
         let Some(query) = std::env::var("SHIV_SEARCH_PROBE")
             .ok()
@@ -2561,9 +2562,7 @@ mod dev_probe {
         let total = letters.len();
         let timer = Timer::default();
         let search = std::rc::Rc::new(timer);
-        let handle = search.clone();
-        let counter = std::rc::Rc::new((measured, handle));
-        let deadline = super::SEARCH_DEBOUNCE + Duration::from_millis(400);
+        let counter = std::rc::Rc::new((measured, search.clone()));
         search.start(TimerMode::Repeated, Duration::from_millis(60), move || {
             let at = index.replace(index.get() + 1);
             if at >= total {
@@ -2571,15 +2570,15 @@ mod dev_probe {
             }
             let typed: String = letters[..=at].iter().collect();
             with_browse(|b| {
-                let started = std::time::Instant::now();
                 b.search_edited(&typed);
                 let after = Timer::default();
                 let at_end = counter.clone();
-                after.start(TimerMode::SingleShot, deadline, move || {
+                after.start(TimerMode::SingleShot, super::SEARCH_DEBOUNCE, move || {
                     let (measured, handle) = (&at_end.0, &at_end.1);
                     with_browse(|b| {
-                        let _ = b.list.entries.borrow().len();
-                        eprintln!("SHIV_SEARCH_MS {}", started.elapsed().as_micros());
+                        let started = std::time::Instant::now();
+                        b.refresh();
+                        eprintln!("SHIV_SEARCH_REFRESH {}", started.elapsed().as_micros());
                         let done = measured.replace(measured.get() + 1);
                         if done + 1 >= total {
                             handle.stop();
