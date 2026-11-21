@@ -2521,13 +2521,13 @@ mod dev_probe {
         scroll.start(TimerMode::Repeated, Duration::from_millis(8), move || {
             if ticks.replace(ticks.get() + 1) >= secs_as_ticks {
                 handle.stop();
-                slint::quit_event_loop();
+                let _ = slint::quit_event_loop();
                 return;
             }
             with_browse(|b| {
                 let Some(app) = b.weak.upgrade() else {
                     handle.stop();
-                    slint::quit_event_loop();
+                    let _ = slint::quit_event_loop();
                     return;
                 };
                 let position = slint::LogicalPosition::new(400.0, 400.0);
@@ -2582,7 +2582,7 @@ mod dev_probe {
                         let done = measured.replace(measured.get() + 1);
                         if done + 1 >= total {
                             handle.stop();
-                            slint::quit_event_loop();
+                            let _ = slint::quit_event_loop();
                         }
                     });
                 });
