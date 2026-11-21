@@ -1064,30 +1064,79 @@ fn installed_ids(locate: &Locate) -> HashSet<String> {
         .collect()
 }
 
-/// The registry rows Browse shows: one per installable listing of every
-/// added source, after its catalog. A failed registry shows nothing here;
-/// its error is the Sources banner.
-/// Every added source's installable mods, per source.
+/// The registry rows Browse shows, per added source: one per listing its
+/// catalog does not mark removed. A listing that cannot be installed (not
+/// available yet, no release, or refused) is still a row, marked "No
+/// download" with the reason, so a source never loses a mod silently. A
+/// failed registry shows nothing here; its error is the Sources banner.
 fn registry_entries() -> Vec<(shiv_core::registry::AddedSource, Vec<Entry>)> {
     crate::sources::catalogs()
         .into_iter()
         .map(|(source, listings)| {
             let entries = listings
                 .into_iter()
-                .filter(shiv_api::NativeListing::installable)
-                .filter_map(|l| registry_entry(&source, l))
+                .filter(|l| !l.removed)
+                .map(|l| registry_entry(&source, l))
                 .collect();
             (source, entries)
         })
         .collect()
 }
 
+/// Why a listing Browse shows cannot be installed.
+fn unavailable_reason(listing: &shiv_api::NativeListing) -> String {
+    if let Some(problem) = &listing.problem {
+        format!("Refused: {problem}")
+    } else if !listing.available {
+        "Not available yet".to_owned()
+    } else {
+        "No downloadable release".to_owned()
+    }
+}
+
+/// A listing Browse shows but cannot install: its title and the reason.
+fn unavailable_entry(
+    source: &shiv_core::registry::AddedSource,
+    listing: &shiv_api::NativeListing,
+) -> Entry {
+    let name = if listing.title.is_empty() {
+        listing.id.clone()
+    } else {
+        listing.title.clone()
+    };
+    Entry {
+        id: source.mod_id_of(&listing.id),
+        remote_id: String::new(),
+        name,
+        byline: format!(
+            "{} \u{b7} {}",
+            source.name,
+            listing.author.as_deref().unwrap_or("unknown author")
+        )
+        .into(),
+        stats: unavailable_reason(listing).into(),
+        updated: SharedString::default(),
+        thumb_url: listing.thumbnail_url().map(str::to_owned),
+        version: None,
+        downloadable: false,
+        nsfw: listing.nsfw.unwrap_or(false),
+        hero: listing.hero.clone(),
+        category: listing.content_type.clone(),
+        registry: None,
+    }
+}
+
 fn registry_entry(
     source: &shiv_core::registry::AddedSource,
     listing: shiv_api::NativeListing,
-) -> Option<Entry> {
-    let release = listing.release.clone()?;
-    let artifact = release.artifacts.first()?.clone();
+) -> Entry {
+    let installable = listing.installable();
+    let (Some(release), true) = (listing.release.clone(), installable) else {
+        return unavailable_entry(source, &listing);
+    };
+    let Some(artifact) = release.artifacts.first().cloned() else {
+        return unavailable_entry(source, &listing);
+    };
     let updated = listing
         .updated_at
         .as_deref()
@@ -1103,7 +1152,7 @@ fn registry_entry(
         artifact,
     };
     let (listing, install_release) = (&install.listing, &install.release);
-    Some(Entry {
+    Entry {
         id: source.mod_id_of(&listing.id),
         remote_id: String::new(),
         name: listing.title.clone(),
@@ -1126,7 +1175,7 @@ fn registry_entry(
         hero: listing.hero.clone(),
         category: listing.content_type.clone(),
         registry: Some(install),
-    })
+    }
 }
 
 /// Whether NSFW images are shown unblurred (the Browse switch; shared with
@@ -2171,10 +2220,7 @@ impl Browse {
         let entry = self
             .list
             .find(&install.source.mod_id_of(&install.listing.id))
-            .or_else(|| registry_entry(&install.source, install.listing.clone()));
-        let Some(entry) = entry else {
-            return;
-        };
+            .unwrap_or_else(|| registry_entry(&install.source, install.listing.clone()));
         let listing = install.listing.clone();
         let images: Vec<GalleryImage> = listing
             .images

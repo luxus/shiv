@@ -9,6 +9,8 @@ export struct SourceRow {
     id: string,
     name: string,
     descriptor: string,
+    /// Mod count, blocked mods, or why the entry needs adding again.
+    detail: string,
 }
 
 export global SourcesState {
@@ -35,7 +37,7 @@ component SourceCard inherits Rectangle {
     in property <SourceRow> item;
     callback removed();
 
-    height: 84px + 2 * Theme.s1;
+    height: (root.item.detail != "" ? 104px : 84px) + 2 * Theme.s1;
     background: Theme.raised;
     border-radius: Theme.radius-md;
     border-width: 1px;
@@ -65,6 +67,12 @@ component SourceCard inherits Rectangle {
             Text {
                 text: root.item.descriptor;
                 color: Theme.text-faint;
+                font-size: Theme.text-sm;
+                overflow: elide;
+            }
+            if root.item.detail != "": Text {
+                text: root.item.detail;
+                color: Theme.text-muted;
                 font-size: Theme.text-sm;
                 overflow: elide;
             }
