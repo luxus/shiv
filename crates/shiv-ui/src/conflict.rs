@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use shiv_core::addons;
-use shiv_core::game;
+
 use shiv_core::sidecar;
 use slint::{ComponentHandle, Weak};
 
@@ -216,7 +216,7 @@ fn swapped(app: &App, result: Result<(), String>) {
 }
 
 fn disable(ids: &[String], enable: Option<&str>) -> Result<(), String> {
-    if game::is_running() {
+    if crate::game_running() {
         return Err("Deadlock is running. Close it to swap mods.".into());
     }
     let paths = crate::locate_game().map_err(|e| crate::browse::game_error_text(&e))?;
@@ -249,7 +249,7 @@ fn disable(ids: &[String], enable: Option<&str>) -> Result<(), String> {
 
 /// Switch the mod `id` on when `enable`, then move it to the first place.
 fn enable_first(id: &str, enable: bool) -> Result<(), String> {
-    if game::is_running() {
+    if crate::game_running() {
         return Err("Deadlock is running. Close it to change mods.".into());
     }
     let paths = crate::locate_game().map_err(|e| crate::browse::game_error_text(&e))?;

@@ -12,7 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use shiv_api::{ApiError, Client, DownloadFile, ModDto, ModQuery, SortKey, apply_query};
-use shiv_core::game::{self, GameError, GamePaths};
+use shiv_core::game::{GameError, GamePaths};
 use shiv_core::install::{self, InstallError, ModMeta};
 use shiv_core::sidecar;
 use slint::{
@@ -963,7 +963,7 @@ fn run_install(
     let msg = Failure::Message;
     let paths = locate().map_err(|e| msg(game_error_text(&e)))?;
     // Checked before downloading too, so a long download is not wasted.
-    if game::is_running() {
+    if crate::game_running() {
         return Err(msg(install_error_text(&InstallError::GameRunning)));
     }
     let file = task.file.clone();
@@ -1038,7 +1038,8 @@ fn run_install(
         hero: task.hero,
         category: task.category,
     };
-    install::install(&dest, meta, &paths).map_err(|e| msg(install_error_text(&e)))?;
+    install::install_with(&dest, meta, &paths, crate::game_running)
+        .map_err(|e| msg(install_error_text(&e)))?;
     if fresh {
         let mods = sidecar::group(&paths.addons);
         let with = sidecar::conflicts_with(&mods, &mod_id, |id| kinds.get(id).cloned());

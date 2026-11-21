@@ -116,6 +116,21 @@ pub(crate) fn open_repair(app: &App) {
     app.global::<RepairState>().invoke_shown();
 }
 
+/// The game check of the screens without injected deps (Browse installs,
+/// conflict resolution). The unit tests run on machines where Deadlock may
+/// be open, so there it is pinned to "not running"; the screens with deps
+/// test the running case through their own `running`.
+pub(crate) fn game_running() -> bool {
+    #[cfg(test)]
+    {
+        false
+    }
+    #[cfg(not(test))]
+    {
+        shiv_core::game::is_running()
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     log::init();
     let result = run();
