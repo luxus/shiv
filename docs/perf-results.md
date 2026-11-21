@@ -13,7 +13,10 @@ path including the desktop entry and icon. Gates from
 | Idle RSS after 60 s more | 114.5 MB — no growth | leak gate: ±10 % | yes |
 | Idle CPU over 60 s | 0 ticks (`time 00:00:00`) | 0 ticks | yes |
 | Process start → first activity | ~40 ms (5 runs: 39–43 ms) | < 1.5 s cold | yes |
-| Store path size | 45 MB (binary ~34 MiB) | AppImage < 25 MB | yes (compressed) |
+| Store path size | 45 MB (binary ~34 MiB) | AppImage < 25 MB | yes |
+| 60 s full-list scroll (injected 25,000 px/s) | VmRSS 138 MB loaded → VmHWM 151 MB peak (+9.4 %) | post-scroll within 10 % of loaded | yes, 0.6 pp margin |
+| Search keystroke → list rebuilt | 3.3–3.4 ms steady, 6.6 ms first letter (11 letters, query `hazeskinmod`) | < 16 ms per keystroke | yes, ~4.8× margin |
+| AppImage size (release v0.2.0) | 19.7 MB | < 25 MB | yes |
 
 Commands (lea, one run each):
 
@@ -23,8 +26,18 @@ nix build github:luxus/shiv --no-link --print-out-paths   # the binary
 # start probe: poll RSS past 50 MB in a 10 ms loop, print elapsed ms
 ```
 
-Still to record on lea (issue #1): 60 s scroll peak (VmHWM), keystroke
-latency on the 10k catalog, AppImage size from a release build.
+Scroll and search run on a release build with `--features dev-probe`
+(the probes are committed, `SHIV_SCROLL_SECS` and `SHIV_SEARCH_PROBE`):
+
+```sh
+cargo build --release -p shiv-ui --features dev-probe
+SHIV_SCROLL_SECS=60 ./target/release/shiv    # then read VmRSS/VmHWM
+SHIV_SEARCH_PROBE=hazeskinmod ./target/release/shiv   # SHIV_SEARCH_REFRESH µs per letter
+```
+
+A raw cargo build needs the wayland libraries on `LD_LIBRARY_PATH` on
+NixOS (`nix path-info nixpkgs#wayland | grep -v -- -man` gives the lib
+path); the Nix flake package carries its own rpath.
 
 ---
 
