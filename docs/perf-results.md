@@ -249,3 +249,130 @@ fixture variance — temp-path lengths differ (`/tmp` on CI against a
 `cargo test --workspace` in CI with the observed number in the message;
 the author removes the allocation or raises the ceiling with a written
 reason (what the bytes are, why the flow needs them).
+
+## Profile experiments (issue #8) — 2026-11-21, the dev workstation
+
+Machine: emily, the same one as the bench baselines above (Apple M1 Pro,
+arm64, 10 cores, 16 GB RAM, macOS 27.3, APFS system disk; Apple `cc`
+drives the final link, as `.cargo/config.toml` pins). **Not lea** — the
+Linux AppImage gate records its own row when issue #1 runs there. Tree:
+main @ `ae0068f`, measured in a scratch worktree pinned to a clean
+checkout so no in-flight edits could mix into the builds; each experiment
+edited only `[profile.release]` keys in `Cargo.toml` and restored them
+with `git checkout` afterwards (every restore rebuilt the byte-identical
+reference binary). `CC`/`CXX` pointed at `/usr/bin/cc` for every command,
+as the README requires on macOS.
+
+Reference row — the committed profile (fat LTO, opt-level 3,
+codegen-units 1, `panic = "unwind"`, `strip = true`):
+
+| | Value |
+|---|---|
+| `cargo build --release -p shiv-ui`, fresh target dir | 351.6 s wall |
+| Binary size | 33,262,176 bytes (31.7 MiB) |
+| sha256 | `f9203fd8722067ebb5becc30b367d1038406591bbfd3e823cd119b249e79b1a1` |
+| `nm` entries on the binary | 380 total: 1 defined (`__mh_execute_header`), 379 undefined dylib imports |
+
+Method notes:
+
+- Sizes compare; a sha256 identifies. Apple `ld` stamps a fresh `LC_UUID`
+  into every link, so two links of the same clean tree and profile (main
+  tree at `1c08c38`, twice) came out equal in size and different in
+  sha256. A restored profile rebuilds the byte-identical artifact because
+  cargo serves it from the fingerprint cache instead of relinking.
+- Link time = `touch crates/shiv-ui/src/main.rs` + a timed
+  `cargo build --release -p shiv-ui`, two runs per arm against the same
+  warm dep cache, with the output checked to recompile `shiv-ui` only.
+  Under fat LTO this step carries the whole-program codegen, so it is the
+  honest per-change build cost.
+- Cold start = the probe from the 2026-11-10 method (process start → RSS
+  past 50 MB, `ps` every 10 ms), five runs per arm, with `HOME`,
+  `XDG_CACHE_HOME` and `XDG_CONFIG_HOME` pointed at a scratch folder and
+  `SHIV_API_URL` at an unreachable port, so no Steam, game folder or
+  network is touched. Only the back-to-back alternating rounds below
+  compare: the probe's absolute median drifted between 157 and 204 ms
+  over the session (machine state, not binary).
+
+### `panic = "abort"` (measured only; the committed key stays unwind)
+
+| | unwind (committed) | abort | Delta |
+|---|---|---|---|
+| Binary size | 33,262,176 | 29,708,672 | −3,553,504 (−10.7 %) |
+| Cold start, median of 5, round 1 / 2 | 201.5 / 202.1 ms | 196.8 / 195.1 ms | ~6 ms, below the 40–60 ms run-to-run spread |
+| A worker panics | reported back as `Err`, app keeps running | SIGABRT, the whole app dies | the design cost |
+
+The worker-panic row is `a_panicking_worker_still_reports_back` played
+out in release: a standalone program shaped like `spawn_worker` (named
+thread, `catch_unwind`, report back to the main thread), built with the
+same Apple-cc link the repo pins. Under unwind the panic reaches the
+caller as `Err` and the process exits 0. Under abort the panic hook
+prints and the process dies with SIGABRT (exit 134) before the
+report-back runs — for Shiv, any worker panic would kill the app instead
+of showing "Shiv hit an internal error and stopped this task". The abort
+binary itself starts normally (the cold-start probe ran on it, 15/15
+starts).
+
+Found while building that demo: the macOS linker pin is load-bearing for
+the unwind design. The same program linked with the nix GCC `cc`
+(GCC 16.2.0, first on `PATH` outside the repo config) instead of Apple
+`cc` fails to unwind at all — every panic dies with `fatal runtime
+error: failed to initiate panic, error 5` — so without
+`.cargo/config.toml` pinning `/usr/bin/cc`, release builds already
+behave like panic=abort, only with a worse message.
+
+### LTO: fat (committed) vs thin
+
+| | fat (`lto = true`) | thin (`lto = "thin"`) | Delta |
+|---|---|---|---|
+| Binary size | 33,262,176 | 35,305,024 | +2,042,848 (+6.1 %) |
+| Rebuild after touching `main.rs`, 2 runs | 211.4 / 215.4 s | 136.3 / 141.3 s | thin ~75 s faster (−35 %) |
+| Full rebuild, one run each | 351.6 s (fresh target dir) | 222.4 s (warm caches) | not comparable: different cache states |
+
+### `strip = true` (committed) vs symbols kept
+
+| | `strip = true` | no strip key (cargo's release default keeps the symbol table) | Delta |
+|---|---|---|---|
+| Binary size | 33,262,176 | 37,408,144 | +4,145,968 (+12.5 %) to keep symbols |
+| `nm` entries | 380 (1 defined) | 30,858 (30,419 defined) | the symbol table is what strip removes |
+| `RUST_BACKTRACE=1` on a panic | `stack backtrace:` with nothing resolvable | named frames (`__rustc::rust_begin_unwind`, `core::panicking::panic_fmt`, …) | the crash-report loss |
+
+The backtrace row was demonstrated on the standalone panic program built
+both ways. What the release path actually loses is only the frame names:
+the panic hook (`log.rs`) records the panic text and `file:line:col`,
+both of which travel in the panic payload rather than the symbol table,
+so the log line survives stripping.
+
+### `-Z build-std` with `panic_immediate_abort` — not measured, nightly-gated
+
+No nightly toolchain exists on this machine: `rustup` is not installed
+(`rustup: command not found`), and the quick path the issue named,
+`nix shell nixpkgs#rustc-nightly`, does not exist for aarch64-darwin
+(`flake 'flake:nixpkgs' does not provide attribute … 'rustc-nightly'`);
+the only toolchains present are the stable 1.99.0 system cargo and the
+flake's pinned 1.99.1. Next step, if it ever earns one: a scratch flake
+reusing the repo's locked rust-overlay input to expose
+`rust-bin.nightly.latest.aarch64-apple-darwin` with the `rust-src`
+extension, then `cargo +nightly build -Z build-std=std,panic_abort
+-Z build-std-features=panic_immediate_abort`. Bounded before it runs: it
+requires panic=abort, so it inherits the worker-panic cost above, and
+its size win is bounded by the abort arm's −3.55 MB — on top of plain
+abort it removes only the panic-messaging machinery (expected a few
+hundred KB; estimate, not a measurement).
+
+### Verdicts
+
+- **`panic` stays `"unwind"`.** Abort wins 3.55 MB (10.7 %) and nothing
+  else — cold start is a tie — while turning every worker panic into a
+  whole-app crash that never shows the error message the `spawn_worker`
+  contract promises. Adopting it means redesigning worker isolation first
+  (out-of-process workers, or proof that no worker body can panic) and
+  re-measuring; that is a separate decision.
+- **LTO stays fat.** Thin links ~75 s faster per change but ships
+  2.04 MB more; the recorded gate is binary size, and link time is a
+  developer-only cost.
+- **`strip = true` stays.** Keeping symbols costs 4.15 MB (+12.5 %) and
+  nothing in the release path needs them; only `RUST_BACKTRACE` frame
+  names are lost, and the panic log line carries its own location.
+- **`build-std`/`panic_immediate_abort`: not measured, nightly-gated**
+  (no nightly on the machine). It is bounded by the abort arm's win and
+  cost, so it only matters if the abort question reopens.
