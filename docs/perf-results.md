@@ -12,7 +12,7 @@ path including the desktop entry and icon. Gates from
 | Idle RSS, catalog loaded (15 s) | 114.5 MB | < 150 MB | yes |
 | Idle RSS after 60 s more | 114.5 MB — no growth | leak gate: ±10 % | yes |
 | Idle CPU over 60 s | 0 ticks (`time 00:00:00`) | 0 ticks | yes |
-| Process start → first activity | ~40 ms (5 runs: 39–43 ms) | < 1.5 s cold | yes |
+| Process start → first activity | warm 172–198 ms, cold 387–529 ms (3 runs each; the earlier ~40 ms probe read RSS past 50 MB before Wayland mapping settled — this run's two-threshold probe replaces it) | < 1.5 s cold, < 600 ms warm | yes, ~3x each |
 | Store path size | 45 MB (binary ~34 MiB) | AppImage < 25 MB | yes |
 | 60 s full-list scroll (injected 25,000 px/s) | VmRSS 138 MB loaded → VmHWM 151 MB peak (+9.4 %) | post-scroll within 10 % of loaded | yes, 0.6 pp margin |
 | Search keystroke → list rebuilt | 3.3–3.4 ms steady, 6.6 ms first letter (11 letters, query `hazeskinmod`) | < 16 ms per keystroke | yes, ~4.8× margin |
@@ -23,8 +23,17 @@ Commands (lea, one run each):
 ```sh
 nix build github:luxus/shiv --no-link --print-out-paths   # the binary
 # idle RSS + CPU: start, `ps -o rss=,time= -p $PID` at 15 s and 60 s
-# start probe: poll RSS past 50 MB in a 10 ms loop, print elapsed ms
+# start probe (warm/cold): poll RSS past 60 MB in a 2 ms loop, print elapsed
+#   ms; cold after `sudo sh -c "echo 3 > /proc/sys/vm/drop_caches"`, warm as
+#   the re-run
 ```
+
+The first warm-start probe run measured 5.4 s once and timed out five
+times at RSS > 100 MB: a single threshold conflates process start with
+catalog load (the network catalog settles below the baseline's 114.5 MB
+on quick re-runs — 97–99 MB observed). The recorded probe uses RSS > 60
+MB (the app running, Wayland mapped) for both warm and cold; the loaded
+state is already covered by the idle-RSS rows above.
 
 Scroll and search run on a release build with `--features dev-probe`
 (the probes are committed, `SHIV_SCROLL_SECS` and `SHIV_SEARCH_PROBE`):

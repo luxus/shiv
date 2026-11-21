@@ -35,7 +35,7 @@ Wayland), the linked run 2026-11-20, the Nix flake package at
 | Memory — idle, catalog loaded | < 150 MB RSS | 114.5 MB | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Memory — idle, 60 s later | no leak while idle (±10 %) | 114.5 MB, no growth | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Battery — idle CPU | 0 ticks in 10 min | 0 ticks over 60 s | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
-| Start-up — process start → first activity | < 1.5 s cold, < 600 ms warm | ~40 ms (5 runs: 39–43 ms) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Start-up — process start → first activity | < 1.5 s cold, < 600 ms warm | warm 172–198 ms, cold 387–529 ms (3 runs each) | [lea, 2026-11-21](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Binary — size | AppImage < 25 MB | 45 MB store path (binary ~34 MiB) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Memory — 60 s full-list scroll | post-scroll within 10 % of loaded | 138 MB loaded → 151 MB peak (+9.4 %) | [lea, 2026-11-21](docs/perf-results.md#scroll-peak-experiments-lea-2026-11-21) |
 | Scroll — frame budget while flinging | no frame > 16 ms at 144 Hz | not yet recorded (needs a frame-tap probe) | [issue #4](https://github.com/luxus/shiv/issues/4) |
