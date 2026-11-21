@@ -1,0 +1,57 @@
+name: CompLock watch
+
+# Daily: fetch deadlockconfig.com's pack-data, embed their current
+# gameinfo.gi and its build number, and commit when they changed. The
+# site is the moving source by design; the core test on the asset
+# (complock::tests) is the parse gate.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the site's pack-data
+        run: |
+          python3 - << 'PY'
+          import json, re, urllib.request, pathlib
+
+          req = urllib.request.Request(
+              "https://deadlockconfig.com/",
+              headers={"User-Agent": "shiv-complock-watch"},
+          )
+          html = urllib.request.urlopen(req, timeout=30).read().decode()
+          m = re.search(r'<script[^>]*id="pack-data"[^>]*>(.*?)</script>', html, re.S)
+          assert m, "the site carries no pack-data script"
+          data = json.loads(m.group(1))
+
+          gameinfo = data["gameinfo"]
+          game = str(data["game"])
+          assert game.isdigit() and game, "the site names no game build"
+          assert "ConVars" in gameinfo and "SearchPaths" in gameinfo, "not a gameinfo"
+
+          pathlib.Path("crates/shiv-core/assets/complock-gameinfo.gi").write_text(gameinfo)
+          meta = {"game": game, "fetched": "$(date -u +%F)"}
+          pathlib.Path("crates/shiv-core/assets/complock.json").write_text(
+              json.dumps(meta, indent=2) + "\n"
+          )
+          print(f"pack-data build {game}, {len(gameinfo)} bytes")
+          PY
+      - name: Commit when the build changed
+        run: |
+          git config user.name "shiv-complock-watch"
+          git config user.email "actions@users.noreply.github.com"
+          if git diff --quiet -- crates/shiv-core/assets; then
+            echo "The embedded CompLock gameinfo is current."
+            exit 0
+          fi
+          game=$(python3 -c "import json; print(json.load(open('crates/shiv-core/assets/complock.json'))['game'])")
+          git add crates/shiv-core/assets
+          git commit -m "chore(complock): gameinfo build ${game} (deadlockconfig.com)"
+          git push
