@@ -20,6 +20,7 @@ jobs:
       - name: Fetch the site's pack-data
         run: |
           python3 - << 'PY'
+          import datetime
           import json, re, urllib.request, pathlib
 
           req = urllib.request.Request(
@@ -37,7 +38,10 @@ jobs:
           assert "ConVars" in gameinfo and "SearchPaths" in gameinfo, "not a gameinfo"
 
           pathlib.Path("crates/shiv-core/assets/complock-gameinfo.gi").write_text(gameinfo)
-          meta = {"game": game, "fetched": "$(date -u +%F)"}
+          meta = {
+              "game": game,
+              "fetched": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
+          }
           pathlib.Path("crates/shiv-core/assets/complock.json").write_text(
               json.dumps(meta, indent=2) + "\n"
           )
