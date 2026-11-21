@@ -502,9 +502,17 @@
 
 	ConVars
 	{
-		"cl_phys_enabled" "true"
+		// ---- Ragdolls, physics and cloth ---------------------------------------------------------------------
+		// Bodies don't ragdoll when they die and breakable props break without spawning pieces. Cloth simulation
+		// stays on (the Pack Builder's cloth option changes it).
 		"cl_disable_ragdolls" "true"
+		"cloth_update" "true"
+		"props_break_max_pieces_perframe" "0"
 
+		// ---- Animation: inverse kinematics and foot locking off ----------------------------------------------
+		// Inverse kinematics makes feet and hands adapt to slopes, steps and targets; foot locking keeps planted feet
+		// from sliding. Both are skipped, along with the slow-down on slopes, facial morphs and morph normal
+		// smoothing. Bones are computed for a model's current level of detail only.
 		"ik_final_fixup_enable" "0"
 		"ik_constraints_enabled" "false"
 		"ik_debug_dogleg3bone_enabled" "false"
@@ -522,21 +530,39 @@
 		"animgraph_footlock_trace_ground_enabled" "false"
 		"animgraph_footlock_use_hip_shift" "false"
 		"animgraph_slowdownonslopes_enabled" "false"
+		"r_morphing_enabled" "false"
+		"r_smooth_morph_normals" "0"
+		"skeleton_instance_lod_optimization" "true"
 
-		"cl_generate_postdataupdatepreserved" "false"
-		"panorama_min_comp_layer_cache_cost" "0"
-		"panorama_panel_occlusion" "0"
-		"citadel_damage_text_cumulative_mode" "1"
-		"cloth_update" "true"
+		// ---- View distance and camera ------------------------------------------------------------------------
+		// Far clip distance and map extents (nothing past them is drawn), the aspect ratio override (it sets the field
+		// of view; the Pack Builder's slider writes it), then the hero camera: no wobble, no soft wall collision,
+		// how far overhead health bars show, and models in front of the camera fading out fully. The view model
+		// lines are for a first-person model Deadlock doesn't draw.
 		"r_farz" "7000"
 		"r_mapextents" "7000"
 		"r_aspectratio" "2.15"
+		"citadel_camera_use_vmdl_flatten_horizontal" "false"
+		"citadel_camera_wobble_disable" "true"
+		"r_citadel_clip_sphere_min_opacity" "0"
+		"citadel_camera_height" "0"
+		"citadel_camera_listening_offset" "-1"
+		"citadel_camera_pitch_default" "0"
+		"citadel_camera_see_distance_max" "7000"
+		"citadel_camera_soft_collision" "0"
+		"citadel_camera_soft_collision_multi_thread" "0"
+		"rpg_camera_yaw" "0"
+		"default_fov" "0"
+		"viewmodel_fov" "0"
+		"r_drawviewmodel" "false"
 
+		// ---- World detail: textures, decals, grass, clutter, wind, ropes and hair ----------------------------
+		// Texture memory budget and bilinear filtering, low-resolution character decals, and the decoration turned
+		// off or down: grass, ground clutter, wind on grass and trees, decorative ropes and cables (zip lines aren't
+		// affected) and hair. Also the 3D skybox on monitor screens and motion vectors for instanced meshes.
 		"r_texture_budget_threshold" "0.7"
 		"r_texture_budget_update_period" "0.5"
 		"r_texturefilteringquality" "0"
-		"props_break_max_pieces_perframe" "0"
-		"cl_show_splashes" "0"
 		"r_character_decal_resolution" "4"
 		"sc_clutter_enable" "false"
 		"r_world_wind_strength" "0"
@@ -548,48 +574,51 @@
 		"r_character_decal_monitor_render_res" "64"
 		"r_hair_indirect_transmittance" "false"
 		"r_haircull_percent" "100"
-		"r_impacts_alt_orientation" "false"
 		"r_monitor_3dskybox" "0"
-		"r_morphing_enabled" "false"
 		"r_ropetranslucent" "false"
-		"r_smooth_morph_normals" "0"
 		"r_world_wind_frequency_grass" "0"
 		"r_world_wind_frequency_trees" "0"
 		"rope_collide" "0"
 		"rope_wind_dist" "0"
 		"sc_clutter_density_full_size" "0.5"
 		"sc_clutter_density_none_size" "1"
-		"fx_drawmetalspark" "false"
 		"wind_system_default_resolution_xy" "0"
 		"wind_system_temporal_smoothing" "false"
-		"skeleton_instance_lod_optimization" "true"
 		"sc_instanced_mesh_motion_vectors" "0"
 
+		// ---- Effects and particles ---------------------------------------------------------------------------
+		// Water splashes and metal sparks off, standard impact decal orientation.
+		"cl_show_splashes" "0"
+		"r_impacts_alt_orientation" "false"
+		"fx_drawmetalspark" "false"
+
+		// ---- Outlines ----------------------------------------------------------------------------------------
+		// Trooper outline and glow on; glow on guardians, walkers and the patron off.
 		"citadel_trooper_glow_disabled" "0"
 		"citadel_trooper_outline_enabled" "1"
 		"citadel_boss_glow_disabled" "1"
 
+		// ---- HUD and UI --------------------------------------------------------------------------------------
+		// The UI's layer cache (every unchanged layer stays cached, unused ones for 4 seconds), panel occlusion off
+		// (HUD++'s 30 Hz repaint blinks with it on), the memory limit of the UI's script engine, damage numbers as
+		// running totals, the size of the incoming-damage direction markers and how often the action prompt refreshes.
+		"panorama_min_comp_layer_cache_cost" "0"
+		"panorama_panel_occlusion" "0"
+		"citadel_damage_text_cumulative_mode" "1"
 		"panorama_comp_layer_lru_lifetime" "4"
-		
 		"v8_maximum_heap_size_mb" "1024"
-		"citadel_camera_use_vmdl_flatten_horizontal" "false"
-		"citadel_camera_wobble_disable" "true"
-		"r_citadel_clip_sphere_min_opacity" "0"
-		"citadel_camera_height" "0"
-		"citadel_camera_listening_offset" "-1"
-		"citadel_camera_pitch_default" "0"
-		"citadel_camera_see_distance_max" "7000"
-		"citadel_camera_soft_collision" "0"
-		"citadel_camera_soft_collision_multi_thread" "0"
-		"rpg_camera_yaw" "0"
 		"citadel_damage_indicator_height" "10"
 		"citadel_damage_indicator_radius" "1"
 		"citadel_damage_indicator_width" "10"
 		"citadel_action_refresh_interval" "0.11"
 		"cc_captiontrace" "0"
-		"default_fov" "0"
-		"viewmodel_fov" "0"
-		"r_drawviewmodel" "false"
+
+		// ---- Entity updates ----------------------------------------------------------------------------------
+		// Update handlers for nearby entities that didn't change are skipped.
+		"cl_generate_postdataupdatepreserved" "false"
+
+		// ---- Audio -------------------------------------------------------------------------------------------
+		// The dynamic mix's "damage you are looking at" value has no hold and no fade.
 		"audio_viewing_damage_decay_time" "0"
 		"audio_viewing_damage_hold_time" "0"
 

@@ -147,11 +147,11 @@
     }
    ],
    "updated": {
-    "date": "2026-11-20",
-    "text": "20 Nov",
-    "long": "20 Nov 2026",
+    "date": "2026-11-21",
+    "text": "21 Nov",
+    "long": "21 Nov 2026",
     "new": true,
-    "href": "/docs/changelog/#cl-2026-11-20-hud"
+    "href": "/docs/changelog/#cl-2026-11-21-hud"
    }
   },
   {
@@ -336,7 +336,7 @@
     "date": "2026-11-20",
     "text": "20 Nov",
     "long": "20 Nov 2026",
-    "new": true,
+    "new": false,
     "href": "/docs/changelog/#cl-2026-11-20-cloth"
    }
   },
@@ -362,7 +362,7 @@
     "date": "2026-11-20",
     "text": "20 Nov",
     "long": "20 Nov 2026",
-    "new": true,
+    "new": false,
     "href": "/docs/changelog/#cl-2026-11-20-ragdolls"
    }
   },
@@ -388,7 +388,7 @@
     "date": "2026-11-20",
     "text": "20 Nov",
     "long": "20 Nov 2026",
-    "new": true,
+    "new": false,
     "href": "/docs/changelog/#cl-2026-11-20-hpbars"
    }
   },
@@ -421,10 +421,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5865409,
-     "crc": 2753229676,
-     "csize": 849244,
-     "url": "/dl/pack/hud.3d9d21a660.z"
+     "size": 5900280,
+     "crc": 1081155961,
+     "csize": 852713,
+     "url": "/dl/pack/hud.1e4e51c675.z"
     }
    ]
   },
@@ -434,10 +434,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5866805,
-     "crc": 2361572882,
-     "csize": 849536,
-     "url": "/dl/pack/hud_nodamage.54d037c6e0.z"
+     "size": 5901676,
+     "crc": 674578,
+     "csize": 853021,
+     "url": "/dl/pack/hud_nodamage.afed4e5839.z"
     }
    ]
   },
@@ -447,10 +447,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5865723,
-     "crc": 209910849,
-     "csize": 849376,
-     "url": "/dl/pack/hud_vanilla.2997287707.z"
+     "size": 5900594,
+     "crc": 881804807,
+     "csize": 852842,
+     "url": "/dl/pack/hud_vanilla.1d6d7ec55a.z"
     }
    ]
   },
