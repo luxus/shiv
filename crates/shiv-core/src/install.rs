@@ -1239,51 +1239,7 @@ pub fn replace_local_with(
     old.sort_by(|a, b| {
         (a.pak.unwrap_or(u32::MAX), &a.file).cmp(&(b.pak.unwrap_or(u32::MAX), &b.file))
     });
-    if old.len() != staged.len() {
-        return Err(InstallError::VpkCountMismatch {
-            old: old.len(),
-            new: staged.len(),
-        });
-    }
-
-    // Plan everything before the first move.
-    let mut place: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut retire: Vec<PathBuf> = Vec::new();
-    let mut dir_names: Vec<String> = Vec::new();
-    for (new, old) in staged.iter().zip(&old) {
-        let dir = old.file.parent().ok_or(InstallError::NotLocal)?;
-        let name = old
-            .file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or(InstallError::NotLocal)?;
-        let enabled_name = name.strip_suffix(DISABLED_EXT).unwrap_or(name);
-        if !is_plain_vpk_name(enabled_name) {
-            return Err(InstallError::NotLocal);
-        }
-        let suffix = if old.enabled { "" } else { DISABLED_EXT };
-        place.push((
-            new.file.clone(),
-            dir.join(format!("{enabled_name}{suffix}")),
-        ));
-        if !new.chunks.is_empty() {
-            // Chunk files are named after the pak number.
-            let Some(number) = old.pak else {
-                return Err(InstallError::UnsafePath(format!(
-                    "{enabled_name} has no pak number for the new chunk files"
-                )));
-            };
-            for (digits, chunk) in &new.chunks {
-                place.push((
-                    chunk.clone(),
-                    dir.join(format!("pak{number:02}_{digits}.vpk{suffix}")),
-                ));
-            }
-        }
-        dir_names.push(enabled_name.to_owned());
-        retire.push(old.file.clone());
-        retire.extend(old.chunks.iter().cloned());
-    }
+    let plan = plan_replacement(&staged, &old)?;
 
     let id = match &target.sidecar {
         Some(sc) => sc.mod_id.clone(),
@@ -1303,7 +1259,7 @@ pub fn replace_local_with(
         }
         let _ = fs::remove_dir(&backup);
     };
-    for from in &retire {
+    for from in &plan.retire {
         let Some(name) = from.file_name() else {
             continue;
         };
@@ -1314,7 +1270,7 @@ pub fn replace_local_with(
         }
         retired.push((from.clone(), to));
     }
-    for (from, to) in &place {
+    for (from, to) in &plan.place {
         if let Err(e) = move_into_place(from, to) {
             undo(&retired, &placed);
             return Err(e);
@@ -1327,7 +1283,7 @@ pub fn replace_local_with(
         sc.source = source;
         sc
     } else {
-        let mut vpks = dir_names;
+        let mut vpks = plan.dir_names;
         vpks.sort();
         Sidecar {
             mod_id: sidecar::new_local_id(addons_dir),
@@ -1350,6 +1306,70 @@ pub fn replace_local_with(
         sidecar: sc,
         backup,
     })
+}
+
+/// The moves one replacement makes: the staged files into the slots the old
+/// files vacate, the old files into the backup, and the enabled names the
+/// new sidecar lists.
+struct ReplacementPlan {
+    place: Vec<(PathBuf, PathBuf)>,
+    retire: Vec<PathBuf>,
+    dir_names: Vec<String>,
+}
+
+/// The swap plan pairing each staged VPK with the old slot it takes over,
+/// or why no safe pairing exists. `old` is sorted by pak number and name,
+/// matching the staged order.
+fn plan_replacement(
+    staged: &[StagedVpk],
+    old: &[&addons::InstalledVpk],
+) -> Result<ReplacementPlan, InstallError> {
+    if old.len() != staged.len() {
+        return Err(InstallError::VpkCountMismatch {
+            old: old.len(),
+            new: staged.len(),
+        });
+    }
+    let mut plan = ReplacementPlan {
+        place: Vec::new(),
+        retire: Vec::new(),
+        dir_names: Vec::new(),
+    };
+    for (new, old) in staged.iter().zip(old) {
+        let dir = old.file.parent().ok_or(InstallError::NotLocal)?;
+        let name = old
+            .file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or(InstallError::NotLocal)?;
+        let enabled_name = name.strip_suffix(DISABLED_EXT).unwrap_or(name);
+        if !is_plain_vpk_name(enabled_name) {
+            return Err(InstallError::NotLocal);
+        }
+        let suffix = if old.enabled { "" } else { DISABLED_EXT };
+        plan.place.push((
+            new.file.clone(),
+            dir.join(format!("{enabled_name}{suffix}")),
+        ));
+        if !new.chunks.is_empty() {
+            // Chunk files are named after the pak number.
+            let Some(number) = old.pak else {
+                return Err(InstallError::UnsafePath(format!(
+                    "{enabled_name} has no pak number for the new chunk files"
+                )));
+            };
+            for (digits, chunk) in &new.chunks {
+                plan.place.push((
+                    chunk.clone(),
+                    dir.join(format!("pak{number:02}_{digits}.vpk{suffix}")),
+                ));
+            }
+        }
+        plan.dir_names.push(enabled_name.to_owned());
+        plan.retire.push(old.file.clone());
+        plan.retire.extend(old.chunks.iter().cloned());
+    }
+    Ok(plan)
 }
 
 /// A fresh `<addons>/.shiv/backup/<unix secs>-<id>[-n]` directory.
@@ -1414,4 +1434,113 @@ fn vpk_paths(file: &Path) -> BTreeSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn old_vpk(
+        file: &str,
+        pak: Option<u32>,
+        enabled: bool,
+        chunks: &[&str],
+    ) -> addons::InstalledVpk {
+        addons::InstalledVpk {
+            file: PathBuf::from(file),
+            pak,
+            enabled,
+            chunks: chunks.iter().map(PathBuf::from).collect(),
+        }
+    }
+
+    fn staged_vpk(file: &str, chunks: &[&str]) -> StagedVpk {
+        let parent = Path::new(file)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        StagedVpk {
+            file: PathBuf::from(file),
+            original: None,
+            sort_name: file.to_ascii_lowercase(),
+            chunks: chunks
+                .iter()
+                .map(|digits| ((*digits).to_owned(), parent.join(format!("{digits}.vpk"))))
+                .collect(),
+        }
+    }
+
+    fn borrowed(owned: &[addons::InstalledVpk]) -> Vec<&addons::InstalledVpk> {
+        owned.iter().collect()
+    }
+
+    #[test]
+    fn plan_replacement_keeps_the_slot_the_suffix_and_the_chunk_names() {
+        let owned_old = [old_vpk(
+            "/game/addons/pak02_dir.vpk.disabled",
+            Some(2),
+            false,
+            &["/game/addons/pak02_000.vpk.disabled"],
+        )];
+        let old: Vec<&addons::InstalledVpk> = owned_old.iter().collect();
+        let staged = vec![staged_vpk("/stage/skin.vpk", &["000"])];
+
+        let plan = plan_replacement(&staged, &old).unwrap();
+
+        assert_eq!(
+            plan.place,
+            vec![
+                (
+                    PathBuf::from("/stage/skin.vpk"),
+                    PathBuf::from("/game/addons/pak02_dir.vpk.disabled"),
+                ),
+                (
+                    PathBuf::from("/stage/000.vpk"),
+                    PathBuf::from("/game/addons/pak02_000.vpk.disabled"),
+                ),
+            ],
+            "the staged file and its chunks land in the old slots, disabled suffix kept"
+        );
+        assert_eq!(
+            plan.retire,
+            vec![
+                PathBuf::from("/game/addons/pak02_dir.vpk.disabled"),
+                PathBuf::from("/game/addons/pak02_000.vpk.disabled"),
+            ],
+            "the old file and its chunks retire"
+        );
+        assert_eq!(
+            plan.dir_names,
+            vec!["pak02_dir.vpk"],
+            "the sidecar lists the enabled name"
+        );
+    }
+
+    #[test]
+    fn plan_replacement_refuses_what_it_cannot_name_safely() {
+        let old_of = |file: &str, pak: Option<u32>| vec![old_vpk(file, pak, true, &[])];
+
+        let not_a_vpk = old_of("/game/addons/pak02_dir.txt", Some(2));
+        assert!(matches!(
+            plan_replacement(&[staged_vpk("/stage/skin.vpk", &[])], &borrowed(&not_a_vpk)),
+            Err(InstallError::NotLocal)
+        ));
+
+        let no_pak_number = old_of("/game/addons/skin.vpk", None);
+        let with_chunks = vec![staged_vpk("/stage/skin.vpk", &["001"])];
+        assert!(matches!(
+            plan_replacement(&with_chunks, &borrowed(&no_pak_number)),
+            Err(InstallError::UnsafePath(_))
+        ));
+
+        let one_slot = old_of("/game/addons/skin.vpk", None);
+        let two_staged = vec![
+            staged_vpk("/stage/a.vpk", &[]),
+            staged_vpk("/stage/b.vpk", &[]),
+        ];
+        assert!(matches!(
+            plan_replacement(&two_staged, &borrowed(&one_slot)),
+            Err(InstallError::VpkCountMismatch { old: 1, new: 2 })
+        ));
+    }
 }
