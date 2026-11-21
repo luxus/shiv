@@ -2444,6 +2444,7 @@ impl Browse {
 #[cfg(any(debug_assertions, feature = "dev-probe"))]
 mod dev_probe {
     use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
     use std::time::Duration;
 
     use slint::Timer;
@@ -2452,7 +2453,7 @@ mod dev_probe {
 
     thread_local! {
         static DONE: Cell<bool> = const { Cell::new(false) };
-        static TIMERS: RefCell<Vec<Timer>> = const { RefCell::new(Vec::new()) };
+        static TIMERS: RefCell<Vec<Rc<Timer>>> = const { RefCell::new(Vec::new()) };
     }
 
     fn after(secs: u64, f: impl FnOnce(&Browse) + 'static) {
@@ -2467,13 +2468,14 @@ mod dev_probe {
                 }
             },
         );
-        TIMERS.with(|t| t.borrow_mut().push(timer));
+        TIMERS.with(|t| t.borrow_mut().push(Rc::new(timer)));
     }
 
     pub(super) fn catalog_loaded() {
         if DONE.with(|d| d.replace(true)) {
             return;
         }
+        scroll_probe();
         let Some(id) = std::env::var("SHIV_OPEN_MOD")
             .ok()
             .filter(|v| !v.is_empty())
@@ -2496,6 +2498,47 @@ mod dev_probe {
         if let Some(secs) = close {
             after(open + secs, Browse::close_detail);
         }
+    }
+
+    /// `SHIV_SCROLL_SECS=<s>` scrolls the Browse list for s seconds: an
+    /// 8 ms timer injects `PointerScrolled` over the window, 200 logical
+    /// px per event (~25,000 px/s), then quits the loop so a harness can
+    /// read peak and settled memory around the run.
+    fn scroll_probe() {
+        use slint::ComponentHandle;
+        let Some(secs) = std::env::var("SHIV_SCROLL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        else {
+            return;
+        };
+        let secs_as_ticks = secs * 125;
+        let ticks = std::cell::Cell::new(0u64);
+        let timer = Timer::default();
+        let scroll = std::rc::Rc::new(timer);
+        let handle = scroll.clone();
+        scroll.start(TimerMode::Repeated, Duration::from_millis(8), move || {
+            if ticks.replace(ticks.get() + 1) >= secs_as_ticks {
+                handle.stop();
+                slint::quit_event_loop();
+                return;
+            }
+            with_browse(|b| {
+                let Some(app) = b.weak.upgrade() else {
+                    handle.stop();
+                    slint::quit_event_loop();
+                    return;
+                };
+                let position = slint::LogicalPosition::new(400.0, 400.0);
+                app.window()
+                    .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                        position,
+                        delta_x: 0.0,
+                        delta_y: -200.0,
+                    });
+            });
+        });
+        TIMERS.with(|t| t.borrow_mut().push(scroll));
     }
 }
 
