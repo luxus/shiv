@@ -37,10 +37,10 @@ Wayland), the linked run 2026-11-20, the Nix flake package at
 | Battery — idle CPU | 0 ticks in 10 min | 0 ticks over 60 s | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Start-up — process start → first activity | < 1.5 s cold, < 600 ms warm | ~40 ms (5 runs: 39–43 ms) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Binary — size | AppImage < 25 MB | 45 MB store path (binary ~34 MiB) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
-| Memory — 60 s full-list scroll | post-scroll within 10 % of loaded | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
-| Scroll — frame budget while flinging | no frame > 16 ms at 144 Hz | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
-| Search — keystroke → list updated | < 16 ms on 10k mods | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
-| Install — 100 MB archive | extraction > 60 % of disk-read speed; cancel responds < 50 ms | not yet recorded | [issue #1](https://github.com/luxus/shiv/issues/1) |
+| Memory — 60 s full-list scroll | post-scroll within 10 % of loaded | 138 MB loaded → 151 MB peak (+9.4 %) | [lea, 2026-11-21](docs/perf-results.md#scroll-peak-experiments-lea-2026-11-21) |
+| Scroll — frame budget while flinging | no frame > 16 ms at 144 Hz | not yet recorded (needs a frame-tap probe) | [issue #4](https://github.com/luxus/shiv/issues/4) |
+| Search — keystroke → list updated | < 16 ms on 10k mods | 3.3–3.4 ms steady, 6.6 ms first letter | [lea, 2026-11-21](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Install — 100 MB archive | extraction > 60 % of disk-read speed; cancel responds < 50 ms | not yet recorded (needs a timed-install probe) | [issue #4](https://github.com/luxus/shiv/issues/4) |
 
 The scroll, search and install gates, and the AppImage size from a release
 build, are what [issue #1](https://github.com/luxus/shiv/issues/1) is still
