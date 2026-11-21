@@ -17,6 +17,7 @@ fn sidecar_claiming(id: &str, vpk: &str) -> Sidecar {
         category: Some("Skins".into()),
         notes: None,
         source: None,
+        stamps: None,
     }
 }
 

@@ -1967,6 +1967,7 @@ mod tests {
             category: None,
             notes: None,
             source: None,
+            stamps: None,
         }
     }
 

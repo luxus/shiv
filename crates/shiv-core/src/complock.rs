@@ -738,6 +738,176 @@ pub fn verify_decompressed(bytes: &[u8], crc: u32, size: u64) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Drift: what the site publishes for an installed pak
+
+/// Prefix of the mod ids Shiv gives the CompLock paks it installs.
+pub const MOD_PREFIX: &str = "complock-";
+
+/// The id of the HUD++ base among the CompLock mod ids (`complock-hud`).
+pub const HUD_ID: &str = "hud";
+
+/// The revision a pak's install records as its sidecar `version`: the CRCs
+/// the site declares for its parts, `crc32:<hex>` joined by `+` — the site
+/// changes them exactly when it changes the bytes.
+#[must_use]
+pub fn revision(pak: &Pak) -> String {
+    pak.parts
+        .iter()
+        .map(|p| format!("crc32:{:08x}", p.crc))
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// What the site publishes for a Shiv-installed CompLock pak
+/// (`complock-<option id>` or `complock-hud`): the revisions of every pak
+/// the option or the HUD base can install (each choice is a variant), or
+/// [`crate::drift::Published::Gone`] when the site no longer lists it. Any
+/// other id is not CompLock's: [`crate::drift::Published::Unknown`].
+#[must_use]
+pub fn published(mod_id: &str) -> crate::drift::Published {
+    use crate::drift::Published;
+    let Some(id) = mod_id.strip_prefix(MOD_PREFIX) else {
+        return Published::Unknown;
+    };
+    let paks: Vec<&Pak> = if id == HUD_ID {
+        hud().map_or_else(Vec::new, |h| {
+            h.default_pak
+                .iter()
+                .chain(h.variants.values())
+                .chain(h.choices.iter().filter_map(|c| c.pak.as_ref()))
+                .collect()
+        })
+    } else {
+        options()
+            .iter()
+            .find(|o| o.id == id)
+            .map_or_else(Vec::new, |o| {
+                o.pak
+                    .iter()
+                    .chain(o.choices.iter().filter_map(|c| c.pak.as_ref()))
+                    .collect()
+            })
+    };
+    if paks.is_empty() {
+        return Published::Gone;
+    }
+    Published::Current(paks.into_iter().map(revision).collect())
+}
+
+/// A pak the site built, recognised from the `addoninfo.txt` inside its VPK:
+/// the title before the authors (`"HUD++ - HoppCX, jcStani"` → `HUD++`),
+/// when the authors are CompLock's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub title: String,
+    pub authors: String,
+    pub build_date: Option<String>,
+}
+
+const AUTHORS: [&str; 2] = ["HoppCX", "jcStani"];
+
+/// The CompLock identity of a dir VPK, from the `addoninfo.txt` the site's
+/// pack builder writes into every pak; `None` for anything else, or a VPK
+/// that cannot be read.
+#[must_use]
+pub fn identify(vpk: &std::path::Path) -> Option<Identity> {
+    let text = addoninfo_text(vpk)?;
+    let doc = SourceDocument::parse(&text, parse_options()).ok()?;
+    let value = |key: &str| {
+        doc.sites.iter().find_map(|site| {
+            let SourceKind::Scalar { value, .. } = &site.kind else {
+                return None;
+            };
+            site.path
+                .last()
+                .is_some_and(|k| k.eq_ignore_ascii_case(key))
+                .then(|| value.clone())
+        })
+    };
+    let authors = value("addonauthor")?;
+    if !AUTHORS.iter().any(|a| authors.contains(a)) {
+        return None;
+    }
+    let full = value("addontitle")?;
+    let title = full
+        .rsplit_once(" - ")
+        .map_or(full.as_str(), |(title, _)| title)
+        .trim()
+        .to_owned();
+    Some(Identity {
+        title,
+        authors,
+        build_date: value("buildDate"),
+    })
+}
+
+/// What the site publishes for a CompLock pak Shiv did not install, known
+/// only by its title: [`crate::drift::Published::Gone`] when no pak, option
+/// or base the site lists today carries that title (its parenthesised
+/// variant set aside, so an older "Particle Pruning (stock tracers and
+/// hits)" still matches today's), else
+/// [`crate::drift::Published::Unknown`] — the site still has it, but which
+/// revision is on disk cannot be told from the title.
+#[must_use]
+pub fn published_for_title(title: &str) -> crate::drift::Published {
+    use crate::drift::Published;
+    let key = |t: &str| t.split('(').next().unwrap_or(t).trim().to_ascii_lowercase();
+    let wanted = key(title);
+    let paks = options()
+        .iter()
+        .flat_map(|o| {
+            std::iter::once(o.title.as_str())
+                .chain(o.pak.iter().map(|p| p.title.as_str()))
+                .chain(
+                    o.choices
+                        .iter()
+                        .filter_map(|c| c.pak.as_ref())
+                        .map(|p| p.title.as_str()),
+                )
+        })
+        .chain(hud().into_iter().flat_map(|h| {
+            std::iter::once(h.title.as_str())
+                .chain(h.default_pak.iter().map(|p| p.title.as_str()))
+                .chain(h.variants.values().map(|p| p.title.as_str()))
+        }))
+        .any(|t| key(t) == wanted);
+    if paks {
+        Published::Unknown
+    } else {
+        Published::Gone
+    }
+}
+
+/// The text of `addoninfo.txt` in a dir VPK: its preload bytes and, when
+/// the entry lives in the dir file itself (archive index 0x7fff), the
+/// bytes after the tree.
+fn addoninfo_text(vpk: &std::path::Path) -> Option<String> {
+    use std::io::{Read as _, Seek as _};
+    const IN_DIR_FILE: u16 = 0x7fff;
+    const MAX_ADDONINFO: u32 = 64 * 1024;
+    let header = vpk_parser::VpkParser::header_from_file(vpk).ok()?;
+    let entries = vpk_parser::VpkParser::parse_directory_with_preload_from_file(vpk).ok()?;
+    let (entry, preload) = entries
+        .into_iter()
+        .find(|(e, _)| e.filename.eq_ignore_ascii_case("addoninfo") && e.ext == "txt")?;
+    let mut bytes = preload;
+    if entry.entry_length > 0 {
+        if entry.archive_index != IN_DIR_FILE || entry.entry_length > MAX_ADDONINFO {
+            return None;
+        }
+        let start = vpk_parser::VpkParser::header_size(header.version)
+            + u64::from(header.tree_length)
+            + u64::from(entry.entry_offset);
+        let mut file = std::fs::File::open(vpk).ok()?;
+        file.seek(std::io::SeekFrom::Start(start)).ok()?;
+        let mut rest = vec![0u8; entry.entry_length as usize];
+        file.read_exact(&mut rest).ok()?;
+        bytes.extend_from_slice(&rest);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+// ---------------------------------------------------------------------------
 // The watch's checks
 
 /// What the daily watch found wrong with a fresh pack-data: each reason it

@@ -12,6 +12,7 @@ pub mod addons;
 pub mod alloc_count;
 pub mod complock;
 pub mod crosshair;
+pub mod drift;
 pub mod game;
 pub mod health;
 mod hero_settings;

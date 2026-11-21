@@ -84,8 +84,8 @@ const COMPLOCK_NOTE: &str = "From their site: their paks replace whole files and
 /// per option, so re-installing an option updates it in place through
 /// `install::install_files` on the same id (the Downloads rows and the
 /// cancel routing key on it too).
-const PACK_PREFIX: &str = "complock-";
-const PACK_HUD_ID: &str = "hud";
+const PACK_PREFIX: &str = complock::MOD_PREFIX;
+const PACK_HUD_ID: &str = complock::HUD_ID;
 const PACK_FOV_ID: &str = "fov";
 
 /// The mod id of a CompLock pak: `complock-<option id>`, or
@@ -222,7 +222,7 @@ fn run_pack_install(
     let meta = ModMeta {
         mod_id: task.mod_id.clone(),
         name: task.name,
-        version: None,
+        version: Some(complock::revision(&task.pak)),
         thumbnail_url: None,
         nsfw: false,
         hero: None,

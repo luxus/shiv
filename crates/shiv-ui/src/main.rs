@@ -359,6 +359,7 @@ mod tests {
                 category: None,
                 notes: None,
                 source: None,
+                stamps: None,
             },
         )
         .unwrap();
@@ -1951,6 +1952,7 @@ mod tests {
                 category: None,
                 notes: None,
                 source: None,
+                stamps: None,
             },
         )
         .expect("sidecar");
@@ -3209,6 +3211,7 @@ mod tests {
                     category: None,
                     notes: None,
                     source: None,
+                    stamps: None,
                 },
             )
             .expect("sidecar");
