@@ -245,6 +245,50 @@ fn a_reimport_does_not_duplicate_mods() {
     assert_eq!(mods.len(), 1);
 }
 
+/// Local ids repeat across folders: a bundle whose Shiv extension names
+/// `local-<s>-<n>` must not be skipped because the target's own, unrelated
+/// mod got the same id (the alloc-ceilings CI flake when an import landed
+/// in the second the source's later mods were installed in).
+#[test]
+fn a_local_id_shared_by_an_unrelated_mod_is_not_a_duplicate() {
+    let source = env();
+    let sc = install_mod(&source, "Bundled", &["a/1.vmat_c"], "1");
+    assert!(sidecar::is_local(&sc.mod_id));
+    let dest = source.work.join("exports");
+    fs::create_dir_all(&dest).unwrap();
+    let report = interchange::export(&source.paths.addons, &dest, &|_| None).unwrap();
+
+    let target = env();
+    sidecar::write(
+        &target.paths.addons,
+        &sidecar::Sidecar {
+            mod_id: sc.mod_id.clone(),
+            name: "Unrelated".into(),
+            version: None,
+            thumbnail_url: None,
+            vpks: vec!["pak01_dir.vpk".into()],
+            nsfw: Some(false),
+            hero: None,
+            category: None,
+            notes: None,
+            source: None,
+            stamps: None,
+        },
+    )
+    .unwrap();
+    fs::write(target.paths.addons.join("pak01_dir.vpk"), b"someone else").unwrap();
+    let imported = interchange::import(&report.root, &target.paths, || false, &|_| None).unwrap();
+    assert_eq!(imported.installed, ["Bundled"]);
+    assert!(imported.skipped.is_empty(), "{:?}", imported.skipped);
+    assert_eq!(names(&sidecar::group(&target.paths.addons)).len(), 2);
+
+    let again = interchange::import(&report.root, &target.paths, || false, &|_| None).unwrap();
+    assert_eq!(
+        again.skipped,
+        [("Bundled".into(), "already installed".into())]
+    );
+}
+
 #[test]
 fn import_recognises_a_mod_the_catalog_already_knows() {
     let e = env();
