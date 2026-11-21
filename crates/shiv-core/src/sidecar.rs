@@ -364,7 +364,7 @@ pub fn group(addons: &Path) -> Vec<InstalledMod> {
         .filter_map(|v| enabled_name(&v).map(|n| (n, v)))
         .collect();
     let mut out = Vec::new();
-    for s in read_all(addons) {
+    for s in read_all(addons).into_iter().chain(read_all(addons)) {
         let mut mine = Vec::new();
         remaining.retain(|(name, v)| {
             if s.vpks.contains(name) {
