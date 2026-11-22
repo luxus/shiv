@@ -347,11 +347,62 @@ pub(crate) fn file_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
     Ok(used)
 }
 
-pub fn next_pak(addons: &Path) -> Result<u32, AddonsError> {
+#[allow(
+    dead_code,
+    reason = "crate tests are the only caller; an outside crate cannot take a slot"
+)]
+pub(crate) fn next_pak(addons: &Path) -> Result<u32, AddonsError> {
     crate::pak_slot::free_slots(addons, 1)?
         .into_iter()
         .next()
         .ok_or_else(|| AddonsError::Full {
             dir: addons.to_path_buf(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch(dir: &Path, name: &str) {
+        fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    #[test]
+    fn next_pak_skips_used_numbers_including_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(next_pak(dir.path()).unwrap(), 1);
+        touch(dir.path(), "pak01_dir.vpk");
+        touch(dir.path(), "pak02_dir.vpk.disabled");
+        assert_eq!(next_pak(dir.path()).unwrap(), 3);
+        touch(dir.path(), "pak04_dir.vpk");
+        assert_eq!(next_pak(dir.path()).unwrap(), 3, "the gap at 3");
+    }
+
+    #[test]
+    fn next_pak_reports_full_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in 1..=99 {
+            touch(dir.path(), &format!("pak{n:02}_dir.vpk"));
+        }
+        assert!(matches!(
+            next_pak(dir.path()),
+            Err(AddonsError::Full { .. })
+        ));
+    }
+
+    #[test]
+    fn next_pak_ignores_a_file_that_is_not_pak_nn() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "123456_mod.vpk");
+        assert_eq!(next_pak(dir.path()).unwrap(), 1);
+    }
+
+    #[test]
+    fn next_pak_counts_chunk_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "pak01_000.vpk");
+        touch(dir.path(), "pak02_003.vpk.disabled");
+        assert_eq!(next_pak(dir.path()).unwrap(), 3);
+    }
 }

@@ -51,7 +51,9 @@ Every function that allocates a pak number or renames a `pakNN` file takes
 drop, and `permit` is the only constructor, so the call does not compile
 without it. That is the interchange import before `8b37a9b`
 (`install_files` with no lock) and the edit dialog's `set_pak` before
-`6c5beb5`. `forgotten_pak_change_does_not_compile` is those two calls.
+`6c5beb5`. `forgotten_pak_change_does_not_compile` is those two calls, and the same
+check calls `addons::next_pak`, which is `pub(crate)` because only tests
+ask for that number.
 The lock is not reentrant: a cancel check stays after `acquire`, and the
 function receives the permit.
 `cancel_while_installing_then_retry_installs_once` still exercises that

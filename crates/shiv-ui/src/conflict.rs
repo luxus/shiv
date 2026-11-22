@@ -346,6 +346,7 @@ fn enable_first(id: &str, enable: bool) -> Result<(), String> {
         return Err("Deadlock is running. Close it to change mods.".into());
     }
     let paths = crate::locate_game().map_err(|e| crate::browse::game_error_text(&e))?;
+    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     let mods = sidecar::group(&paths.addons);
     let is_it = |m: &sidecar::InstalledMod| m.sidecar.as_ref().is_some_and(|s| s.mod_id == id);
     if enable {
@@ -360,7 +361,6 @@ fn enable_first(id: &str, enable: bool) -> Result<(), String> {
         .iter()
         .position(is_it)
         .ok_or("The mod is no longer installed.")?;
-    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     sidecar::move_mod(
         &paths.addons,
         &mods,

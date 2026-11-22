@@ -39,7 +39,7 @@ proof.
 | Rule | Enforcer |
 | --- | --- |
 | A new pak number comes from `pak_slot::occupied` / `pak_slot::free_slots`, never from the files alone | `scripts/check_pak_occupancy.py` |
-| A pak rename or slot allocation takes `InstallPermit`, minted only by `InstallGuard` | `crates/shiv-core/tests/install_permit.rs` |
+| A pak rename or slot allocation takes `InstallPermit`, minted only by `InstallGuard`. `addons::next_pak` is `pub(crate)` | `crates/shiv-core/tests/install_permit.rs` |
 
 The other rules, and the bug each one came from, are in `docs/code-quality.md`.
 

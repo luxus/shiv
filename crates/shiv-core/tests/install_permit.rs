@@ -24,6 +24,10 @@ fn set_pak_before_6c5beb5(
 ) -> Result<(), shiv_core::sidecar::SidecarError> {
     shiv_core::sidecar::set_pak(addons, mods, index, pak)
 }
+
+fn next_pak_from_outside(addons: &std::path::Path) -> Result<u32, shiv_core::addons::AddonsError> {
+    shiv_core::addons::next_pak(addons)
+}
 "#;
 
 #[test]
@@ -68,5 +72,9 @@ fn forgotten_pak_change_does_not_compile() {
     assert!(
         text.contains("set_pak"),
         "6c5beb5's edit dialog called set_pak with no lock.\n{text}"
+    );
+    assert!(
+        text.contains("next_pak") && text.contains("private"),
+        "an outside crate must not call next_pak.\n{text}"
     );
 }

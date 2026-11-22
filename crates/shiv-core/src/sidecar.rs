@@ -500,9 +500,8 @@ pub fn move_mod(
     mods: &[InstalledMod],
     index: usize,
     to: Move,
-    permit: InstallPermit<'_>,
+    _permit: InstallPermit<'_>,
 ) -> Result<(), SidecarError> {
-    permit.keep();
     let mut order: Vec<&InstalledMod> = mods
         .iter()
         .filter(|m| m.load_position() != u32::MAX)
@@ -566,9 +565,8 @@ pub fn set_pak(
     mods: &[InstalledMod],
     index: usize,
     pak: u32,
-    permit: InstallPermit<'_>,
+    _permit: InstallPermit<'_>,
 ) -> Result<(), SidecarError> {
-    permit.keep();
     let Some(target) = mods.get(index).filter(|m| m.load_position() != u32::MAX) else {
         return Ok(());
     };
@@ -647,9 +645,8 @@ pub fn renumber(
     addons: &Path,
     mods: &[InstalledMod],
     moves: &[(&InstalledVpk, u32)],
-    permit: InstallPermit<'_>,
+    _permit: InstallPermit<'_>,
 ) -> Result<(), SidecarError> {
-    permit.keep();
     if moves.is_empty() {
         return Ok(());
     }
