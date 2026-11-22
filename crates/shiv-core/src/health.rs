@@ -15,6 +15,7 @@ use vpk_parser::{VpkError, VpkParser};
 
 use crate::addons::{self, PakKind, parse_pak};
 use crate::game::GamePaths;
+use crate::perf::{self, GameinfoState};
 
 const DISABLED_EXT: &str = ".disabled";
 /// `archive_index` of an entry whose data follows the directory tree.
@@ -47,6 +48,14 @@ pub enum FindingKind {
     MissingSearchPath,
     /// `gameinfo.gi` is missing, unreadable or read-only.
     GameinfoUnwritable,
+    /// The file is still the bytes Shiv wrote, and the expected text has moved.
+    GameinfoOutdated,
+    /// A game update replaced `gameinfo.gi`: the addons mount is gone and the
+    /// bytes are not the ones Shiv recorded.
+    GameinfoReset,
+    /// `gameinfo.gi` still mounts addons, and it is neither the expected text
+    /// nor the bytes Shiv recorded.
+    GameinfoEdited,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +81,7 @@ impl Finding {
 pub fn check(paths: &GamePaths) -> Vec<Finding> {
     let mut findings = Vec::new();
     check_addons(&paths.addons, &mut findings);
-    check_gameinfo(&paths.gameinfo, &mut findings);
+    check_gameinfo(paths, &mut findings);
     findings
 }
 
@@ -331,7 +340,8 @@ pub fn client_symbol(name: &str) -> Option<bool> {
     }
 }
 
-fn check_gameinfo(gameinfo: &Path, findings: &mut Vec<Finding>) {
+fn check_gameinfo(paths: &GamePaths, findings: &mut Vec<Finding>) {
+    let gameinfo = &paths.gameinfo;
     let bytes = match fs::read(gameinfo) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -373,6 +383,35 @@ fn check_gameinfo(gameinfo: &Path, findings: &mut Vec<Finding>) {
             gameinfo,
             format!("gameinfo.gi could not be parsed, so the addons search path is unknown: {e}"),
         )),
+    }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return;
+    };
+    let Some(record) = perf::load_gameinfo_record(&paths.addons) else {
+        return;
+    };
+    let expected = record.expected.as_deref().unwrap_or(text);
+    let kind = match perf::classify_gameinfo(text, expected, Some(record.stamp)) {
+        GameinfoState::Ok => return,
+        GameinfoState::Outdated => FindingKind::GameinfoOutdated,
+        GameinfoState::Reset => FindingKind::GameinfoReset,
+        GameinfoState::Edited => FindingKind::GameinfoEdited,
+    };
+    findings.push(Finding::new(kind, gameinfo, gameinfo_state_detail(kind)));
+}
+
+fn gameinfo_state_detail(kind: FindingKind) -> &'static str {
+    match kind {
+        FindingKind::GameinfoOutdated => {
+            "gameinfo.gi is still the copy Shiv wrote, and the expected text has changed"
+        }
+        FindingKind::GameinfoReset => {
+            "gameinfo.gi no longer mounts citadel/addons; a game update replaced it"
+        }
+        FindingKind::GameinfoEdited => {
+            "gameinfo.gi mounts citadel/addons but is not the copy Shiv wrote"
+        }
+        _ => "",
     }
 }
 

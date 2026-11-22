@@ -32,9 +32,14 @@ use crate::platform;
 pub const SCHEMA_VERSION: u32 = 1;
 
 const BACKUP_SUFFIX: &str = ".bak";
-/// The file as it was before Shiv first changed it; written once, never
-/// replaced (the rolling `.bak` only holds the file before the last apply).
+/// The file as it was before Shiv changed it. Written the first time, and
+/// replaced when a game update reset `gameinfo.gi` (Core.cs copies the file
+/// again on `Gi.Reset`). The rolling `.bak` holds the file before the last apply.
 const ORIGINAL_SUFFIX: &str = ".shiv-orig";
+/// `<addons>/.shiv/gameinfo.json`: size and CRC of the `gameinfo.gi` Shiv last
+/// wrote, and the text it was aiming at. CompLock keeps the same pair as
+/// `GiSize` / `GiCrc` on its state file.
+const GAMEINFO_RECORD: &str = "gameinfo.json";
 /// Prefix of a line Shiv commented out (`value: None`).
 const OFF_TAG: &str = "// shiv off: ";
 const CACHE_FILE: &str = "perf-catalog.json";
@@ -663,11 +668,12 @@ pub fn read_current(paths: &GamePaths) -> Result<Vec<ConfigEntry>, PerfError> {
 }
 
 /// Write `entries` into `gameinfo.gi`, changing only those paths. The file
-/// as it was is copied to `gameinfo.gi.bak` first (and, the first time only,
-/// to `gameinfo.gi.shiv-orig`, which is never replaced), and the new text replaces
-/// the file through a temp file, keeping its permissions. A read-only file,
-/// a file Shiv can't parse, or an entry it can't write safely fails without
-/// touching anything. Applying values the file already has writes nothing.
+/// as it was is copied to `gameinfo.gi.bak` first, and to `gameinfo.gi.shiv-orig`
+/// the first time and again when the file on disk is a [`GameinfoState::Reset`].
+/// The new text replaces the file through a temp file, keeping its permissions.
+/// A read-only file, a file Shiv can't parse, or an entry it can't write safely
+/// fails without touching anything. Applying values the file already has writes
+/// nothing to `gameinfo.gi`.
 ///
 /// # Errors
 ///
@@ -696,7 +702,9 @@ pub fn apply(paths: &GamePaths, entries: &[ConfigEntry]) -> Result<(), PerfError
         });
     }
     let original = sibling(&path, ORIGINAL_SUFFIX);
-    if !original.exists() {
+    let written = load_gameinfo_record(&paths.addons).map(|r| r.stamp);
+    let state = classify_gameinfo(&text, &edited, written);
+    if !original.exists() || state == GameinfoState::Reset {
         write_atomic(&original, text.as_bytes(), Some(meta.permissions()))?;
     }
     write_atomic(
@@ -704,7 +712,8 @@ pub fn apply(paths: &GamePaths, entries: &[ConfigEntry]) -> Result<(), PerfError
         text.as_bytes(),
         Some(meta.permissions()),
     )?;
-    write_atomic(&path, edited.as_bytes(), Some(meta.permissions()))
+    write_atomic(&path, edited.as_bytes(), Some(meta.permissions()))?;
+    store_gameinfo_record(&paths.addons, &edited, &edited)
 }
 
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
@@ -713,10 +722,277 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Where `apply` keeps `gameinfo.gi` as it was before Shiv first changed it.
+/// Where `apply` keeps `gameinfo.gi` as it was before Shiv changed it.
 #[must_use]
 pub fn original_backup_path(paths: &GamePaths) -> PathBuf {
     sibling(&paths.gameinfo, ORIGINAL_SUFFIX)
+}
+
+/// What [`classify_gameinfo`] says about the file on disk. The names and the
+/// order are CompLock's `Gi` (Core.cs): same text, then the recorded write,
+/// then whether the addons mount is still there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameinfoState {
+    /// [`paths_same`] holds: the file is the expected text, or the same
+    /// outside `SearchPaths` and it mounts `citadel/addons`.
+    Ok,
+    /// The file is still the bytes Shiv recorded, and the expected text has moved.
+    Outdated,
+    /// Not our bytes, and the addons mount is gone (a game update rewrote the file).
+    Reset,
+    /// Not our bytes, and the addons mount is still there.
+    Edited,
+}
+
+/// Size and CRC-32 of a `gameinfo.gi` Shiv wrote. Compared the way CompLock
+/// compares `GiSize` and `GiCrc`: UTF-8 length, then the IEEE CRC of those bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameinfoStamp {
+    pub size: u64,
+    pub crc: u32,
+}
+
+/// The recorded write plus the text it was checked against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameinfoRecord {
+    pub stamp: GameinfoStamp,
+    pub expected: Option<String>,
+}
+
+/// [`GameinfoStamp`] of `text` (its UTF-8 bytes).
+#[must_use]
+pub fn gameinfo_stamp(text: &str) -> GameinfoStamp {
+    GameinfoStamp {
+        size: text.len() as u64,
+        crc: crate::complock::crc32(text.as_bytes()),
+    }
+}
+
+/// CompLock's `Gi` choice (Core.cs): [`paths_same`] is `Ok`; otherwise a
+/// recorded write whose size and CRC match `current` is `Outdated`; otherwise
+/// an addons mount is `Edited` and its absence is `Reset`.
+#[must_use]
+pub fn classify_gameinfo(
+    current: &str,
+    expected: &str,
+    written: Option<GameinfoStamp>,
+) -> GameinfoState {
+    if paths_same(current, expected) {
+        return GameinfoState::Ok;
+    }
+    let stamp = gameinfo_stamp(current);
+    if written.is_some_and(|w| w == stamp) {
+        return GameinfoState::Outdated;
+    }
+    if has_addons_path(current) {
+        GameinfoState::Edited
+    } else {
+        GameinfoState::Reset
+    }
+}
+
+/// CompLock's `GameinfoPaths.Same`: identical text, or the same bytes outside
+/// the `SearchPaths` block while `current` mounts `citadel/addons`.
+#[must_use]
+pub fn paths_same(current: &str, expected: &str) -> bool {
+    if current == expected {
+        return true;
+    }
+    let Some((cs, ce)) = search_block(current) else {
+        return false;
+    };
+    let Some((es, ee)) = search_block(expected) else {
+        return false;
+    };
+    if current[..cs] != expected[..es] || current[ce..] != expected[ee..] {
+        return false;
+    }
+    search_entries(&current[cs..ce])
+        .iter()
+        .any(|e| e.key == "game" && e.path == "citadel/addons")
+}
+
+/// The record from the last [`store_gameinfo_record`], if it is readable.
+#[must_use]
+pub fn load_gameinfo_record(addons: &Path) -> Option<GameinfoRecord> {
+    let bytes = fs::read(record_path(addons)).ok()?;
+    let raw: GameinfoRecordFile = serde_json::from_slice(&bytes).ok()?;
+    Some(GameinfoRecord {
+        stamp: GameinfoStamp {
+            size: raw.size,
+            crc: raw.crc,
+        },
+        expected: raw.expected,
+    })
+}
+
+/// Remember `written` (size and CRC) and the `expected` text it was judged
+/// against.
+///
+/// # Errors
+///
+/// [`PerfError::Io`] when the record cannot be written.
+pub fn store_gameinfo_record(
+    addons: &Path,
+    written: &str,
+    expected: &str,
+) -> Result<(), PerfError> {
+    let stamp = gameinfo_stamp(written);
+    let file = GameinfoRecordFile {
+        size: stamp.size,
+        crc: stamp.crc,
+        expected: Some(expected.to_owned()),
+    };
+    let path = record_path(addons);
+    let bytes = serde_json::to_vec(&file).map_err(|e| PerfError::Io {
+        action: "encode",
+        path: path.clone(),
+        source: io::Error::other(e),
+    })?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(io_err("create", dir))?;
+    }
+    write_atomic(&path, &bytes, None)
+}
+
+fn record_path(addons: &Path) -> PathBuf {
+    addons.join(".shiv").join(GAMEINFO_RECORD)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GameinfoRecordFile {
+    size: u64,
+    crc: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected: Option<String>,
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "the addons-path pattern is a fixed literal"
+)]
+fn addons_path_re() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r#"(?m)^\s*Game\s+"?citadel/addons"#).expect("addons path pattern")
+    })
+}
+
+fn has_addons_path(text: &str) -> bool {
+    addons_path_re().is_match(text)
+}
+
+/// `(body_start, body_end)` of the `SearchPaths` block, the span CompLock's
+/// `Find` returns: after the `{` line, up to the line that closes the block.
+fn search_block(text: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut line = 0;
+    while line < bytes.len() {
+        if let Some(body) = search_open(bytes, line) {
+            let end = closing_brace(bytes, body)?;
+            return Some((body, end));
+        }
+        line = next_line(bytes, line)?;
+    }
+    None
+}
+
+fn search_open(bytes: &[u8], line: usize) -> Option<usize> {
+    let mut j = line;
+    while bytes.get(j).is_some_and(|b| *b == b' ' || *b == b'\t') {
+        j += 1;
+    }
+    if bytes.get(j) == Some(&b'"') {
+        j += 1;
+    }
+    let key = b"SearchPaths";
+    if bytes.get(j..j + key.len()) != Some(key) {
+        return None;
+    }
+    j += key.len();
+    if bytes.get(j) == Some(&b'"') {
+        j += 1;
+    }
+    while bytes.get(j).is_some_and(|b| *b == b' ' || *b == b'\t') {
+        j += 1;
+    }
+    if bytes.get(j) == Some(&b'\r') {
+        j += 1;
+    }
+    if bytes.get(j) == Some(&b'\n') {
+        j += 1;
+        while bytes.get(j).is_some_and(|b| *b == b' ' || *b == b'\t') {
+            j += 1;
+        }
+    }
+    if bytes.get(j) != Some(&b'{') {
+        return None;
+    }
+    j += 1;
+    while bytes.get(j).is_some_and(|b| *b == b' ' || *b == b'\t') {
+        j += 1;
+    }
+    if bytes.get(j) == Some(&b'\r') {
+        j += 1;
+    }
+    if bytes.get(j) != Some(&b'\n') {
+        return None;
+    }
+    Some(j + 1)
+}
+
+fn closing_brace(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    if from > 0 && bytes.get(from - 1) != Some(&b'\n') {
+        i = next_line(bytes, from)?;
+    }
+    while i < bytes.len() {
+        let mut j = i;
+        while bytes.get(j).is_some_and(|b| *b == b' ' || *b == b'\t') {
+            j += 1;
+        }
+        if bytes.get(j) == Some(&b'}') {
+            return Some(i);
+        }
+        i = next_line(bytes, i)?;
+    }
+    None
+}
+
+fn next_line(bytes: &[u8], from: usize) -> Option<usize> {
+    let n = bytes[from..].iter().position(|&b| b == b'\n')?;
+    let next = from + n + 1;
+    (next <= bytes.len()).then_some(next)
+}
+
+struct SearchEntry {
+    key: String,
+    path: String,
+}
+
+fn search_entries(body: &str) -> Vec<SearchEntry> {
+    let mut pos = 0;
+    let mut list = Vec::new();
+    while pos < body.len() {
+        let stop = body[pos..].find('\n').map_or(body.len(), |n| pos + n + 1);
+        let line = &body[pos..stop];
+        let code = line.split_once("//").map_or(line, |(code, _)| code);
+        let mut toks = code
+            .split([' ', '\t', '\r', '\n'])
+            .filter(|t| !t.is_empty());
+        if let (Some(key), Some(path)) = (toks.next(), toks.next()) {
+            list.push(SearchEntry {
+                key: key.trim_matches('"').to_lowercase(),
+                path: path.trim_matches('"').replace('\\', "/").to_lowercase(),
+            });
+        }
+        if stop == pos {
+            break;
+        }
+        pos = stop;
+    }
+    list
 }
 
 /// Write `contents` to `path` through a temp file in the same folder.

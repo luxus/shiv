@@ -4,7 +4,9 @@ use std::fs;
 use std::path::Path;
 
 use shiv_core::game::GamePaths;
-use shiv_core::perf::{self, Catalog, CatalogCache, ConfigEntry, ConvarKind, PerfError, Tier};
+use shiv_core::perf::{
+    self, Catalog, CatalogCache, ConfigEntry, ConvarKind, GameinfoState, PerfError, Tier,
+};
 
 const GAMEINFO: &str = "\"GameInfo\"\r\n{\r\n\tgame\t\t\"citadel\"\r\n\tFileSystem\r\n\t{\r\n\t\tSearchPaths\r\n\t\t{\r\n\t\t\tGame\t\t\t\tcitadel/addons\r\n\t\t\tGame\t\t\t\tcitadel\r\n\t\t}\r\n\t}\r\n\tConVars\r\n\t{\r\n\t\t\"r_ssao\"\t\t\"1\"\t// ambient occlusion\r\n\t\tfps_max 400\r\n\t\t\"r_shadows\"\t\t\"true\"\r\n\t}\r\n\tSceneSystem\r\n\t{\r\n\t\tCSMCascadeResolution\t2048\r\n\t}\r\n}\r\n";
 
@@ -306,7 +308,7 @@ fn shiv_orig_keeps_the_file_from_before_the_first_apply() {
     perf::apply(&paths, &[entry(&["ConVars", "r_ssao"], Some("0"))]).unwrap();
     let after_first = read(&paths.gameinfo);
     perf::apply(&paths, &[entry(&["ConVars", "fps_max"], Some("100"))]).unwrap();
-    assert_eq!(read(&orig), GAMEINFO, "never replaced");
+    assert_eq!(read(&orig), GAMEINFO, "a second apply is not a reset");
     assert_eq!(read(&backup(&paths)), after_first, "the rolling backup");
     assert!(read(&paths.gameinfo).contains("fps_max 100"));
     #[cfg(unix)]
@@ -315,6 +317,66 @@ fn shiv_orig_keeps_the_file_from_before_the_first_apply() {
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&orig), mode(&paths.gameinfo));
     }
+}
+
+/// Same text is Ok. The same file outside `SearchPaths`, once it mounts
+/// `citadel/addons`, is Ok too. A recorded write that is no longer the
+/// expected text is Outdated. No mount and not our bytes is Reset. A mount
+/// that is neither is Edited.
+#[test]
+fn gameinfo_state_follows_the_recorded_write_then_the_addons_mount() {
+    let head = "GameInfo\n{\n\tFileSystem\n\t{\n\t\tSearchPaths\n\t\t{\n";
+    let tail = "\t\t}\n\t}\n\tConVars\n\t{\n\t\tfps_max 400\n\t}\n}\n";
+    let expected = format!("{head}\t\t\tGame\t\t\tcitadel\n{tail}");
+    let mounted = format!("{head}\t\t\tGame\t\t\tcitadel/addons\n\t\t\tGame\t\t\tcitadel\n{tail}");
+    let moved = expected.replace("fps_max 400", "fps_max 100");
+    assert_ne!(mounted, expected);
+    assert_eq!(
+        perf::classify_gameinfo(&expected, &expected, None),
+        GameinfoState::Ok
+    );
+    assert_eq!(
+        perf::classify_gameinfo(&mounted, &expected, None),
+        GameinfoState::Ok
+    );
+    assert_eq!(
+        perf::classify_gameinfo(&expected, &moved, Some(perf::gameinfo_stamp(&expected))),
+        GameinfoState::Outdated
+    );
+    assert_eq!(
+        perf::classify_gameinfo(&expected, &moved, None),
+        GameinfoState::Reset
+    );
+    assert_eq!(
+        perf::classify_gameinfo(&mounted, &moved, Some(perf::gameinfo_stamp(&expected))),
+        GameinfoState::Edited
+    );
+}
+
+/// A game update that drops the addons mount replaces `.shiv-orig` with that
+/// file. A later apply, and a hand edit that keeps the mount, leave the
+/// refreshed copy in place.
+#[test]
+fn a_reset_gameinfo_refreshes_shiv_orig() {
+    let (_d, paths) = fixture(GAMEINFO);
+    let orig = perf::original_backup_path(&paths);
+    perf::apply(&paths, &[entry(&["ConVars", "r_ssao"], Some("0"))]).unwrap();
+    assert_eq!(read(&orig), GAMEINFO);
+
+    let stock = "\"GameInfo\"\r\n{\r\n\tFileSystem\r\n\t{\r\n\t\tSearchPaths\r\n\t\t{\r\n\t\t\tGame\t\t\t\tcitadel\r\n\t\t}\r\n\t}\r\n\tConVars\r\n\t{\r\n\t\tfps_max 400\r\n\t}\r\n}\r\n";
+    fs::write(&paths.gameinfo, stock).unwrap();
+    perf::apply(&paths, &[entry(&["ConVars", "fps_max"], Some("100"))]).unwrap();
+    assert_eq!(read(&orig), stock, "the reset file is the new original");
+    assert!(read(&paths.gameinfo).contains("fps_max 100"));
+
+    let after_reset = read(&paths.gameinfo);
+    perf::apply(&paths, &[entry(&["ConVars", "fps_max"], Some("50"))]).unwrap();
+    assert_eq!(read(&orig), stock, "the next apply is not a reset");
+    assert_ne!(read(&paths.gameinfo), after_reset);
+
+    fs::write(&paths.gameinfo, GAMEINFO).unwrap();
+    perf::apply(&paths, &[entry(&["ConVars", "fps_max"], Some("80"))]).unwrap();
+    assert_eq!(read(&orig), stock, "a mounted file is an edit, not a reset");
 }
 
 #[test]

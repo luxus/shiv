@@ -178,6 +178,9 @@ pub(crate) fn title(kind: FindingKind) -> &'static str {
         FindingKind::DuplicatePak => "Duplicate pak number",
         FindingKind::MissingSearchPath => "Addons search path missing",
         FindingKind::GameinfoUnwritable => "gameinfo.gi not writable",
+        FindingKind::GameinfoOutdated => "gameinfo.gi outdated",
+        FindingKind::GameinfoReset => "gameinfo.gi reset",
+        FindingKind::GameinfoEdited => "gameinfo.gi edited",
     }
 }
 
@@ -691,6 +694,13 @@ impl Launch {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn gameinfo_states_have_titles() {
+        assert_eq!(title(FindingKind::GameinfoOutdated), "gameinfo.gi outdated");
+        assert_eq!(title(FindingKind::GameinfoReset), "gameinfo.gi reset");
+        assert_eq!(title(FindingKind::GameinfoEdited), "gameinfo.gi edited");
+    }
 
     #[test]
     fn rows_show_titles_and_files_relative_to_citadel() {

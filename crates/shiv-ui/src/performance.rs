@@ -2337,8 +2337,8 @@ impl Perf {
                     &format!(
                         "Wrote {what} to gameinfo.gi and kept the previous file as gameinfo.gi.bak. \
                          Deadlock uses them the next time it starts. A game update replaces \
-                         gameinfo.gi, so apply again after one.\nFile from before Shiv's first \
-                         change: {}",
+                         gameinfo.gi, so apply again after one; that also replaces the copy \
+                         from before Shiv's change.\nFile from before Shiv's change: {}",
                         original.display()
                     ),
                     false,
