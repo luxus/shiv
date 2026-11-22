@@ -5,6 +5,7 @@ use std::path::Path;
 
 use shiv_core::game::GamePaths;
 use shiv_core::health::{self, Finding, FindingKind};
+use shiv_core::perf;
 
 const GAMEINFO_OK: &str = r#""GameInfo"
 {
@@ -366,6 +367,35 @@ fn gameinfo_unwritable_is_reported() {
         fs::read_to_string(&game.paths.gameinfo).unwrap(),
         GAMEINFO_OK
     );
+}
+
+/// With a record of the bytes Shiv wrote: the same bytes against a moved
+/// expected text is outdated, a file with no addons mount is a reset, and a
+/// different file that still mounts addons is an edit. No record, no finding.
+#[test]
+fn a_recorded_gameinfo_is_outdated_reset_or_edited() {
+    let game = Game::new();
+    assert!(
+        !kinds(&game.check()).contains(&FindingKind::GameinfoOutdated),
+        "no record yet"
+    );
+    let expected = GAMEINFO_OK.replace("game \"Deadlock\"", "game \"Other\"");
+    perf::store_gameinfo_record(&game.paths.addons, GAMEINFO_OK, &expected).unwrap();
+    assert_eq!(kinds(&game.check()), vec![FindingKind::GameinfoOutdated]);
+
+    let stock = "\"GameInfo\"\n{\n\tFileSystem\n\t{\n\t\tSearchPaths\n\t\t{\n\t\t\tGame\tcitadel\n\t\t}\n\t}\n}\n";
+    fs::write(&game.paths.gameinfo, stock).unwrap();
+    assert_eq!(
+        kinds(&game.check()),
+        vec![FindingKind::MissingSearchPath, FindingKind::GameinfoReset]
+    );
+
+    fs::write(
+        &game.paths.gameinfo,
+        GAMEINFO_OK.replace("Deadlock", "Edited"),
+    )
+    .unwrap();
+    assert_eq!(kinds(&game.check()), vec![FindingKind::GameinfoEdited]);
 }
 
 #[test]
