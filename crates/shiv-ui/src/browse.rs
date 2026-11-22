@@ -55,13 +55,6 @@ const GALLERY_QUEUE: usize = 3;
 /// Most images shown in one gallery.
 const GALLERY_MAX: usize = 24;
 
-/// Serialises installs: two installs must not allocate pak numbers at once.
-/// Every download is an install: pak slots are allocated against the
-/// folder while staging, so two installs must not overlap. The lock
-/// lives in `shiv_core::install`, beside the code that needs it; link
-/// installs in `installed` and interchange imports take it too.
-pub(crate) use shiv_core::install::INSTALL_LOCK;
-
 thread_local! {
     /// The controller, reachable from closures posted by worker threads.
     static BROWSE: RefCell<Option<Rc<Browse>>> = const { RefCell::new(None) };
@@ -1019,7 +1012,7 @@ fn run_install(
     shiv_core::registry::verify_download(&dest, task.published_sha256.as_deref())
         .map_err(|e| msg(e.to_string()))?;
     post(Update::Installing);
-    let _guard = INSTALL_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let guard = install::InstallGuard::acquire();
     // Cancel may have been pressed while waiting for another install.
     if cancel.load(Ordering::Relaxed) {
         return Err(Failure::Cancelled);
@@ -1038,7 +1031,7 @@ fn run_install(
         hero: task.hero,
         category: task.category,
     };
-    install::install_with(&dest, meta, &paths, crate::game_running)
+    install::install_with(&dest, meta, &paths, crate::game_running, guard.permit())
         .map_err(|e| msg(install_error_text(&e)))?;
     if fresh {
         let mods = sidecar::group(&paths.addons);

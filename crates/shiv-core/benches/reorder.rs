@@ -44,12 +44,25 @@ fn reorder_benches(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let shifted = sidecar::group(dir.path());
-                    sidecar::move_mod(dir.path(), &shifted, 0, Move::To(shifted.len() - 1))
-                        .unwrap();
+                    sidecar::move_mod(
+                        dir.path(),
+                        &shifted,
+                        0,
+                        Move::To(shifted.len() - 1),
+                        shiv_core::install::InstallGuard::acquire().permit(),
+                    )
+                    .unwrap();
                     sidecar::group(dir.path())
                 },
                 |mods| {
-                    sidecar::move_mod(dir.path(), &mods, mods.len() - 1, Move::Top).unwrap();
+                    sidecar::move_mod(
+                        dir.path(),
+                        &mods,
+                        mods.len() - 1,
+                        Move::Top,
+                        shiv_core::install::InstallGuard::acquire().permit(),
+                    )
+                    .unwrap();
                 },
                 BatchSize::PerIteration,
             );
@@ -61,12 +74,25 @@ fn reorder_benches(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let shifted = sidecar::group(dir.path());
-                    sidecar::move_mod(dir.path(), &shifted, 0, Move::To(shifted.len() - 1))
-                        .unwrap();
+                    sidecar::move_mod(
+                        dir.path(),
+                        &shifted,
+                        0,
+                        Move::To(shifted.len() - 1),
+                        shiv_core::install::InstallGuard::acquire().permit(),
+                    )
+                    .unwrap();
                     sidecar::group(dir.path())
                 },
                 |mods| {
-                    sidecar::set_pak(dir.path(), &mods, mods.len() - 1, 1).unwrap();
+                    sidecar::set_pak(
+                        dir.path(),
+                        &mods,
+                        mods.len() - 1,
+                        1,
+                        shiv_core::install::InstallGuard::acquire().permit(),
+                    )
+                    .unwrap();
                 },
                 BatchSize::PerIteration,
             );

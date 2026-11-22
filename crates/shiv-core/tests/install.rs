@@ -88,7 +88,13 @@ fn not_running() -> bool {
 }
 
 fn run(e: &Env, archive: &Path, id: &str) -> Result<Sidecar, InstallError> {
-    install::install_with(archive, meta(id), &e.paths, not_running)
+    install::install_with(
+        archive,
+        meta(id),
+        &e.paths,
+        not_running,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
 }
 
 #[test]
@@ -114,13 +120,27 @@ fn install_records_the_nsfw_flag() {
     let a = zip_in(&e, &[("skin.vpk", b"VPKDATA")]);
     let mut m = meta("spicy");
     m.nsfw = true;
-    let sc = install::install_with(&a, m, &e.paths, not_running).unwrap();
+    let sc = install::install_with(
+        &a,
+        m,
+        &e.paths,
+        not_running,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(sc.nsfw, Some(true));
     let read = sidecar::read(&e.paths.addons, "spicy").unwrap().unwrap();
     assert_eq!(read.nsfw, Some(true));
     // Not NSFW is recorded too, distinct from unknown.
     let b = zip_in(&e, &[("other.vpk", b"VPKDATA")]);
-    let plain = install::install_with(&b, meta("plain"), &e.paths, not_running).unwrap();
+    let plain = install::install_with(
+        &b,
+        meta("plain"),
+        &e.paths,
+        not_running,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(plain.nsfw, Some(false));
 }
 
@@ -253,7 +273,14 @@ fn refuses_while_game_running() {
     let e = env();
     let a = zip_in(&e, &[("skin.vpk", b"x")]);
     let before = snapshot(&e.paths.addons);
-    let err = install::install_with(&a, meta("m1"), &e.paths, || true).unwrap_err();
+    let err = install::install_with(
+        &a,
+        meta("m1"),
+        &e.paths,
+        || true,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, InstallError::GameRunning), "{err:?}");
     assert_eq!(snapshot(&e.paths.addons), before);
     assert!(!e.paths.addons.join(".shiv").exists());
@@ -325,7 +352,12 @@ fn uninstall_removes_vpks_chunks_and_sidecar() {
         .iter()
         .find(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == "m1"))
         .unwrap();
-    install::uninstall_with(m, || false).unwrap();
+    install::uninstall_with(
+        m,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(names(&e.paths.addons), vec!["pak09_dir.vpk"]);
     assert_eq!(sidecar::read(&e.paths.addons, "m1").unwrap(), None);
 
@@ -333,7 +365,12 @@ fn uninstall_removes_vpks_chunks_and_sidecar() {
     let mods = sidecar::group(&e.paths.addons);
     assert_eq!(mods.len(), 1);
     assert!(mods[0].sidecar.is_none());
-    install::uninstall_with(&mods[0], || false).unwrap();
+    install::uninstall_with(
+        &mods[0],
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert!(names(&e.paths.addons).is_empty());
 }
 
@@ -488,8 +525,15 @@ fn size_cap_is_enforced() {
         max_bytes: 1000,
         max_entries: 100,
     };
-    let err =
-        install::install_with_limits(&a, meta("m1"), &e.paths, not_running, small).unwrap_err();
+    let err = install::install_with_limits(
+        &a,
+        meta("m1"),
+        &e.paths,
+        not_running,
+        small,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, InstallError::TooLarge), "{err:?}");
     assert_eq!(snapshot(&e.paths.addons), before);
 
@@ -498,8 +542,15 @@ fn size_cap_is_enforced() {
         max_bytes: 1 << 20,
         max_entries: 2,
     };
-    let err =
-        install::install_with_limits(&many, meta("m1"), &e.paths, not_running, few).unwrap_err();
+    let err = install::install_with_limits(
+        &many,
+        meta("m1"),
+        &e.paths,
+        not_running,
+        few,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, InstallError::TooLarge), "{err:?}");
     assert_eq!(snapshot(&e.paths.addons), before);
 }
@@ -546,10 +597,20 @@ fn uninstall_refuses_while_game_running() {
     run(&e, &a, "m1").unwrap();
     let m = sidecar::group(&e.paths.addons).remove(0);
     let before = snapshot(&e.paths.addons);
-    let err = install::uninstall_with(&m, || true).unwrap_err();
+    let err = install::uninstall_with(
+        &m,
+        || true,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, InstallError::GameRunning), "{err:?}");
     assert_eq!(snapshot(&e.paths.addons), before);
-    install::uninstall_with(&m, not_running).unwrap();
+    install::uninstall_with(
+        &m,
+        not_running,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -565,7 +626,12 @@ fn uninstall_unknown_vpk_removes_its_chunks() {
         .find(|m| m.vpks[0].pak == Some(3))
         .unwrap();
     assert!(m.sidecar.is_none());
-    install::uninstall_with(&m, not_running).unwrap();
+    install::uninstall_with(
+        &m,
+        not_running,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(names(d), vec!["pak04_000.vpk"]);
 }
 
@@ -604,7 +670,12 @@ fn sidecar_with_traversal_vpk_name_deletes_nothing_outside_addons() {
     // Uninstall with a crafted InstalledMod must not either.
     let mut m = sidecar::group(&e.paths.addons).remove(0);
     m.sidecar = Some(evil);
-    install::uninstall_with(&m, not_running).unwrap();
+    install::uninstall_with(
+        &m,
+        not_running,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert!(victim.exists() && abs.exists());
 }
 

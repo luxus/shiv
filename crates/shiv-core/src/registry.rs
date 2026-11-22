@@ -318,6 +318,7 @@ pub fn install_registry_mod(
     artifact_file_name: &str,
     downloaded: &Path,
     enabled: bool,
+    permit: install::InstallPermit<'_>,
 ) -> Result<Sidecar, RegistryError> {
     let meta = install::ModMeta {
         mod_id: source.mod_id_of(listing_id),
@@ -328,7 +329,7 @@ pub fn install_registry_mod(
         hero: None,
         category: Some("registry".to_owned()),
     };
-    let sc = install::install_with(downloaded, meta, paths, crate::game::is_running)?;
+    let sc = install::install_with(downloaded, meta, paths, crate::game::is_running, permit)?;
     if !enabled {
         disable_by_id(paths, &sc.mod_id)?;
     }

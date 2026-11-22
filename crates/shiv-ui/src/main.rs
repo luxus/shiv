@@ -375,8 +375,14 @@ mod tests {
             hero: None,
             category: None,
         };
-        shiv_core::install::install_files(std::slice::from_ref(&release), meta, &paths, || false)
-            .expect("install soundcap");
+        shiv_core::install::install_files(
+            std::slice::from_ref(&release),
+            meta,
+            &paths,
+            || false,
+            shiv_core::install::InstallGuard::acquire().permit(),
+        )
+        .expect("install soundcap");
         let installed = || {
             shiv_core::sidecar::group(&paths.addons)
                 .into_iter()
@@ -3870,9 +3876,7 @@ mod tests {
         // then retrying: the retry waits for the cancelled worker's answer,
         // so one link can never install twice.
         let rows_before = state.get_rows().row_count();
-        let guard = shiv_core::install::INSTALL_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = shiv_core::install::InstallGuard::acquire();
         state.invoke_install_file();
         local.set_path(format!("{link_url}/dl/Haze%20Skin.vpk").into());
         local.invoke_install();

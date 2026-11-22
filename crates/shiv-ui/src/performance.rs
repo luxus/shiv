@@ -213,9 +213,7 @@ fn run_pack_install(
     }
     report(PackUpdate::Installing);
     let running = deps.running.clone();
-    let _guard = install::INSTALL_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = install::InstallGuard::acquire();
     if cancel.load(Ordering::Relaxed) {
         return Err(("Cancelled".into(), false));
     }
@@ -236,6 +234,7 @@ fn run_pack_install(
         &paths,
         move || running(),
         complock::last_slot(),
+        guard.permit(),
     )
     .map_err(|e| fail(install_error_text(&e)))
     .map(|_| ())

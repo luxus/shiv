@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use shiv_core::addons;
-
+use shiv_core::install;
 use shiv_core::sidecar;
 use slint::{ComponentHandle, Weak};
 
@@ -267,6 +267,13 @@ fn enable_first(id: &str, enable: bool) -> Result<(), String> {
         .iter()
         .position(is_it)
         .ok_or("The mod is no longer installed.")?;
-    sidecar::move_mod(&paths.addons, &mods, index, sidecar::Move::Top)
-        .map_err(|e| format!("Could not change the load order. {e}"))
+    let guard = install::InstallGuard::acquire();
+    sidecar::move_mod(
+        &paths.addons,
+        &mods,
+        index,
+        sidecar::Move::Top,
+        guard.permit(),
+    )
+    .map_err(|e| format!("Could not change the load order. {e}"))
 }
