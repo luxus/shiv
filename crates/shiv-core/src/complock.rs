@@ -842,31 +842,38 @@ pub fn inflate(stream: &[u8]) -> Result<Vec<u8>, String> {
 
 /// The VPK a pak's downloaded piece files hold, written to `dest`: the
 /// pieces read as one stream (see [`assemble`]), inflated as it copies, and
-/// gated on the part's declared size, CRC and VPK signature — a mismatch
-/// removes the partial `dest` and changes nothing else. Memory stays at the
-/// copy buffer: the pieces are never held whole.
+/// gated on the part's declared size, compressed size, CRC, the SHA-256
+/// prefix in `url`, and the VPK signature. A mismatch removes the partial
+/// `dest`. Output past `size` stops before that chunk is written. Memory
+/// stays at the copy buffer: the pieces are never held whole.
 ///
 /// # Errors
 ///
 /// A piece file cannot be read; the concatenated stream is not valid
 /// DEFLATE ([`inflate`]'s refusal); the bytes are not the declared part
-/// (wrong size, CRC or signature); `dest` cannot be written.
+/// (too large, wrong size, compressed size, CRC, SHA-256 prefix, or
+/// signature); `dest` cannot be written.
 pub fn unpack_pak(
     pieces: &[std::path::PathBuf],
     dest: &std::path::Path,
     crc_wanted: u32,
     size: u64,
+    csize: u64,
+    url: &str,
 ) -> Result<(), String> {
     const COPY: usize = 256 * 1024;
     const VPK_SIGNATURE: [u8; 4] = [0x34, 0x12, 0xaa, 0x55];
+    use sha2::{Digest, Sha256};
     use std::io::Read as _;
-    let unpacked = (|| -> Result<u64, String> {
+    let unpacked = (|| -> Result<(), String> {
+        let compressed = compressed_len(pieces)?;
         let mut chain = Pieces::new(pieces)?;
         let mut decoder = flate2::read::DeflateDecoder::new(&mut chain);
         let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; COPY];
         let mut written = 0u64;
         let mut state = 0xFFFF_FFFF;
+        let mut sha = Sha256::new();
         let mut head = [0u8; 4];
         loop {
             let n = decoder.read(&mut buf).map_err(|e| e.to_string())?;
@@ -874,6 +881,10 @@ pub fn unpack_pak(
                 break;
             }
             let chunk = &buf[..n];
+            let next = written.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+            if next > size {
+                return Err("the part is larger than the site says; nothing replaced".into());
+            }
             if written == 0 {
                 let take = head.len().min(chunk.len());
                 head[..take].copy_from_slice(&chunk[..take]);
@@ -883,7 +894,8 @@ pub fn unpack_pak(
             }
             std::io::Write::write_all(&mut file, chunk).map_err(|e| e.to_string())?;
             state = crc32_feed(state, chunk);
-            written += n as u64;
+            sha.update(chunk);
+            written = next;
         }
         drop(file);
         let crc = state ^ 0xFFFF_FFFF;
@@ -897,12 +909,65 @@ pub fn unpack_pak(
                 "the part's CRC is {crc:#x}, the pack data declares {crc_wanted:#x}"
             ));
         }
-        Ok(written)
+        if compressed != csize {
+            return Err(format!(
+                "the compressed part is {compressed} bytes, the pack data declares {csize}"
+            ));
+        }
+        if let Some(prefix) = url_sha_prefix(url) {
+            let hex = sha_hex(&sha.finalize());
+            if !hex.starts_with(prefix) {
+                return Err(format!(
+                    "the part's SHA-256 does not start with {prefix}; nothing replaced"
+                ));
+            }
+        }
+        Ok(())
     })();
     if unpacked.is_err() {
         let _ = std::fs::remove_file(dest);
     }
-    unpacked.map(|_| ())
+    unpacked
+}
+
+fn compressed_len(pieces: &[std::path::PathBuf]) -> Result<u64, String> {
+    let mut total = 0u64;
+    for piece in pieces {
+        let len = std::fs::metadata(piece).map_err(|e| e.to_string())?.len();
+        total = total
+            .checked_add(len)
+            .ok_or_else(|| "the compressed part is larger than the counter holds".to_owned())?;
+    }
+    Ok(total)
+}
+
+/// The 10 hex digits CompLock reads from the first piece url
+/// (`name.<10 hex>[.<digits>].z`). Absent when the url has no such suffix.
+fn url_sha_prefix(url: &str) -> Option<&str> {
+    let stem = url.strip_suffix(".z")?;
+    let (body, tail) = stem.rsplit_once('.')?;
+    if is_sha_prefix(tail) {
+        return Some(tail);
+    }
+    if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let hex = body.rsplit_once('.').map(|(_, hex)| hex)?;
+    is_sha_prefix(hex).then_some(hex)
+}
+
+fn is_sha_prefix(hex: &str) -> bool {
+    hex.len() == 10 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn sha_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0xf)]));
+    }
+    out
 }
 
 /// Several piece files read as one stream, in order.
@@ -1611,7 +1676,14 @@ pub fn check_parts(fresh: &str, dir: &std::path::Path) -> Vec<PackProblem> {
                 continue;
             }
             let dest = scratch.join(&part.name);
-            match unpack_pak(&pieces, &dest, part.crc, part.size) {
+            match unpack_pak(
+                &pieces,
+                &dest,
+                part.crc,
+                part.size,
+                part.csize,
+                part.url.first().map(String::as_str).unwrap_or(""),
+            ) {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&dest);
                 }

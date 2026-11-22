@@ -291,7 +291,15 @@ fn run_pack_install(
             pieces.push(piece);
         }
         let dest = dir.path().join(&part.name);
-        complock::unpack_pak(&pieces, &dest, part.crc, part.size).map_err(fail)?;
+        complock::unpack_pak(
+            &pieces,
+            &dest,
+            part.crc,
+            part.size,
+            part.csize,
+            part.urls.first().map(String::as_str).unwrap_or(""),
+        )
+        .map_err(fail)?;
         vpks.push(dest);
     }
     let guard = install::InstallGuard::acquire();

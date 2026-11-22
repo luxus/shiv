@@ -544,7 +544,14 @@ fn fetch_release(deps: &Deps, dir: &Path, plan: &ResetPlan) -> Result<Vec<PathBu
                     pieces.push(piece);
                 }
                 let dest = dir.join(&part.name);
-                complock::unpack_pak(&pieces, &dest, part.crc, part.size)?;
+                complock::unpack_pak(
+                    &pieces,
+                    &dest,
+                    part.crc,
+                    part.size,
+                    part.csize,
+                    part.urls.first().map(String::as_str).unwrap_or(""),
+                )?;
                 vpks.push(dest);
             }
             Ok(vpks)
