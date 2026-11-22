@@ -440,7 +440,13 @@ fn reset_error_text(name: &str, e: &ResetError) -> String {
 
 /// Download the plan's release and reinstall it through `reset::reset_with`,
 /// which sets the current files aside first and puts them back on failure.
-fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), String> {
+fn run_reset(
+    deps: &Deps,
+    id: &str,
+    name: &str,
+    plan: &ResetPlan,
+    ask: impl Fn(&[install::SlotOccupant]) -> Option<install::SlotChoice>,
+) -> Result<String, String> {
     let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
     if (deps.running)() {
         return Err(GAME_RUNNING_TEXT.into());
@@ -452,6 +458,7 @@ fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), 
     let fetched = fetch_release(deps, dir.path(), plan)?;
     let running = deps.running.clone();
     let guard = install::InstallGuard::acquire();
+    let note = RefCell::new(String::new());
     reset::reset_with(
         &paths,
         id,
@@ -467,16 +474,36 @@ fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), 
                     hero: None,
                     category: None,
                 };
-                install::install_files_in_slots(
+                let first = install::install_files_in_slots(
                     &fetched,
-                    meta,
+                    meta.clone(),
                     &paths,
                     || running(),
                     complock::last_slot(),
+                    None,
                     guard.permit(),
-                )
-                .map(|_| ())
-                .map_err(|e| install_error_text(&e))
+                );
+                let placed = match first {
+                    Err(install::InstallError::NeedsChoice(occupants)) => {
+                        let Some(choice) = ask(&occupants) else {
+                            return Err("Cancelled".into());
+                        };
+                        install::install_files_in_slots(
+                            &fetched,
+                            meta,
+                            &paths,
+                            || running(),
+                            complock::last_slot(),
+                            Some(choice),
+                            guard.permit(),
+                        )
+                        .map_err(|e| install_error_text(&e))?
+                    }
+                    Err(e) => return Err(install_error_text(&e)),
+                    Ok(placed) => placed,
+                };
+                *note.borrow_mut() = install::slot_note(&placed);
+                Ok(())
             }
             ResetPlan::Registry(r) => registry::install_registry_mod(
                 &paths,
@@ -496,8 +523,8 @@ fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), 
         },
         guard.permit(),
     )
-    .map(|_| ())
-    .map_err(|e| reset_error_text(name, &e))
+    .map_err(|e| reset_error_text(name, &e))?;
+    Ok(note.into_inner())
 }
 
 /// The plan's release on disk in `dir`: a CompLock pak's VPKs unpacked and
@@ -2214,19 +2241,26 @@ impl Installed {
         };
         let deps = self.deps.clone();
         let id = id.to_owned();
-        self.run_job(&id.clone(), move |name| run_reset(&deps, &id, name, &plan));
+        let weak = self.weak.clone();
+        self.run_job(&id.clone(), move |name| {
+            run_reset(&deps, &id, name, &plan, |occupants| {
+                crate::conflict::ask_slots(&weak, occupants)
+            })
+        });
     }
 
     /// Swap a reset mod back to the files its last reset set aside.
     fn restore_mod(&self, id: &str) {
         let deps = self.deps.clone();
         let id = id.to_owned();
-        self.run_job(&id.clone(), move |name| run_restore(&deps, &id, name));
+        self.run_job(&id.clone(), move |name| {
+            run_restore(&deps, &id, name).map(|()| String::new())
+        });
     }
 
     /// An action on one row that is not an [`Action`]: same busy guard,
     /// worker and follow-up refresh.
-    fn run_job(&self, id: &str, job: impl FnOnce(&str) -> Result<(), String> + Send + 'static) {
+    fn run_job(&self, id: &str, job: impl FnOnce(&str) -> Result<String, String> + Send + 'static) {
         if self.weak.upgrade().is_none() || self.refreshing.get() || self.acting.get() {
             return;
         }
@@ -2247,7 +2281,7 @@ impl Installed {
             move |result| {
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.acted(result));
+                    with_installed(|i| i.finish(result));
                 });
             },
         );
@@ -2259,13 +2293,22 @@ impl Installed {
     /// Success or failure, re-read the folder: that also refreshes the
     /// game-running state (a game-running refusal means it just started).
     fn acted(&self, result: Result<(), String>) {
+        self.finish(result.map(|()| String::new()));
+    }
+
+    fn finish(&self, result: Result<String, String>) {
         // The disk changed: keep the Launch sidebar count and Browse's
         // Installed badges current.
         crate::launch::refresh();
         crate::browse::refresh_installed();
         self.with_state(|s| {
-            if let Err(text) = &result {
-                s.set_banner_text(text.as_str().into());
+            let text = match &result {
+                Ok(note) if !note.is_empty() => Some(note.as_str()),
+                Err(text) => Some(text.as_str()),
+                Ok(_) => None,
+            };
+            if let Some(text) = text {
+                s.set_banner_text(text.into());
             }
         });
         // The refresh marks busy before the action flag clears, so `busy`

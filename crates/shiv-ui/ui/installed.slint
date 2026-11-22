@@ -522,6 +522,15 @@ export global ConflictState {
     callback load-first();
     callback swap();
     callback cancel();
+
+    // A pack install is waiting on paks that already use its slot numbers.
+    in-out property <bool> slot-open;
+    in property <string> slot-text;
+    // Replace is offered only for a look-alike. The primary button moves.
+    in property <bool> slot-look-alike;
+    callback slot-replace();
+    callback slot-move();
+    callback slot-cancel();
 }
 
 // Modal over the whole window: a new mod replaces the same hero's content as
@@ -597,6 +606,68 @@ export component ConflictDialog inherits Rectangle {
                     primary: true;
                     disabled: ConflictState.busy;
                     clicked => { ConflictState.swap(); }
+                }
+            }
+        }
+    }
+}
+
+// A pack install found other paks on the slots it needs. A look-alike may
+// be replaced. Anything else is moved above the pack, or the install is
+// cancelled. The primary button moves. The worker changes nothing until then.
+export component SlotDialog inherits Rectangle {
+    background: Theme.bg-sunken.with-alpha(0.75);
+    TouchArea { }
+
+    card := Rectangle {
+        width: min(560px, root.width - 2 * Theme.s4);
+        height: min(body.preferred-height, root.height - 2 * Theme.s4);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.raised;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border;
+        TouchArea { }
+
+        body := VerticalLayout {
+            padding: Theme.s3;
+            spacing: Theme.s2;
+
+            Text {
+                text: "Other mods use the pack's slots";
+                color: Theme.text;
+                font-size: Theme.text-xl;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            Text {
+                text: ConflictState.slot-text;
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                wrap: word-wrap;
+            }
+            Text {
+                text: ConflictState.slot-look-alike ? "Replace removes the ones that look like the pack. Keep both puts them on free numbers after the pack. Cancel changes nothing." : "Move puts them on free numbers after the pack, so the pack wins where both change a file. Cancel changes nothing.";
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Theme.s1;
+                alignment: end;
+                TextButton {
+                    text: "Cancel";
+                    clicked => { ConflictState.slot-cancel(); }
+                }
+                if ConflictState.slot-look-alike: Button {
+                    text: "Replace";
+                    clicked => { ConflictState.slot-replace(); }
+                }
+                Button {
+                    text: ConflictState.slot-look-alike ? "Keep both" : "Move";
+                    primary: true;
+                    clicked => { ConflictState.slot-move(); }
                 }
             }
         }

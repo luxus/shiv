@@ -189,9 +189,13 @@ impl PackTask {
 
 /// What a pack-install worker reports while it runs.
 enum PackUpdate {
-    Progress { done: u64, total: Option<u64> },
+    Progress {
+        done: u64,
+        total: Option<u64>,
+    },
     Installing,
-    Done(Result<(), (String, bool)>),
+    /// `Ok` is the moved/replaced note, empty when nothing else changed.
+    Done(Result<String, (String, bool)>),
 }
 
 /// A pack install stopped before it finished; matches what the Downloads
@@ -209,7 +213,8 @@ fn run_pack_install(
     task: PackTask,
     cancel: &AtomicBool,
     mut report: impl FnMut(PackUpdate),
-) -> Result<(), (String, bool)> {
+    ask: impl Fn(&[install::SlotOccupant]) -> Option<install::SlotChoice>,
+) -> Result<String, (String, bool)> {
     let fail = |text: String| (text, false);
     let paths = (deps.locate)().map_err(|e| fail(game_error_text(&e)))?;
     if (deps.running)() {
@@ -284,16 +289,39 @@ fn run_pack_install(
     };
     // Each part goes on the slot its name gives (HUD++ pak01, ...), so the
     // pack's load order does not depend on which download finished first.
-    install::install_files_in_slots(
+    let running_again = running.clone();
+    let first = install::install_files_in_slots(
         &vpks,
-        meta,
+        meta.clone(),
         &paths,
         move || running(),
         complock::last_slot(),
+        None,
         guard.permit(),
-    )
-    .map_err(|e| fail(install_error_text(&e)))
-    .map(|_| ())
+    );
+    let placed = match first {
+        Err(install::InstallError::NeedsChoice(occupants)) => {
+            let Some(choice) = ask(&occupants) else {
+                return Err((CANCELLED_TEXT.into(), false));
+            };
+            if cancel.load(Ordering::Relaxed) {
+                return Err((CANCELLED_TEXT.into(), false));
+            }
+            install::install_files_in_slots(
+                &vpks,
+                meta,
+                &paths,
+                move || running_again(),
+                complock::last_slot(),
+                Some(choice),
+                guard.permit(),
+            )
+            .map_err(|e| fail(install_error_text(&e)))?
+        }
+        Err(e) => return Err(fail(install_error_text(&e))),
+        Ok(placed) => placed,
+    };
+    Ok(install::slot_note(&placed))
 }
 
 thread_local! {
@@ -2017,13 +2045,16 @@ impl Perf {
                     self.pack_jobs.borrow_mut().remove(id);
                 }
                 match result {
-                    Ok(()) => {
+                    Ok(note) => {
                         crate::downloads::finished(id, crate::downloads::Outcome::Done);
                         self.pack_installed
                             .borrow_mut()
                             .insert(id.to_owned(), revision);
                         crate::installed::reload();
                         crate::launch::refresh();
+                        if !note.is_empty() {
+                            self.show_result(&name, &note, false);
+                        }
                     }
                     Err((text, running)) => {
                         if text != CANCELLED_TEXT {
@@ -2115,6 +2146,7 @@ impl Perf {
         crate::downloads::started(&task.mod_id, &task.name);
         let deps = self.deps.clone();
         let weak = self.weak.clone();
+        let ask_weak = weak.clone();
         let mod_id = task.mod_id.clone();
         let worker_task = task.clone();
         let failed_id = task.mod_id.clone();
@@ -2127,7 +2159,11 @@ impl Perf {
         let post = poster.clone();
         let started = crate::spawn_worker(
             "shiv-pack-install",
-            move || run_pack_install(&deps, worker_task, &cancel, post),
+            move || {
+                run_pack_install(&deps, worker_task, &cancel, post, |occupants| {
+                    crate::conflict::ask_slots(&ask_weak, occupants)
+                })
+            },
             move |result| {
                 poster(PackUpdate::Done(
                     result.unwrap_or_else(|text| Err((text, false))),
@@ -2403,7 +2439,13 @@ mod tests {
         for id in ids {
             let pak = complock::release_for(&pack_mod_id(&id), None).expect("published");
             let task = PackTask::of(pack_mod_id(&id), format!("CompLock {id}"), pak);
-            let r = run_pack_install(&deps, task, &AtomicBool::new(false), |_| {});
+            let r = run_pack_install(
+                &deps,
+                task,
+                &AtomicBool::new(false),
+                |_| {},
+                |_| Some(install::SlotChoice::Move),
+            );
             eprintln!("{id}: {r:?}");
         }
         for m in shiv_core::sidecar::group(&paths.addons) {
