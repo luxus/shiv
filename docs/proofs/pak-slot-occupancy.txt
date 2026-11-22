@@ -1,0 +1,37 @@
+Pak slot occupancy. Recorded 2026-11-22.
+
+The check is scripts/check_pak_occupancy.py. cargo test -p shiv-core --test pak_occupancy runs it.
+The behavior tests live in crates/shiv-core/tests/slots.rs.
+
+Files-only occupancy, parent of fdee4cb (b2c5f0e).
+The stale-sidecar test from fdee4cb was copied onto that tree and run:
+
+  cargo test -p shiv-core --test slots a_slot_a_stale_sidecar_still_names_is_not_handed_out --locked
+
+  assertion `left == right` failed: not the stale pak01
+    left: ["pak01_dir.vpk"]
+   right: ["pak02_dir.vpk"]
+  test result: FAILED. exit 101
+
+Pack slots not held back, e658688 (parent of b2c5f0e).
+The test added in b2c5f0e was copied onto that tree and run:
+
+  cargo test -p shiv-core --test slots with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full --locked
+
+  assertion `left == right` failed: not pak02
+    left: ["pak02_dir.vpk"]
+   right: ["pak09_dir.vpk"]
+  test result: FAILED. exit 101
+
+set_pak still handed the stale slot out on fdee4cb, the commit that fixed install.
+The new test was copied onto that tree and run:
+
+  cargo test -p shiv-core --test slots set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record --locked
+
+  set_pak handed out the stale slot: Ok(())
+  test result: FAILED. exit 101
+
+Same three tests on this tree: passed.
+scripts/check_pak_occupancy.py on b2c5f0e, e658688, and fdee4cb: exit 1,
+"used_pak_numbers counts files only. Call pak_slot::occupied, or pak_slot::free_slots".
+On this tree: "pak occupancy check passed", exit 0.

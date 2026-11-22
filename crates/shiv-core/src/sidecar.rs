@@ -4,7 +4,7 @@
 //! enabled-form file names (no `.disabled` suffix) so toggling a mod never
 //! breaks the link.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::addons::{self, AddonsError, InstalledVpk};
 
-const DIR: &str = ".shiv";
+pub(crate) const DIR: &str = ".shiv";
 const DISABLED_EXT: &str = ".disabled";
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +41,8 @@ pub enum SidecarError {
     PakPush { pak: u32 },
     #[error("the mods list has two VPKs on the same pak number")]
     DuplicatePak(u32),
+    #[error("pak {0} is still named by a sidecar whose file is gone")]
+    StalePak(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,6 +538,8 @@ pub fn move_mod(
 /// [`SidecarError::BadPak`] for a number outside `01..=99`;
 /// [`SidecarError::PakPush`] when the move would push another VPK past 99;
 /// [`SidecarError::DuplicatePak`] for a `mods` slice `group` did not build;
+/// [`SidecarError::StalePak`] when a target number is named by a sidecar
+/// whose file is not in `mods`;
 /// the rename and sidecar errors as for [`move_mod`]. Every refusal happens
 /// before the first rename.
 pub fn set_pak(
@@ -592,6 +596,14 @@ pub fn set_pak(
     assigned.sort_unstable();
     if assigned.windows(2).any(|w| w[0] == w[1]) {
         return Err(SidecarError::DuplicatePak(pak));
+    }
+    let occupied = crate::pak_slot::occupied(addons)?;
+    let held: BTreeSet<u32> = ranked.iter().filter_map(|(v, _)| v.pak).collect();
+    if let Some(&n) = numbers
+        .iter()
+        .find(|n| occupied.contains(n) && !held.contains(n))
+    {
+        return Err(SidecarError::StalePak(n));
     }
     let refs: Vec<&InstalledVpk> = ranked.iter().map(|(v, _)| *v).collect();
     let order: Vec<&InstalledMod> = mods

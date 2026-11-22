@@ -310,3 +310,44 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         .expect("next keeps its own record");
     assert_eq!(next_mod.vpks.len(), 1);
 }
+
+#[test]
+fn set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record() {
+    let e = env();
+    let gone = vpk(&e.work, "gone", "pak01_dir.vpk", false);
+    install::install_files(&gone, meta("gone"), &e.paths, || false).unwrap();
+    fs::remove_file(e.paths.addons.join("pak01_dir.vpk")).unwrap();
+
+    let keep = vpk(&e.work, "keep", "pak01_dir.vpk", false);
+    install::install_files(&keep, meta("keep"), &e.paths, || false).unwrap();
+    assert_eq!(
+        vpks_of(&e, "keep"),
+        ["pak02_dir.vpk"],
+        "install handed out the stale pak01"
+    );
+
+    let mods = sidecar::group(&e.paths.addons);
+    let index = mods
+        .iter()
+        .position(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == "keep"))
+        .expect("keep");
+    let moved = sidecar::set_pak(&e.paths.addons, &mods, index, 1);
+    assert!(
+        moved.is_err(),
+        "set_pak handed out the stale slot: {moved:?}"
+    );
+
+    let mods = sidecar::group(&e.paths.addons);
+    assert!(
+        mods.iter()
+            .any(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == "keep")),
+        "keep lost its record to the stale sidecar"
+    );
+    assert!(
+        !mods.iter().any(|m| {
+            m.sidecar.as_ref().is_some_and(|s| s.mod_id == "gone")
+                && m.vpks.iter().any(|v| v.pak == Some(1))
+        }),
+        "the stale sidecar owns pak01 after set_pak"
+    );
+}

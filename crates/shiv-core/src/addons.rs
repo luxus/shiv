@@ -324,8 +324,7 @@ pub(crate) fn plan_renumber(
     Ok(plan)
 }
 
-/// Pak numbers carried by any file in `addons` (dir, chunk, enabled or disabled).
-pub(crate) fn used_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
+pub(crate) fn file_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
     let io_err = |source| AddonsError::Io {
         path: addons.to_path_buf(),
         source,
@@ -348,22 +347,10 @@ pub(crate) fn used_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
     Ok(used)
 }
 
-/// Lowest unused pak number in `addons` (1..=99), counting disabled paks and chunk
-/// files as used. Hand-added VPKs without a pak number are ignored.
-///
-/// Overflow rule (as in the old manager's shard.rs): the engine loads at most 99
-/// `pakNN_dir.vpk` per search path. The old app uses shard directories `addons`,
-/// `addons2` ..= `addons10` (`MAX_SHARDS` = 10), numbering from 01 in each shard. A full
-/// directory returns [`AddonsError::Full`] and the caller moves to the next shard.
-///
-/// # Errors
-///
-/// [`AddonsError::Io`] when the directory cannot be listed; [`AddonsError::Full`]
-/// when every number 01..=99 is taken.
 pub fn next_pak(addons: &Path) -> Result<u32, AddonsError> {
-    let used = used_pak_numbers(addons)?;
-    (1..=PAK_CAPACITY)
-        .find(|n| !used.contains(n))
+    crate::pak_slot::free_slots(addons, 1)?
+        .into_iter()
+        .next()
         .ok_or_else(|| AddonsError::Full {
             dir: addons.to_path_buf(),
         })
