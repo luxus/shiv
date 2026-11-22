@@ -28,3 +28,13 @@ Those two shapes, compiled against this tree:
 
 Same check as the test on this tree: forgotten_pak_change_does_not_compile passed.
 `cargo test --workspace --locked` passed. `cargo clippy --workspace --all-targets --locked -- -D warnings` passed.
+
+next_pak is pub(crate). An outside crate calling it, on this tree
+(cargo check --offline, exit 101):
+
+  error[E0603]: function `next_pak` is private
+    shiv_core::addons::next_pak(addons)
+                         ^^^^^^^^ private function
+  note: the function `next_pak` is defined here
+    pub(crate) fn next_pak(addons: &Path) -> Result<u32, AddonsError>
+  error: could not compile `forgotten-lock` (lib) due to 1 previous error

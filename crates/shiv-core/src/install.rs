@@ -67,13 +67,6 @@ pub struct InstallPermit<'a> {
     _guard: &'a std::sync::MutexGuard<'static, ()>,
 }
 
-impl InstallPermit<'_> {
-    pub(crate) fn keep(self) {
-        let Self { _guard } = self;
-        let _ = _guard;
-    }
-}
-
 /// Exclusive flock on `<addons>/.shiv/lock`, held until drop.
 struct FileLock {
     file: File,
@@ -474,9 +467,8 @@ pub fn install_with_limits(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
     limits: Limits,
-    permit: InstallPermit<'_>,
+    _permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
-    permit.keep();
     // Checked first: nothing may be written while the game runs.
     if game_running() {
         return Err(InstallError::GameRunning);
@@ -603,14 +595,11 @@ fn install_files_to(
     }
     let staged = collect_vpks(staging.path())?;
     match reserved {
-        None => {
-            permit.keep();
-            place_and_record(addons_dir, &staged, meta, old).map(|sidecar| SlotPlaced {
-                sidecar,
-                moved: Vec::new(),
-                replaced: Vec::new(),
-            })
-        }
+        None => place_and_record(addons_dir, &staged, meta, old).map(|sidecar| SlotPlaced {
+            sidecar,
+            moved: Vec::new(),
+            replaced: Vec::new(),
+        }),
         Some(reserved) => place_in_slots(addons_dir, &staged, meta, reserved, choice, permit),
     }
 }
@@ -1009,9 +998,8 @@ fn install_root(addons: &Path) -> PathBuf {
 pub fn uninstall_with(
     m: &InstalledMod,
     game_running: impl Fn() -> bool,
-    permit: InstallPermit<'_>,
+    _permit: InstallPermit<'_>,
 ) -> Result<(), InstallError> {
-    permit.keep();
     if game_running() {
         return Err(InstallError::GameRunning);
     }
@@ -1898,9 +1886,8 @@ pub fn replace_local_with(
     target: &InstalledMod,
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
-    permit: InstallPermit<'_>,
+    _permit: InstallPermit<'_>,
 ) -> Result<Replaced, InstallError> {
-    permit.keep();
     if game_running() {
         return Err(InstallError::GameRunning);
     }

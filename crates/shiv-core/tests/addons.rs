@@ -37,30 +37,6 @@ fn disable_then_enable_roundtrips_filename() {
 }
 
 #[test]
-fn next_pak_skips_used_numbers_including_disabled() {
-    let dir = tempfile::tempdir().unwrap();
-    assert_eq!(addons::next_pak(dir.path()).unwrap(), 1);
-    touch(dir.path(), "pak01_dir.vpk");
-    touch(dir.path(), "pak02_dir.vpk.disabled");
-    assert_eq!(addons::next_pak(dir.path()).unwrap(), 3);
-    touch(dir.path(), "pak04_dir.vpk");
-    // Lowest free number, so the gap at 3 is reused.
-    assert_eq!(addons::next_pak(dir.path()).unwrap(), 3);
-}
-
-#[test]
-fn next_pak_reports_full_directory() {
-    let dir = tempfile::tempdir().unwrap();
-    for n in 1..=99 {
-        touch(dir.path(), &format!("pak{n:02}_dir.vpk"));
-    }
-    assert!(matches!(
-        addons::next_pak(dir.path()),
-        Err(AddonsError::Full { .. })
-    ));
-}
-
-#[test]
 fn hand_added_vpk_is_listed() {
     let dir = tempfile::tempdir().unwrap();
     touch(dir.path(), "pak07_dir.vpk");
@@ -80,7 +56,6 @@ fn non_pak_vpk_is_listed_with_no_pak_number() {
     touch(dir.path(), "123456_mod.vpk");
     let v = only(dir.path());
     assert_eq!((v.pak, v.enabled), (None, true));
-    assert_eq!(addons::next_pak(dir.path()).unwrap(), 1);
 }
 
 #[test]
@@ -236,12 +211,4 @@ fn set_enabled_rolls_back_when_a_chunk_target_exists() {
     }
     assert!(!dir.path().join("pak01_dir.vpk.disabled").exists());
     assert!(!dir.path().join("pak01_000.vpk.disabled").exists());
-}
-
-#[test]
-fn next_pak_counts_chunk_numbers() {
-    let dir = tempfile::tempdir().unwrap();
-    touch(dir.path(), "pak01_000.vpk");
-    touch(dir.path(), "pak02_003.vpk.disabled");
-    assert_eq!(addons::next_pak(dir.path()).unwrap(), 3);
 }

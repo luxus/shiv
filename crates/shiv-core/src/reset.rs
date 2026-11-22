@@ -107,9 +107,8 @@ pub fn restore_previous(
     paths: &GamePaths,
     mod_id: &str,
     game_running: impl Fn() -> bool,
-    permit: crate::install::InstallPermit<'_>,
+    _permit: crate::install::InstallPermit<'_>,
 ) -> Result<Sidecar, ResetError> {
-    permit.keep();
     if game_running() {
         return Err(ResetError::GameRunning);
     }
