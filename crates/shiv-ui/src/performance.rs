@@ -202,7 +202,7 @@ enum PackUpdate {
 /// screen shows for a cancelled transfer.
 const CANCELLED_TEXT: &str = "Cancelled";
 
-/// The pack-install worker: download the pak's pieces (a big pak arrives in
+/// Worker body: download the pak's pieces (a big pak arrives in
 /// numbered pieces that concatenate into one raw-DEFLATE stream), unpack
 /// and CRC-gate them into a VPK, then install it as a mod through the same
 /// lock every install takes. Mirrors Browse's `run_install`: the game is
@@ -231,7 +231,29 @@ fn run_pack_install(
     let mut done = 0u64;
     let mut last_step = u64::MAX;
     let mut vpks = Vec::new();
+    let mut in_place = Vec::new();
+    let mut free_names = Vec::new();
+    let mut busy = Vec::new();
     for part in &task.pak.parts {
+        match complock::locate_reusable(&paths.addons, part) {
+            Ok(Some(reused)) => {
+                let already = reused
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.eq_ignore_ascii_case(&part.name));
+                if already {
+                    in_place.push(part.name.clone());
+                } else if reused.moved_from.is_some() {
+                    free_names.push(part.clone());
+                } else {
+                    busy.push((part.name.clone(), reused));
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => return Err(fail(e.to_string())),
+        }
         let mut pieces = Vec::new();
         for (n, url) in part.urls.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
@@ -272,11 +294,22 @@ fn run_pack_install(
         complock::unpack_pak(&pieces, &dest, part.crc, part.size).map_err(fail)?;
         vpks.push(dest);
     }
-    report(PackUpdate::Installing);
-    let running = deps.running.clone();
     let guard = install::InstallGuard::acquire();
     if cancel.load(Ordering::Relaxed) {
-        return Err(("Cancelled".into(), false));
+        return Err((CANCELLED_TEXT.into(), false));
+    }
+    let mut remove_after = Vec::new();
+    for (name, reused) in busy {
+        let staged = dir.path().join(&name);
+        std::fs::copy(&reused.path, &staged).map_err(|e| fail(e.to_string()))?;
+        vpks.push(staged);
+        remove_after.push(reused.path);
+        for chunk in reused.chunks {
+            let staged_chunk = dir.path().join(&chunk.name);
+            std::fs::copy(&chunk.path, &staged_chunk).map_err(|e| fail(e.to_string()))?;
+            vpks.push(staged_chunk);
+            remove_after.push(chunk.path);
+        }
     }
     let meta = ModMeta {
         mod_id: task.mod_id.clone(),
@@ -287,6 +320,31 @@ fn run_pack_install(
         hero: None,
         category: None,
     };
+    let mut reused_moves = Vec::new();
+    let claim_free = |in_place: &mut Vec<String>, reused_moves: &mut Vec<String>| {
+        for part in &free_names {
+            let reused =
+                complock::claim_reusable(&paths.addons, part).map_err(|e| fail(e.to_string()))?;
+            if let Some(reused) = reused {
+                if let Some(from) = reused.moved_from {
+                    reused_moves.push(format!("{from} to {}", part.name));
+                }
+                in_place.push(part.name.clone());
+            }
+        }
+        Ok::<(), (String, bool)>(())
+    };
+    if vpks.is_empty() {
+        claim_free(&mut in_place, &mut reused_moves)?;
+        if !in_place.is_empty() {
+            complock::adopt_reused(&paths.addons, &meta, &in_place)
+                .map_err(|e| fail(e.to_string()))?;
+        }
+        drop(guard);
+        return Ok(move_note(&reused_moves));
+    }
+    report(PackUpdate::Installing);
+    let running = deps.running.clone();
     // Each part goes on the slot its name gives (HUD++ pak01, ...), so the
     // pack's load order does not depend on which download finished first.
     let running_again = running.clone();
@@ -309,7 +367,7 @@ fn run_pack_install(
             }
             install::install_files_in_slots(
                 &vpks,
-                meta,
+                meta.clone(),
                 &paths,
                 move || running_again(),
                 complock::last_slot(),
@@ -321,7 +379,32 @@ fn run_pack_install(
         Err(e) => return Err(fail(install_error_text(&e))),
         Ok(placed) => placed,
     };
-    Ok(install::slot_note(&placed))
+    for old in &remove_after {
+        let _ = std::fs::remove_file(old);
+    }
+    claim_free(&mut in_place, &mut reused_moves)?;
+    if !in_place.is_empty() {
+        let mut names = in_place;
+        names.extend(placed.sidecar.vpks.iter().cloned());
+        complock::adopt_reused(&paths.addons, &meta, &names).map_err(|e| fail(e.to_string()))?;
+    }
+    let mut note = install::slot_note(&placed);
+    let reused = move_note(&reused_moves);
+    if !reused.is_empty() {
+        if !note.is_empty() {
+            note.push(' ');
+        }
+        note.push_str(&reused);
+    }
+    Ok(note)
+}
+
+fn move_note(moves: &[String]) -> String {
+    if moves.is_empty() {
+        String::new()
+    } else {
+        format!("Moved: {}.", moves.join(", "))
+    }
 }
 
 thread_local! {
@@ -2601,6 +2684,91 @@ mod tests {
         let bare = complock_card(None, &complock::baked_pack());
         assert!(!bare.available);
         assert!(bare.subtitle.contains("catalog"), "{}", bare.subtitle);
+    }
+
+    /// A pack pak already on disk under another number is not renamed until
+    /// the install is going ahead. Cancelling, or a download that fails,
+    /// leaves that folder byte for byte as it was.
+    #[test]
+    fn a_cancelled_or_failed_pack_download_leaves_addons_unchanged() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let paths = shiv_core::game::GamePaths::from_root(root.path().join("Deadlock"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let bytes = b"browser install of a pack pak";
+        std::fs::write(paths.addons.join("pak12_dir.vpk"), bytes).expect("pak");
+        std::fs::write(paths.addons.join("pak12_000.vpk"), b"chunk").expect("chunk");
+        let before = dir_bytes(&paths.addons);
+        let pak = complock::Pak {
+            title: "HUD++".into(),
+            parts: vec![
+                complock::Part {
+                    name: "pak01_dir.vpk".into(),
+                    size: bytes.len() as u64,
+                    crc: complock::crc32(bytes),
+                    csize: bytes.len() as u64,
+                    urls: vec!["/dl/pack/hud.z".into()],
+                },
+                complock::Part {
+                    name: "pak02_dir.vpk".into(),
+                    size: 4,
+                    crc: 1,
+                    csize: 4,
+                    urls: vec!["/dl/pack/other.z".into()],
+                },
+            ],
+        };
+        let task = PackTask::of("complock-hud".into(), "HUD++".into(), &pak);
+        let located = paths.clone();
+        let mut deps = deps(
+            Arc::new(|_| Err("unused".into())),
+            CatalogCache::new(root.path().join("cache")),
+        );
+        deps.locate = Arc::new(move || Ok(located.clone()));
+        deps.running = Arc::new(|| false);
+        deps.pack_download = Arc::new(|_, _, _, _| Err("the download failed".into()));
+        let failed = run_pack_install(
+            &deps,
+            task.clone(),
+            &AtomicBool::new(false),
+            |_| {},
+            |_| Some(install::SlotChoice::Move),
+        );
+        assert!(failed.is_err(), "{failed:?}");
+        assert_eq!(
+            dir_bytes(&paths.addons),
+            before,
+            "a failed download renamed a pak"
+        );
+        let cancelled = run_pack_install(
+            &deps,
+            task,
+            &AtomicBool::new(true),
+            |_| {},
+            |_| Some(install::SlotChoice::Move),
+        );
+        assert!(
+            matches!(cancelled, Err((ref text, _)) if text == "Cancelled"),
+            "{cancelled:?}"
+        );
+        assert_eq!(dir_bytes(&paths.addons), before, "cancel renamed a pak");
+        assert!(paths.addons.join("pak12_dir.vpk").is_file());
+        assert!(paths.addons.join("pak12_000.vpk").is_file());
+        assert!(!paths.addons.join("pak01_dir.vpk").exists());
+    }
+
+    fn dir_bytes(dir: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        let entries = std::fs::read_dir(dir).expect("read");
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                out.insert(
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(&path).expect("bytes"),
+                );
+            }
+        }
+        out
     }
 
     #[test]

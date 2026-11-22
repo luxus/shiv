@@ -600,6 +600,72 @@ fn app_min_above_the_pack_app_version_asks_for_an_update() {
     assert!(!complock::app_requires_newer_shiv(&pack(1)));
 }
 
+/// A browser install left the part's bytes under another pak number, with no
+/// sidecar. The part is renamed onto its own number (its chunk follows) and
+/// a sidecar is written. A different file already on that number is left
+/// alone and the match stays where it was.
+#[test]
+fn a_pak_with_the_parts_bytes_is_reused_under_any_number() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let addons = root.path().join("addons");
+    std::fs::create_dir(&addons).expect("addons");
+    let bytes = b"browser install of a pack pak";
+    let part = complock::Part {
+        name: "pak01_dir.vpk".into(),
+        size: bytes.len() as u64,
+        crc: complock::crc32(bytes),
+        csize: 1,
+        urls: vec!["/x".into()],
+    };
+    std::fs::write(addons.join("pak12_dir.vpk"), bytes).expect("pak12");
+    std::fs::write(addons.join("pak12_000.vpk"), b"chunk").expect("chunk");
+    let reused = complock::claim_reusable(&addons, &part)
+        .expect("scan")
+        .expect("the bytes are on disk");
+    assert_eq!(reused.moved_from.as_deref(), Some("pak12_dir.vpk"));
+    assert_eq!(std::fs::read(&reused.path).expect("read"), bytes);
+    assert!(!addons.join("pak12_dir.vpk").exists());
+    assert_eq!(
+        std::fs::read(addons.join("pak01_000.vpk")).expect("chunk moved"),
+        b"chunk"
+    );
+    let meta = shiv_core::install::ModMeta {
+        mod_id: "complock-hud".into(),
+        name: "HUD++".into(),
+        version: Some("1".into()),
+        thumbnail_url: None,
+        nsfw: false,
+        hero: None,
+        category: None,
+    };
+    complock::adopt_reused(&addons, &meta, std::slice::from_ref(&part.name)).expect("sidecar");
+    let side = shiv_core::sidecar::read(&addons, "complock-hud")
+        .expect("read")
+        .expect("written");
+    assert_eq!(side.vpks.as_slice(), std::slice::from_ref(&part.name));
+    assert!(side.stamps.is_none());
+
+    std::fs::write(addons.join(&part.name), b"someone else").expect("occupant");
+    std::fs::write(addons.join("pak03_dir.vpk"), bytes).expect("other number");
+    std::fs::write(addons.join("pak03_000.vpk"), b"other chunk").expect("other chunk");
+    let blocked = complock::claim_reusable(&addons, &part)
+        .expect("scan")
+        .expect("the bytes are still on disk");
+    assert!(blocked.moved_from.is_none());
+    assert_eq!(blocked.path, addons.join("pak03_dir.vpk"));
+    assert_eq!(blocked.chunks.len(), 1);
+    assert_eq!(blocked.chunks[0].path, addons.join("pak03_000.vpk"));
+    assert_eq!(blocked.chunks[0].name, "pak01_000.vpk");
+    assert_eq!(
+        std::fs::read(addons.join(&part.name)).expect("occupant stays"),
+        b"someone else"
+    );
+    assert_eq!(
+        std::fs::read(addons.join("pak03_000.vpk")).expect("chunk stays"),
+        b"other chunk"
+    );
+}
+
 fn manifest(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
