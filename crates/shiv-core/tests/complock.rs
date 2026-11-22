@@ -243,7 +243,15 @@ fn the_soundcap_part_unpacks_to_the_declared_vpk() {
     let piece = dir.path().join("piece.z");
     std::fs::write(&piece, &bytes).expect("write the piece");
     let dest = dir.path().join("pak03_dir.vpk");
-    complock::unpack_pak(&[piece], &dest, SOUNDCAP_CRC, SOUNDCAP_SIZE).expect("the part unpacks");
+    complock::unpack_pak(
+        &[piece],
+        &dest,
+        SOUNDCAP_CRC,
+        SOUNDCAP_SIZE,
+        SOUNDCAP_CSIZE,
+        "/dl/pack/soundcap.af99a150bd.z",
+    )
+    .expect("the part unpacks");
     assert_eq!(std::fs::read(&dest).expect("the vpk"), unpacked);
 }
 
@@ -260,24 +268,115 @@ fn unpack_pak_refuses_mismatched_parts_and_leaves_nothing_behind() {
     let stream = encoder.finish().expect("finish");
     std::fs::write(&piece, &stream).expect("write the vpk piece");
     let crc = complock::crc32(&head);
-    complock::unpack_pak(std::slice::from_ref(&piece), &dest, crc, head.len() as u64)
-        .expect("a VPK-shaped part unpacks");
+    let csize = stream.len() as u64;
+    complock::unpack_pak(
+        std::slice::from_ref(&piece),
+        &dest,
+        crc,
+        head.len() as u64,
+        csize,
+        "piece.z",
+    )
+    .expect("a VPK-shaped part unpacks");
     assert_eq!(std::fs::read(&dest).expect("the vpk"), head);
     for (crc, size) in [(crc ^ 1, head.len() as u64), (crc, head.len() as u64 - 1)] {
         assert!(
-            complock::unpack_pak(std::slice::from_ref(&piece), &dest, crc, size).is_err(),
+            complock::unpack_pak(
+                std::slice::from_ref(&piece),
+                &dest,
+                crc,
+                size,
+                csize,
+                "piece.z"
+            )
+            .is_err(),
             "a wrong crc or size is refused"
         );
         assert!(!dest.exists(), "the refusal left no partial file");
     }
     let mut plain = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(9));
     plain.write_all(TINY_CONTENT).expect("compress");
-    std::fs::write(&piece, plain.finish().expect("finish")).expect("write the plain piece");
+    let plain_bytes = plain.finish().expect("finish");
+    let plain_csize = plain_bytes.len() as u64;
+    std::fs::write(&piece, &plain_bytes).expect("write the plain piece");
     assert!(
-        complock::unpack_pak(&[piece], &dest, TINY_CRC, TINY_CONTENT.len() as u64).is_err(),
+        complock::unpack_pak(
+            &[piece],
+            &dest,
+            TINY_CRC,
+            TINY_CONTENT.len() as u64,
+            plain_csize,
+            "piece.z",
+        )
+        .is_err(),
         "content without the VPK signature is refused"
     );
     assert!(!dest.exists());
+}
+
+/// Output past the declared size stops before that chunk is kept. A compressed
+/// length other than `csize`, or a SHA-256 prefix in the url that the
+/// decompressed bytes do not have, removes the partial file. The soundcap
+/// fixture's own url prefix is accepted by
+/// `the_soundcap_part_unpacks_to_the_declared_vpk`.
+#[test]
+fn unpack_pak_stops_when_the_output_or_the_download_does_not_match() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let piece = dir.path().join("piece.z");
+    let dest = dir.path().join("part.vpk");
+    let mut head = [0x34, 0x12, 0xaa, 0x55].to_vec();
+    head.extend_from_slice(TINY_CONTENT);
+    use std::io::Write as _;
+    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(9));
+    encoder.write_all(&head).expect("compress");
+    let stream = encoder.finish().expect("finish");
+    std::fs::write(&piece, &stream).expect("write the vpk piece");
+    let crc = complock::crc32(&head);
+    let size = head.len() as u64;
+    let csize = stream.len() as u64;
+    let too_big = complock::unpack_pak(
+        std::slice::from_ref(&piece),
+        &dest,
+        crc,
+        size - 1,
+        csize,
+        "piece.z",
+    )
+    .expect_err("output past size");
+    assert!(too_big.contains("larger than the site says"), "{too_big}");
+    assert!(!dest.exists(), "the oversized part left nothing");
+    let bad_csize = complock::unpack_pak(
+        std::slice::from_ref(&piece),
+        &dest,
+        crc,
+        size,
+        csize + 1,
+        "piece.z",
+    )
+    .expect_err("compressed size");
+    assert!(bad_csize.contains("compressed"), "{bad_csize}");
+    assert!(!dest.exists());
+    let bad_sha = complock::unpack_pak(
+        std::slice::from_ref(&piece),
+        &dest,
+        crc,
+        size,
+        csize,
+        "part.0000000000.z",
+    )
+    .expect_err("sha prefix");
+    assert!(bad_sha.contains("SHA-256"), "{bad_sha}");
+    assert!(!dest.exists());
+    complock::unpack_pak(
+        std::slice::from_ref(&piece),
+        &dest,
+        crc,
+        size,
+        csize,
+        "piece.z",
+    )
+    .expect("a url without a hash suffix still unpacks");
+    assert_eq!(std::fs::read(&dest).expect("kept"), head);
 }
 
 #[test]
@@ -336,8 +435,15 @@ fn live_parts_unpack_to_the_declared_vpks() {
                 continue;
             }
             let dest = out.path().join(&part.name);
-            complock::unpack_pak(&pieces, &dest, part.crc, part.size)
-                .unwrap_or_else(|e| panic!("{} ({:?}): {e}", pak.title, part.urls));
+            complock::unpack_pak(
+                &pieces,
+                &dest,
+                part.crc,
+                part.size,
+                part.csize,
+                part.urls.first().map(String::as_str).unwrap_or(""),
+            )
+            .unwrap_or_else(|e| panic!("{} ({:?}): {e}", pak.title, part.urls));
             println!(
                 "{} {} pieces={} size={} crc={}",
                 pak.title,

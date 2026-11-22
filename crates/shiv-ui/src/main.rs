@@ -364,6 +364,8 @@ mod tests {
             &release,
             pak.parts[0].crc,
             pak.parts[0].size,
+            pak.parts[0].csize,
+            pak.parts[0].urls.first().map(String::as_str).unwrap_or(""),
         )
         .expect("unpack the fixture");
         let meta = shiv_core::install::ModMeta {
