@@ -88,6 +88,25 @@ test harness, `run_until` between actions; in production code, never chain
 a read off an in-flight action. The harness's helpers (`rows_are`) exist
 for exactly this.
 
+## Pak numbers come from one occupied set
+
+`pak_slot::occupied` is the set of pak numbers that are not free: a file
+in `addons` carries the number, or a sidecar names it. `pak_slot::free_slots`
+is how a new mod takes one. While a CompLock pak is installed it keeps
+`1..=complock::last_slot()` for the pack, and uses a free pack slot only
+when nothing above is left. `set_pak` returns `SidecarError::StalePak`
+when a target is in that set and no file in the plan holds it.
+
+`addons::file_pak_numbers` counts files only. A call to it, or to its old
+name `used_pak_numbers`, outside `pak_slot.rs` fails
+`scripts/check_pak_occupancy.py` (`cargo test -p shiv-core --test pak_occupancy`).
+The scan is the Improved Quickbuy loss: a files-only search handed out
+pak10 and the stale sidecar took the new file (`fdee4cb`).
+`set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record` is that
+loss through `set_pak`, which `fdee4cb` left open.
+`with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full`
+is a Browse install taking a pack slot (`e658688`).
+
 ## A second pair of eyes for every feature
 
 Every feature PR in this repository gets the same treatment as

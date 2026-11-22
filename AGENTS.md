@@ -34,6 +34,14 @@ The open work is on the GitHub issues, ordered by leverage:
 Pick one issue. Do not batch them; each lands as its own PR with its own
 proof.
 
+## Rules and what enforces them
+
+| Rule | Enforcer |
+| --- | --- |
+| A new pak number comes from `pak_slot::occupied` / `pak_slot::free_slots`, never from the files alone | `scripts/check_pak_occupancy.py` |
+
+The other rules, and the bug each one came from, are in `docs/code-quality.md`.
+
 ## The non-negotiables
 
 - `cargo test --workspace` green; `cargo clippy --workspace --all-targets

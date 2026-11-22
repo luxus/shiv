@@ -21,6 +21,7 @@ pub mod interchange;
 pub mod launch;
 pub mod link;
 pub mod mount;
+mod pak_slot;
 pub mod perf;
 mod platform;
 pub mod profiles;
