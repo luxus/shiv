@@ -73,7 +73,14 @@ fn install(
         hero: None,
         category: None,
     };
-    install::install_files(&files, meta, &e.paths, || false).unwrap();
+    install::install_files(
+        &files,
+        meta,
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     found(e, id)
 }
 
@@ -142,7 +149,14 @@ fn renames_keep_a_mod_pristine() {
         .iter()
         .position(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == "m"))
         .unwrap();
-    sidecar::set_pak(&e.paths.addons, &mods, index, 7).unwrap();
+    sidecar::set_pak(
+        &e.paths.addons,
+        &mods,
+        index,
+        7,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     let moved = found(&e, "m");
     assert_eq!(moved.load_position(), 7);
     assert_eq!(drift::drift(&moved, &current(&["r1"])), Drift::Pristine);

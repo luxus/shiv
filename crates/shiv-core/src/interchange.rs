@@ -768,13 +768,17 @@ pub fn import(
         }
         // A file already in the addons folder byte for byte is adopted in
         // place (checked by size, then hash), so the game never loads two
-        // copies. All files matching means adopting the whole mod. The
-        // install lock serialises this against every other pak-mutating
-        // path, exactly like the UI's installs and moves.
-        let _guard = install::INSTALL_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match adopt_or_install(addons, paths, m, &name, &files, &game_running) {
+        // copies. All files matching means adopting the whole mod.
+        let guard = install::InstallGuard::acquire();
+        match adopt_or_install(
+            addons,
+            paths,
+            m,
+            &name,
+            &files,
+            &game_running,
+            guard.permit(),
+        ) {
             Ok((true, id)) => {
                 report.adopted.push(name.clone());
                 ledger.insert(m.key.clone(), id);
@@ -801,6 +805,7 @@ fn adopt_or_install(
     name: &str,
     files: &[PathBuf],
     game_running: &dyn Fn() -> bool,
+    permit: install::InstallPermit<'_>,
 ) -> Result<(bool, String), String> {
     // Sizes first, hashes only for same-size files: hashing every VPK in a
     // big library would take a while for nothing.
@@ -832,7 +837,7 @@ fn adopt_or_install(
         }
         let Some(found) = found else {
             // Not all files are on disk: install the mod instead.
-            return install_from_bundle(paths, m, name, files, game_running)
+            return install_from_bundle(paths, m, name, files, game_running, permit)
                 .map(|sc| (false, sc.mod_id))
                 .map_err(|e| e.to_string());
         };
@@ -865,6 +870,7 @@ fn install_from_bundle(
     name: &str,
     files: &[PathBuf],
     game_running: &dyn Fn() -> bool,
+    permit: install::InstallPermit<'_>,
 ) -> Result<Sidecar, install::InstallError> {
     let meta = install::ModMeta {
         mod_id: sidecar::new_local_id(&paths.addons),
@@ -875,7 +881,7 @@ fn install_from_bundle(
         hero: m.hero.clone(),
         category: m.category.clone(),
     };
-    let sc = install::install_files(files, meta, paths, game_running)?;
+    let sc = install::install_files(files, meta, paths, game_running, permit)?;
     // The mod lands as the source had it: an enabled mod stays on, a
     // disabled one is switched off right after installing.
     if !m.enabled {

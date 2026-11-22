@@ -250,7 +250,14 @@ fn move_top_renumbers_files_chunks_and_sidecars() {
     sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
     sidecar::write(d.path(), &sc("c", &["pak05_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
-    sidecar::move_mod(d.path(), &mods, 2, sidecar::Move::Top).unwrap();
+    sidecar::move_mod(
+        d.path(),
+        &mods,
+        2,
+        sidecar::Move::Top,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
 
     assert_eq!(ids(d.path()), ["c", "a", "b"]);
     // Numbers 1, 2, 5 are redistributed; the gap at 5 stays.
@@ -300,12 +307,33 @@ fn move_up_and_down_swap_neighbours_and_stop_at_the_ends() {
         sidecar::write(d.path(), &sc(id, &[f])).unwrap();
     }
     let mods = sidecar::group(d.path());
-    sidecar::move_mod(d.path(), &mods, 0, sidecar::Move::Up).unwrap();
+    sidecar::move_mod(
+        d.path(),
+        &mods,
+        0,
+        sidecar::Move::Up,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(ids(d.path()), ["a", "b", "c"]);
-    sidecar::move_mod(d.path(), &mods, 0, sidecar::Move::Down).unwrap();
+    sidecar::move_mod(
+        d.path(),
+        &mods,
+        0,
+        sidecar::Move::Down,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(ids(d.path()), ["b", "a", "c"]);
     let mods = sidecar::group(d.path());
-    sidecar::move_mod(d.path(), &mods, 2, sidecar::Move::Down).unwrap();
+    sidecar::move_mod(
+        d.path(),
+        &mods,
+        2,
+        sidecar::Move::Down,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(ids(d.path()), ["b", "a", "c"]);
 }
 
@@ -324,10 +352,24 @@ fn move_to_places_a_mod_at_a_position_and_clamps() {
         sidecar::write(d.path(), &sc(id, &[f])).unwrap();
     }
     let mods = sidecar::group(d.path());
-    sidecar::move_mod(d.path(), &mods, 0, sidecar::Move::To(1)).unwrap();
+    sidecar::move_mod(
+        d.path(),
+        &mods,
+        0,
+        sidecar::Move::To(1),
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(ids(d.path()), ["b", "a", "c"]);
     let mods = sidecar::group(d.path());
-    sidecar::move_mod(d.path(), &mods, 0, sidecar::Move::To(99)).unwrap();
+    sidecar::move_mod(
+        d.path(),
+        &mods,
+        0,
+        sidecar::Move::To(99),
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(ids(d.path()), ["a", "c", "b"]);
 }
 
@@ -339,7 +381,16 @@ fn move_fails_cleanly_when_a_file_is_gone() {
     sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
     fs::remove_file(d.path().join("pak02_dir.vpk")).unwrap();
-    assert!(sidecar::move_mod(d.path(), &mods, 1, sidecar::Move::Top).is_err());
+    assert!(
+        sidecar::move_mod(
+            d.path(),
+            &mods,
+            1,
+            sidecar::Move::Top,
+            shiv_core::install::InstallGuard::acquire().permit()
+        )
+        .is_err()
+    );
     assert!(d.path().join("pak01_dir.vpk").is_file());
     assert_eq!(
         sidecar::read(d.path(), "a").unwrap().unwrap().vpks,
@@ -364,7 +415,14 @@ fn set_pak_inserts_the_mod_and_shifts_higher_numbers_up() {
     sidecar::write(d.path(), &sc("c", &["pak05_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
     // `c` sits at index 2; give it pak 2. `a` keeps 01, `b` shifts to 03.
-    sidecar::set_pak(d.path(), &mods, 2, 2).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        2,
+        2,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
 
     for f in [
         "pak01_dir.vpk",
@@ -413,7 +471,14 @@ fn set_pak_moving_down_to_an_occupied_number_shifts_the_rest_up() {
     }
     let mods = sidecar::group(d.path());
     // `a` moves down to the occupied 3: b keeps 02, c shifts to 04.
-    sidecar::set_pak(d.path(), &mods, 0, 3).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        3,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     for f in ["pak02_dir.vpk", "pak03_dir.vpk", "pak04_dir.vpk"] {
         assert!(d.path().join(f).is_file(), "{f}");
     }
@@ -444,7 +509,14 @@ fn set_pak_shifts_by_the_target_size_not_by_one() {
     sidecar::write(d.path(), &sc("d", &["pak07_dir.vpk", "pak08_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
     // The two-VPK mod `d` takes pak 2-3, so b and c shift by two: 5 and 6.
-    sidecar::set_pak(d.path(), &mods, 3, 2).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        3,
+        2,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     for f in [
         "pak01_dir.vpk",
         "pak02_dir.vpk",
@@ -476,7 +548,14 @@ fn set_pak_renumbers_a_target_straddling_other_mods() {
     sidecar::write(d.path(), &sc("mid", &["pak03_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
     // The target {1, 5} takes 3-4; the mod at 3 shifts to 5.
-    sidecar::set_pak(d.path(), &mods, 0, 3).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        3,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     for f in ["pak03_dir.vpk", "pak04_dir.vpk", "pak05_dir.vpk"] {
         assert!(d.path().join(f).is_file(), "{f}");
     }
@@ -514,7 +593,14 @@ fn set_pak_to_the_mods_own_range_touches_nothing() {
     sidecar::write(d.path(), &sc("d", &["pak07_dir.vpk", "pak08_dir.vpk"])).unwrap();
     let sc_before = sidecar::read(d.path(), "d").unwrap().unwrap();
     let mods = sidecar::group(d.path());
-    sidecar::set_pak(d.path(), &mods, 0, 7).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        7,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(fs::read(d.path().join("pak07_dir.vpk")).unwrap(), before);
     assert_eq!(
         fs::metadata(d.path().join("pak08_dir.vpk")).unwrap().len(),
@@ -531,7 +617,16 @@ fn set_pak_fails_cleanly_when_a_file_is_gone() {
     sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
     fs::remove_file(d.path().join("pak02_dir.vpk")).unwrap();
-    assert!(sidecar::set_pak(d.path(), &mods, 1, 1).is_err());
+    assert!(
+        sidecar::set_pak(
+            d.path(),
+            &mods,
+            1,
+            1,
+            shiv_core::install::InstallGuard::acquire().permit()
+        )
+        .is_err()
+    );
     assert!(d.path().join("pak01_dir.vpk").is_file());
     assert_eq!(
         sidecar::read(d.path(), "a").unwrap().unwrap().vpks,
@@ -547,7 +642,14 @@ fn set_pak_moves_only_pak_numbered_files_of_a_mixed_mod() {
     mixed.notes = Some("hand-added file inside a managed mod".into());
     sidecar::write(d.path(), &mixed).unwrap();
     let mods = sidecar::group(d.path());
-    sidecar::set_pak(d.path(), &mods, 0, 5).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        5,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert!(d.path().join("pak05_dir.vpk").is_file());
     assert!(!d.path().join("pak03_dir.vpk").exists());
     assert_eq!(
@@ -581,7 +683,14 @@ fn set_pak_refuses_a_broken_slice_instead_of_overwriting() {
         m(2, "pak02_dir.vpk"),
         m(2, "pak02_dir.vpk"),
     ];
-    let err = sidecar::set_pak(d.path(), &mods, 0, 1).unwrap_err();
+    let err = sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        1,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, SidecarError::DuplicatePak(_)), "{err:?}");
     // The files on disk survive untouched.
     assert_eq!(
@@ -602,7 +711,14 @@ fn set_pak_on_a_free_number_keeps_the_others_in_place() {
     sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
     // A number nothing holds is taken literally; the load order follows it.
-    sidecar::set_pak(d.path(), &mods, 0, 40).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        40,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert!(d.path().join("pak40_dir.vpk").is_file());
     assert!(!d.path().join("pak01_dir.vpk").exists());
     assert!(d.path().join("pak02_dir.vpk").is_file());
@@ -624,7 +740,14 @@ fn set_pak_gives_a_multi_vpk_mod_consecutive_numbers() {
     sidecar::write(d.path(), &sc("d", &["pak07_dir.vpk", "pak08_dir.vpk"])).unwrap();
     let mods = sidecar::group(d.path());
     // `d` takes pak 2 and pak 3; `a` stays at 01.
-    sidecar::set_pak(d.path(), &mods, 1, 2).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        1,
+        2,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     for f in ["pak01_dir.vpk", "pak02_dir.vpk", "pak03_dir.vpk"] {
         assert!(d.path().join(f).is_file(), "{f}");
     }
@@ -646,14 +769,28 @@ fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
     let mods = sidecar::group(d.path());
     // The mod at 98 to pak 99 would push the one at 99 past the limit;
     // the asked number itself is in range, so the reason says so.
-    let err = sidecar::set_pak(d.path(), &mods, 0, 99).unwrap_err();
+    let err = sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        99,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, SidecarError::PakPush { pak: 99 }), "{err:?}");
     assert_eq!(
         err.to_string(),
         "setting pak 99 would push another VPK past 99"
     );
     // An out-of-range number is refused as such.
-    let err = sidecar::set_pak(d.path(), &mods, 0, 0).unwrap_err();
+    let err = sidecar::set_pak(
+        d.path(),
+        &mods,
+        0,
+        0,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, SidecarError::BadPak(0)), "{err:?}");
     assert!(d.path().join("pak98_dir.vpk").is_file());
     assert!(d.path().join("pak99_dir.vpk").is_file());
@@ -670,7 +807,14 @@ fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
     touch(d.path(), &["custom.vpk"]);
     let mods = sidecar::group(d.path());
     let hand = mods.iter().position(|m| m.sidecar.is_none()).unwrap();
-    sidecar::set_pak(d.path(), &mods, hand, 5).unwrap();
+    sidecar::set_pak(
+        d.path(),
+        &mods,
+        hand,
+        5,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert!(d.path().join("custom.vpk").is_file());
     assert!(!d.path().join("pak05_dir.vpk").exists());
 }
@@ -684,7 +828,14 @@ fn set_pak_refuses_huge_numbers_without_overflowing() {
     // Near-u32::MAX is refused as out of range by the check that runs
     // before the block arithmetic, not wrapped into a number that fits.
     for bad in [u32::MAX - 1, u32::MAX] {
-        let err = sidecar::set_pak(d.path(), &mods, 0, bad).unwrap_err();
+        let err = sidecar::set_pak(
+            d.path(),
+            &mods,
+            0,
+            bad,
+            shiv_core::install::InstallGuard::acquire().permit(),
+        )
+        .unwrap_err();
         assert!(matches!(err, SidecarError::BadPak(_)), "{err:?} for {bad}");
     }
     assert_eq!(
@@ -798,7 +949,13 @@ fn set_pak_invariants_hold_across_random_configurations() {
         // 0..=101: refusals (0, past 99) are exercised next to real moves.
         let ask = rng.below(102) as u32;
         let before = snapshot(d.path());
-        let result = sidecar::set_pak(d.path(), &mods, target_pos, ask);
+        let result = sidecar::set_pak(
+            d.path(),
+            &mods,
+            target_pos,
+            ask,
+            shiv_core::install::InstallGuard::acquire().permit(),
+        );
 
         match result {
             Ok(()) => {

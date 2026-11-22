@@ -451,9 +451,7 @@ fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), 
         .map_err(|e| format!("Could not create a temporary folder: {e}"))?;
     let fetched = fetch_release(deps, dir.path(), plan)?;
     let running = deps.running.clone();
-    let _guard = install::INSTALL_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = install::InstallGuard::acquire();
     reset::reset_with(
         &paths,
         id,
@@ -475,6 +473,7 @@ fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), 
                     &paths,
                     || running(),
                     complock::last_slot(),
+                    guard.permit(),
                 )
                 .map(|_| ())
                 .map_err(|e| install_error_text(&e))
@@ -490,10 +489,12 @@ fn run_reset(deps: &Deps, id: &str, name: &str, plan: &ResetPlan) -> Result<(), 
                 &r.filename,
                 &fetched[0],
                 true,
+                guard.permit(),
             )
             .map(|_| ())
             .map_err(|e| e.to_string()),
         },
+        guard.permit(),
     )
     .map(|_| ())
     .map_err(|e| reset_error_text(name, &e))
@@ -533,10 +534,8 @@ fn fetch_release(deps: &Deps, dir: &Path, plan: &ResetPlan) -> Result<Vec<PathBu
 fn run_restore(deps: &Deps, id: &str, name: &str) -> Result<(), String> {
     let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
     let running = deps.running.clone();
-    let _guard = install::INSTALL_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    reset::restore_previous(&paths, id, || running())
+    let guard = install::InstallGuard::acquire();
+    reset::restore_previous(&paths, id, || running(), guard.permit())
         .map(|_| ())
         .map_err(|e| match e {
             ResetError::GameRunning => GAME_RUNNING_TEXT.into(),
@@ -595,16 +594,14 @@ fn run_action(
         }
         Action::Move(to) => {
             let paths = (deps.locate)().map_err(|e| fail(&game_error_text(&e)))?;
-            // Renumbering shares the install lock: a rename while another
-            // worker stages an install would race its pak allocation.
-            let _guard = shiv_core::install::INSTALL_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            sidecar::move_mod(&paths.addons, mods, index, to).map_err(|e| fail(&e.to_string()))
+            let guard = shiv_core::install::InstallGuard::acquire();
+            sidecar::move_mod(&paths.addons, mods, index, to, guard.permit())
+                .map_err(|e| fail(&e.to_string()))
         }
         Action::Uninstall => {
             let running = deps.running.clone();
-            install::uninstall_with(m, move || running()).map_err(|e| match e {
+            let guard = install::InstallGuard::acquire();
+            install::uninstall_with(m, move || running(), guard.permit()).map_err(|e| match e {
                 InstallError::GameRunning => fail(GAME_RUNNING_TEXT),
                 other => fail(&install_error_text(&other)),
             })
@@ -659,14 +656,12 @@ fn run_link_install(
         return Err(LinkFailure::Cancelled);
     }
     report(LinkUpdate::Installing);
-    let _guard = shiv_core::install::INSTALL_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = shiv_core::install::InstallGuard::acquire();
     // Cancel may have been pressed while waiting for another install.
     if cancel.load(Ordering::Relaxed) {
         return Err(LinkFailure::Cancelled);
     }
-    let sc = install::install_local_with(&dest, name, &paths, move || running())
+    let sc = install::install_local_with(&dest, name, &paths, move || running(), guard.permit())
         .map_err(|e| link_fail(install_error_text(&e)))?;
     Ok(format!("Installed {} as {}.", sc.name, sc.vpks.join(", ")))
 }
@@ -1548,11 +1543,7 @@ impl Installed {
             "shiv-installed-edit",
             move || -> Result<(), String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
-                // Renumbering shares the install lock: a rename while another
-                // worker stages an install would race its pak allocation.
-                let _guard = shiv_core::install::INSTALL_LOCK
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let guard = shiv_core::install::InstallGuard::acquire();
                 // The sidecar edit runs first: it is idempotent, so a failed
                 // `set_pak` after it can be retried without renaming twice.
                 let done = if adopt {
@@ -1562,7 +1553,7 @@ impl Installed {
                 };
                 done.map(|_| ()).map_err(|e| e.to_string())?;
                 if let Some(pak) = pak_to_set {
-                    sidecar::set_pak(&paths.addons, &mods, index, pak)
+                    sidecar::set_pak(&paths.addons, &mods, index, pak, guard.permit())
                         .map_err(|e| e.to_string())?;
                 }
                 Ok(())
@@ -1679,14 +1670,15 @@ impl Installed {
             move || -> Result<String, String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
-                // The lock every install path shares: pak slots are
-                // allocated against the folder while staging, so an install
-                // must not renumber beside another.
-                let _guard = shiv_core::install::INSTALL_LOCK
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let sc = install::install_local_with(&path, &name, &paths, move || running())
-                    .map_err(|e| install_error_text(&e))?;
+                let guard = shiv_core::install::InstallGuard::acquire();
+                let sc = install::install_local_with(
+                    &path,
+                    &name,
+                    &paths,
+                    move || running(),
+                    guard.permit(),
+                )
+                .map_err(|e| install_error_text(&e))?;
                 Ok(format!("Installed {} as {}.", sc.name, sc.vpks.join(", ")))
             },
             move |result| {
@@ -1999,8 +1991,15 @@ impl Installed {
             move || -> Result<String, String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
-                let r = install::replace_local_with(&path, &target, &paths, move || running())
-                    .map_err(|e| install_error_text(&e))?;
+                let guard = install::InstallGuard::acquire();
+                let r = install::replace_local_with(
+                    &path,
+                    &target,
+                    &paths,
+                    move || running(),
+                    guard.permit(),
+                )
+                .map_err(|e| install_error_text(&e))?;
                 let backup = r
                     .backup
                     .strip_prefix(&paths.addons)

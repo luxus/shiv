@@ -75,6 +75,7 @@ pub fn reset_with(
     mod_id: &str,
     game_running: impl Fn() -> bool,
     install: impl FnOnce() -> Result<(), String>,
+    permit: crate::install::InstallPermit<'_>,
 ) -> Result<Backup, ResetError> {
     if game_running() {
         return Err(ResetError::GameRunning);
@@ -88,7 +89,7 @@ pub fn reset_with(
         put_back(addons, &backup)?;
         return Err(ResetError::Install(e));
     }
-    settle(addons, mod_id, position, was_disabled)?;
+    settle(addons, mod_id, position, was_disabled, permit)?;
     Ok(backup)
 }
 
@@ -106,7 +107,9 @@ pub fn restore_previous(
     paths: &GamePaths,
     mod_id: &str,
     game_running: impl Fn() -> bool,
+    permit: crate::install::InstallPermit<'_>,
 ) -> Result<Sidecar, ResetError> {
+    permit.keep();
     if game_running() {
         return Err(ResetError::GameRunning);
     }
@@ -238,6 +241,7 @@ fn settle(
     mod_id: &str,
     position: u32,
     was_disabled: bool,
+    permit: crate::install::InstallPermit<'_>,
 ) -> Result<(), ResetError> {
     let mods = sidecar::group(addons);
     if let Some(index) = mods
@@ -246,7 +250,7 @@ fn settle(
         && position != u32::MAX
         && mods[index].load_position() != position
     {
-        sidecar::set_pak(addons, &mods, index, position)?;
+        sidecar::set_pak(addons, &mods, index, position, permit)?;
     }
     if was_disabled {
         for v in &find(addons, mod_id)?.vpks {

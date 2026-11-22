@@ -46,16 +46,16 @@ half.
 
 ## One lock for everything that touches pak numbers
 
-`install::INSTALL_LOCK` (in `shiv-core`, beside the install code that needs
-it) serialises every path that allocates pak numbers or renames
-`pakNN_*` files: catalog installs, file and link installs, interchange
-imports, and the load-order moves (`set_pak`, `move_mod`) from the UI.
-`install_with` deliberately does **not** take it itself — its callers hold
-it and rely on a cancel-check right after acquiring — so the contract
-lives on the static's documentation. A new mutating path that skips the
-lock races the others for pak slots; the link-install stall test in
-`shiv-ui` (`cancel_while_installing_then_retry_installs_once`) exercises
-the ordering and would catch a dropped lock in the paths it covers.
+Every function that allocates a pak number or renames a `pakNN` file takes
+`install::InstallPermit`. `InstallGuard::acquire` holds the lock until
+drop, and `permit` is the only constructor, so the call does not compile
+without it. That is the interchange import before `8b37a9b`
+(`install_files` with no lock) and the edit dialog's `set_pak` before
+`6c5beb5`. `forgotten_pak_change_does_not_compile` is those two calls.
+The lock is not reentrant: a cancel check stays after `acquire`, and the
+function receives the permit.
+`cancel_while_installing_then_retry_installs_once` still exercises that
+order.
 
 ## Never combine a serde default with `skip_serializing_if` on a bool
 

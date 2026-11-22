@@ -133,8 +133,14 @@ fn timed_install(fixture: &Fixture) -> Duration {
     let (_root, paths) = fresh_addons();
     install::reset_disk_bytes_written();
     let started = Instant::now();
-    let sidecar =
-        install::install_local_with(&fixture.archive, "probe mod", &paths, || false).unwrap();
+    let sidecar = install::install_local_with(
+        &fixture.archive,
+        "probe mod",
+        &paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     let elapsed = started.elapsed();
 
     assert_eq!(sidecar.vpks.len(), 1, "one dir vpk in the sidecar");

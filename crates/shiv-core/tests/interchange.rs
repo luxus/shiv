@@ -71,7 +71,14 @@ fn names(mods: &[sidecar::InstalledMod]) -> Vec<String> {
 fn install_mod(e: &Env, name: &str, inner: &[&str], tag: &str) -> sidecar::Sidecar {
     let file = e.work.join(format!("{}.vpk", name.replace(' ', "_")));
     vpk(&file, inner, tag);
-    install::install_local_with(&file, name, &e.paths, || false).unwrap()
+    install::install_local_with(
+        &file,
+        name,
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap()
 }
 
 #[test]

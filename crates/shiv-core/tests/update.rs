@@ -89,7 +89,14 @@ fn same_source_file_name_matches_the_installed_local_mod() {
     let src = e.work.join("Haze Skin.zip");
     vpk(&src.with_extension("vpk"), &HERO, "v1");
     fs::rename(src.with_extension("vpk"), &src).unwrap();
-    let sc = install::install_local_with(&src, "My Haze", &e.paths, || false).unwrap();
+    let sc = install::install_local_with(
+        &src,
+        "My Haze",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(
         sc.source.as_deref(),
         Some("Haze Skin.zip"),
@@ -210,7 +217,14 @@ fn replace_keeps_slot_name_notes_and_state_and_backs_up_the_old_file() {
     );
     let src = e.work.join("Haze Skin.vpk");
     vpk(&src, &HERO, "v1");
-    let sc = install::install_local_with(&src, "My Haze", &e.paths, || false).unwrap();
+    let sc = install::install_local_with(
+        &src,
+        "My Haze",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(sc.vpks, ["pak02_dir.vpk"]);
     sidecar::edit(
         &e.paths.addons,
@@ -232,7 +246,14 @@ fn replace_keeps_slot_name_notes_and_state_and_backs_up_the_old_file() {
     vpk(&newer, &HERO, "v2-content");
     let mods = sidecar::group(&e.paths.addons);
     let target = mods.iter().find(|m| m.sidecar.is_some()).unwrap();
-    let r = install::replace_local_with(&newer, target, &e.paths, || false).unwrap();
+    let r = install::replace_local_with(
+        &newer,
+        target,
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
 
     assert_eq!(r.sidecar.mod_id, sc.mod_id);
     assert_eq!(r.sidecar.name, "My Haze");
@@ -277,7 +298,14 @@ fn replacing_a_hand_added_pak_adopts_it_in_the_same_slot() {
     let target = by_file(&mods, "pak55_dir.vpk");
     assert!(target.sidecar.is_none());
 
-    let r = install::replace_local_with(&newer, target, &e.paths, || false).unwrap();
+    let r = install::replace_local_with(
+        &newer,
+        target,
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert!(sidecar::is_local(&r.sidecar.mod_id));
     assert_eq!(r.sidecar.name, "Haze Skin");
     assert_eq!(r.sidecar.vpks, ["pak55_dir.vpk"]);
@@ -323,14 +351,24 @@ fn replace_refuses_without_touching_anything() {
     vpk(&file, &HERO, "new");
     let mods = sidecar::group(&e.paths.addons);
 
-    let err =
-        install::replace_local_with(&file, by_file(&mods, "pak01_dir.vpk"), &e.paths, || false)
-            .unwrap_err();
+    let err = install::replace_local_with(
+        &file,
+        by_file(&mods, "pak01_dir.vpk"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, InstallError::NotLocal), "{err:?}");
 
-    let err =
-        install::replace_local_with(&file, by_file(&mods, "pak02_dir.vpk"), &e.paths, || true)
-            .unwrap_err();
+    let err = install::replace_local_with(
+        &file,
+        by_file(&mods, "pak02_dir.vpk"),
+        &e.paths,
+        || true,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, InstallError::GameRunning), "{err:?}");
 
     // Two VPKs for a one-VPK mod.
@@ -342,9 +380,14 @@ fn replace_refuses_without_touching_anything() {
         std::io::Write::write_all(&mut z, &fs::read(&file).unwrap()).unwrap();
     }
     z.finish().unwrap();
-    let err =
-        install::replace_local_with(&zip, by_file(&mods, "pak02_dir.vpk"), &e.paths, || false)
-            .unwrap_err();
+    let err = install::replace_local_with(
+        &zip,
+        by_file(&mods, "pak02_dir.vpk"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, InstallError::VpkCountMismatch { old: 1, new: 2 }),
         "{err:?}"

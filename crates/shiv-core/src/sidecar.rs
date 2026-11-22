@@ -11,6 +11,7 @@ use std::{fs, io};
 use serde::{Deserialize, Serialize};
 
 use crate::addons::{self, AddonsError, InstalledVpk};
+use crate::install::InstallPermit;
 
 pub(crate) const DIR: &str = ".shiv";
 const DISABLED_EXT: &str = ".disabled";
@@ -483,7 +484,9 @@ pub fn move_mod(
     mods: &[InstalledMod],
     index: usize,
     to: Move,
+    permit: InstallPermit<'_>,
 ) -> Result<(), SidecarError> {
+    permit.keep();
     let mut order: Vec<&InstalledMod> = mods
         .iter()
         .filter(|m| m.load_position() != u32::MAX)
@@ -547,7 +550,9 @@ pub fn set_pak(
     mods: &[InstalledMod],
     index: usize,
     pak: u32,
+    permit: InstallPermit<'_>,
 ) -> Result<(), SidecarError> {
+    permit.keep();
     let Some(target) = mods.get(index).filter(|m| m.load_position() != u32::MAX) else {
         return Ok(());
     };
@@ -626,7 +631,9 @@ pub fn renumber(
     addons: &Path,
     mods: &[InstalledMod],
     moves: &[(&InstalledVpk, u32)],
+    permit: InstallPermit<'_>,
 ) -> Result<(), SidecarError> {
+    permit.keep();
     if moves.is_empty() {
         return Ok(());
     }

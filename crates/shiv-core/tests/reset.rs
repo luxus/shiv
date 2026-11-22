@@ -33,10 +33,10 @@ fn env() -> Env {
     let chunk = work.join("pak01_000.vpk");
     fs::write(&chunk, "release chunk").unwrap();
     let release = vec![dir, chunk];
-    install::install_files(&release, meta(), &paths, || false).unwrap();
+    install::install_files(&release, meta(), &paths, || false, hold().permit()).unwrap();
     let mods = sidecar::group(&paths.addons);
     let index = index_of(&mods, "m");
-    sidecar::set_pak(&paths.addons, &mods, index, 5).unwrap();
+    sidecar::set_pak(&paths.addons, &mods, index, 5, hold().permit()).unwrap();
     vpk(&paths.addons.join("pak01_dir.vpk"), "someone else's mod");
     Env {
         _root: root,
@@ -95,9 +95,16 @@ fn paks(e: &Env) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-fn reinstall(e: &Env) -> impl FnOnce() -> Result<(), String> + '_ {
+fn hold() -> install::InstallGuard {
+    install::InstallGuard::acquire()
+}
+
+fn reinstall<'a>(
+    e: &'a Env,
+    permit: install::InstallPermit<'a>,
+) -> impl FnOnce() -> Result<(), String> + 'a {
     move || {
-        install::install_files(&e.release, meta(), &e.paths, || false)
+        install::install_files(&e.release, meta(), &e.paths, || false, permit)
             .map(|_| ())
             .map_err(|err| err.to_string())
     }
@@ -118,7 +125,15 @@ fn reset_restores_the_release_in_its_slot_and_keeps_the_replaced_file() {
     let patched = tamper(&e);
     assert_eq!(state(&e), Drift::Modified);
 
-    let backup = reset::reset_with(&e.paths, "m", || false, reinstall(&e)).unwrap();
+    let guard = hold();
+    let backup = reset::reset_with(
+        &e.paths,
+        "m",
+        || false,
+        reinstall(&e, guard.permit()),
+        guard.permit(),
+    )
+    .unwrap();
     assert_eq!(state(&e), Drift::Pristine, "the release is back");
     assert_eq!(
         paks(&e),
@@ -139,9 +154,18 @@ fn restore_previous_swaps_the_backup_back_and_forth() {
     let e = env();
     let release_bytes = paks(&e);
     let patched = tamper(&e);
-    reset::reset_with(&e.paths, "m", || false, reinstall(&e)).unwrap();
+    let guard = hold();
+    reset::reset_with(
+        &e.paths,
+        "m",
+        || false,
+        reinstall(&e, guard.permit()),
+        guard.permit(),
+    )
+    .unwrap();
+    drop(guard);
 
-    reset::restore_previous(&e.paths, "m", || false).unwrap();
+    reset::restore_previous(&e.paths, "m", || false, hold().permit()).unwrap();
     assert_eq!(
         paks(&e)["pak05_dir.vpk"],
         patched,
@@ -153,7 +177,7 @@ fn restore_previous_swaps_the_backup_back_and_forth() {
         "and still differs from the release"
     );
 
-    reset::restore_previous(&e.paths, "m", || false).unwrap();
+    reset::restore_previous(&e.paths, "m", || false, hold().permit()).unwrap();
     assert_eq!(
         paks(&e),
         release_bytes,
@@ -168,6 +192,7 @@ fn a_running_game_refuses_both_before_anything_moves() {
     tamper(&e);
     let before = paks(&e);
     let called = std::cell::Cell::new(false);
+    let guard = hold();
     let refused = reset::reset_with(
         &e.paths,
         "m",
@@ -176,16 +201,27 @@ fn a_running_game_refuses_both_before_anything_moves() {
             called.set(true);
             Ok(())
         },
+        guard.permit(),
     );
+    drop(guard);
     assert!(matches!(refused, Err(ResetError::GameRunning)));
     assert!(!called.get(), "the install never ran");
     assert_eq!(paks(&e), before);
     assert!(reset::latest_backup(&e.paths.addons, "m").is_none());
 
-    reset::reset_with(&e.paths, "m", || false, reinstall(&e)).unwrap();
+    let guard = hold();
+    reset::reset_with(
+        &e.paths,
+        "m",
+        || false,
+        reinstall(&e, guard.permit()),
+        guard.permit(),
+    )
+    .unwrap();
+    drop(guard);
     let after_reset = paks(&e);
     assert!(matches!(
-        reset::restore_previous(&e.paths, "m", || true),
+        reset::restore_previous(&e.paths, "m", || true, hold().permit()),
         Err(ResetError::GameRunning)
     ));
     assert_eq!(paks(&e), after_reset);
@@ -196,11 +232,13 @@ fn a_failed_install_puts_the_files_back() {
     let e = env();
     tamper(&e);
     let before = paks(&e);
+    let guard = hold();
     let failed = reset::reset_with(
         &e.paths,
         "m",
         || false,
         || Err("404 from the source".into()),
+        guard.permit(),
     );
     assert!(matches!(failed, Err(ResetError::Install(ref m)) if m.contains("404")));
     assert_eq!(paks(&e), before);
@@ -217,7 +255,16 @@ fn a_disabled_mod_stays_disabled_and_a_taken_slot_refuses_the_restore() {
     for v in &the_mod(&e).vpks {
         addons::set_enabled(v, false).unwrap();
     }
-    reset::reset_with(&e.paths, "m", || false, reinstall(&e)).unwrap();
+    let guard = hold();
+    reset::reset_with(
+        &e.paths,
+        "m",
+        || false,
+        reinstall(&e, guard.permit()),
+        guard.permit(),
+    )
+    .unwrap();
+    drop(guard);
     let m = the_mod(&e);
     assert!(m.vpks.iter().all(|v| !v.enabled), "reset keeps it disabled");
     assert_eq!(m.load_position(), 5);
@@ -226,7 +273,14 @@ fn a_disabled_mod_stays_disabled_and_a_taken_slot_refuses_the_restore() {
         addons::set_enabled(v, true).unwrap();
     }
     let mods = sidecar::group(&e.paths.addons);
-    sidecar::set_pak(&e.paths.addons, &mods, index_of(&mods, "m"), 9).unwrap();
+    sidecar::set_pak(
+        &e.paths.addons,
+        &mods,
+        index_of(&mods, "m"),
+        9,
+        hold().permit(),
+    )
+    .unwrap();
     let backup = reset::latest_backup(&e.paths.addons, "m").unwrap();
     let old_name = backup.files[0].trim_end_matches(".disabled").to_owned();
     vpk(&e.paths.addons.join(&old_name), "a newcomer took the slot");
@@ -237,7 +291,7 @@ fn a_disabled_mod_stays_disabled_and_a_taken_slot_refuses_the_restore() {
     .unwrap();
     let before = paks(&e);
     assert!(matches!(
-        reset::restore_previous(&e.paths, "m", || false),
+        reset::restore_previous(&e.paths, "m", || false, hold().permit()),
         Err(ResetError::SlotTaken(_))
     ));
     assert_eq!(paks(&e), before, "nothing moved");
@@ -247,11 +301,12 @@ fn a_disabled_mod_stays_disabled_and_a_taken_slot_refuses_the_restore() {
 fn restore_without_a_backup_says_so() {
     let e = env();
     assert!(matches!(
-        reset::restore_previous(&e.paths, "m", || false),
+        reset::restore_previous(&e.paths, "m", || false, hold().permit()),
         Err(ResetError::NoBackup(_))
     ));
+    let guard = hold();
     assert!(matches!(
-        reset::reset_with(&e.paths, "nobody", || false, || Ok(())),
+        reset::reset_with(&e.paths, "nobody", || false, || Ok(()), guard.permit()),
         Err(ResetError::NotFound(_))
     ));
 }
@@ -278,7 +333,7 @@ fn a_real_registry_release_resets_and_restores() {
         api_origins: vec!["https://luxus.github.io".into()],
         download_origins: vec!["https://github.com".into()],
     };
-    let install = |paths: &GamePaths| {
+    let install = |paths: &GamePaths, permit: install::InstallPermit<'_>| {
         let copy = root.path().join("download.vpk");
         fs::copy(&artifact, &copy).unwrap();
         registry::verify_download(&copy, Some(&sha)).map_err(|e| e.to_string())?;
@@ -293,11 +348,14 @@ fn a_real_registry_release_resets_and_restores() {
             "improved-quickbuy-1.0.0.vpk",
             &copy,
             true,
+            permit,
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
     };
-    install(&paths).unwrap();
+    let guard = hold();
+    install(&paths, guard.permit()).unwrap();
+    drop(guard);
     let id = source.mod_id_of("improved-quickbuy");
     let published = Published::Current(["sha256-57dc1d4fb2f81d33".to_owned()].into());
     let find = || {
@@ -325,7 +383,16 @@ fn a_real_registry_release_resets_and_restores() {
         foreign.display()
     );
 
-    let backup = reset::reset_with(&paths, &id, || false, || install(&paths)).unwrap();
+    let guard = hold();
+    let backup = reset::reset_with(
+        &paths,
+        &id,
+        || false,
+        || install(&paths, guard.permit()),
+        guard.permit(),
+    )
+    .unwrap();
+    drop(guard);
     let back = find().vpks[0].file.clone();
     assert_eq!(drift::drift(&find(), &published), Drift::Pristine);
     assert_eq!(sha_of(&back), sha);
@@ -336,7 +403,7 @@ fn a_real_registry_release_resets_and_restores() {
         backup.dir.display()
     );
 
-    reset::restore_previous(&paths, &id, || false).unwrap();
+    reset::restore_previous(&paths, &id, || false, hold().permit()).unwrap();
     assert_eq!(sha_of(&find().vpks[0].file), sha_of(&foreign));
     assert_eq!(drift::drift(&find(), &published), Drift::Modified);
     println!("restore previous -> the foreign VPK is back, Modified");

@@ -56,7 +56,14 @@ fn bare_vpk_installs_into_a_free_slot_and_keeps_the_source() {
     let src = e.work.join("Thicker Outlines.vpk");
     fs::write(&src, VPK).unwrap();
 
-    let sc = install::install_local_with(&src, "", &e.paths, || false).unwrap();
+    let sc = install::install_local_with(
+        &src,
+        "",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
 
     assert!(sidecar::is_local(&sc.mod_id), "{}", sc.mod_id);
     assert_eq!(
@@ -81,7 +88,14 @@ fn pak_named_vpk_brings_its_chunks() {
     fs::write(e.work.join("pak07_000.vpk"), b"chunk0").unwrap();
     fs::write(e.work.join("pak08_000.vpk"), b"other").unwrap();
 
-    let sc = install::install_local_with(&src, "Hitsound", &e.paths, || false).unwrap();
+    let sc = install::install_local_with(
+        &src,
+        "Hitsound",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
 
     assert_eq!(sc.name, "Hitsound");
     assert_eq!(sc.vpks, ["pak01_dir.vpk"]);
@@ -100,7 +114,14 @@ fn archive_installs_as_local_mod() {
     z.write_all(VPK).unwrap();
     z.finish().unwrap();
 
-    let sc = install::install_local_with(&src, "Zipped", &e.paths, || false).unwrap();
+    let sc = install::install_local_with(
+        &src,
+        "Zipped",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert!(sidecar::is_local(&sc.mod_id));
     assert_eq!(sc.vpks, ["pak01_dir.vpk"]);
 }
@@ -110,7 +131,14 @@ fn local_install_refuses_while_the_game_runs() {
     let e = env();
     let src = e.work.join("a.vpk");
     fs::write(&src, VPK).unwrap();
-    let err = install::install_local_with(&src, "A", &e.paths, || true).unwrap_err();
+    let err = install::install_local_with(
+        &src,
+        "A",
+        &e.paths,
+        || true,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap_err();
     assert!(matches!(err, install::InstallError::GameRunning), "{err:?}");
     assert!(files(&e.paths.addons).is_empty());
 }
@@ -151,7 +179,14 @@ fn edit_changes_only_name_and_notes() {
     let e = env();
     let src = e.work.join("a.vpk");
     fs::write(&src, VPK).unwrap();
-    let sc = install::install_local_with(&src, "A", &e.paths, || false).unwrap();
+    let sc = install::install_local_with(
+        &src,
+        "A",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
 
     let edited = sidecar::edit(
         &e.paths.addons,
@@ -184,8 +219,22 @@ fn local_ids_do_not_collide() {
     let e = env();
     let a = e.work.join("a.vpk");
     fs::write(&a, VPK).unwrap();
-    let one = install::install_local_with(&a, "A", &e.paths, || false).unwrap();
-    let two = install::install_local_with(&a, "B", &e.paths, || false).unwrap();
+    let one = install::install_local_with(
+        &a,
+        "A",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
+    let two = install::install_local_with(
+        &a,
+        "B",
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_ne!(one.mod_id, two.mod_id);
     assert_eq!(two.vpks, ["pak02_dir.vpk"]);
 }

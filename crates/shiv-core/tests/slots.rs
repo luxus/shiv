@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use shiv_core::game::GamePaths;
-use shiv_core::install::{self, INSTALL_LOCK, ModMeta};
+use shiv_core::install::{self, ModMeta};
 use shiv_core::{complock, sidecar};
 use tempfile::{TempDir, tempdir};
 
@@ -116,15 +116,13 @@ fn concurrent_installs_land_on_the_sites_slots_whatever_finishes_first() {
         threads.push(std::thread::spawn(move || {
             // Later in the list finishes later: HUD++ comes last.
             std::thread::sleep(std::time::Duration::from_millis(30 * n as u64));
-            let _guard = INSTALL_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             install::install_files_in_slots(
                 &files,
                 meta(&id),
                 &paths,
                 || false,
                 complock::last_slot(),
+                shiv_core::install::InstallGuard::acquire().permit(),
             )
             .unwrap();
         }));
@@ -151,14 +149,36 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
     let e = env();
     // Two of the user's mods on pak01 and pak02 (one chunked).
     let a = vpk(&e.work, "mine-a", "pak01_dir.vpk", true);
-    install::install_files(&a, meta("mine-a"), &e.paths, || false).unwrap();
+    install::install_files(
+        &a,
+        meta("mine-a"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     let b = vpk(&e.work, "mine-b", "pak01_dir.vpk", false);
-    install::install_files(&b, meta("mine-b"), &e.paths, || false).unwrap();
+    install::install_files(
+        &b,
+        meta("mine-b"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "mine-a"), ["pak01_dir.vpk"]);
     assert_eq!(vpks_of(&e, "mine-b"), ["pak02_dir.vpk"]);
 
     let hud = vpk(&e.work, "hud", "pak01_dir.vpk", false);
-    install::install_files_in_slots(&hud, meta("complock-hud"), &e.paths, || false, 7).unwrap();
+    install::install_files_in_slots(
+        &hud,
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
     assert_eq!(vpks_of(&e, "mine-a"), ["pak08_dir.vpk"]);
     assert!(e.paths.addons.join("pak08_000.vpk").is_file());
@@ -176,6 +196,7 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
         &e.paths,
         || false,
         7,
+        shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "complock-particles"), ["pak02_dir.vpk"]);
@@ -192,14 +213,36 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
     // 0.3.x put HUD++ wherever was free: pak05 here.
     for n in 1..=4 {
         let f = vpk(&e.work, &format!("filler{n}"), "pak01_dir.vpk", false);
-        install::install_files(&f, meta(&format!("filler{n}")), &e.paths, || false).unwrap();
+        install::install_files(
+            &f,
+            meta(&format!("filler{n}")),
+            &e.paths,
+            || false,
+            shiv_core::install::InstallGuard::acquire().permit(),
+        )
+        .unwrap();
     }
     let old = vpk(&e.work, "hud-old", "pak01_dir.vpk", false);
-    install::install_files(&old, meta("complock-hud"), &e.paths, || false).unwrap();
+    install::install_files(
+        &old,
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak05_dir.vpk"]);
 
     let new = vpk(&e.work, "hud-new", "pak01_dir.vpk", false);
-    install::install_files_in_slots(&new, meta("complock-hud"), &e.paths, || false, 7).unwrap();
+    install::install_files_in_slots(
+        &new,
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
     assert!(
         !e.paths.addons.join("pak05_dir.vpk").exists(),
@@ -209,7 +252,15 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
 
     // Updating again in place keeps pak01 and leaves nothing behind.
     let again = vpk(&e.work, "hud-again", "pak01_dir.vpk", false);
-    install::install_files_in_slots(&again, meta("complock-hud"), &e.paths, || false, 7).unwrap();
+    install::install_files_in_slots(
+        &again,
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
     let mut names: Vec<String> = fs::read_dir(&e.paths.addons)
         .unwrap()
@@ -237,15 +288,37 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
     let e = env();
     // Without CompLock nothing is held back.
     let first = vpk(&e.work, "first", "pak01_dir.vpk", false);
-    install::install_files(&first, meta("first"), &e.paths, || false).unwrap();
+    install::install_files(
+        &first,
+        meta("first"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "first"), ["pak01_dir.vpk"]);
 
     let hud = vpk(&e.work, "hud", "pak01_dir.vpk", false);
-    install::install_files_in_slots(&hud, meta("complock-hud"), &e.paths, || false, 7).unwrap();
+    install::install_files_in_slots(
+        &hud,
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "first"), ["pak08_dir.vpk"]);
 
     let browse = vpk(&e.work, "browse", "pak01_dir.vpk", false);
-    install::install_files(&browse, meta("browse"), &e.paths, || false).unwrap();
+    install::install_files(
+        &browse,
+        meta("browse"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "browse"), ["pak09_dir.vpk"], "not pak02");
 
     // Fill 10..=98, leaving one slot above the pack; a two-VPK mod takes it
@@ -260,7 +333,14 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
     let (a2, b2) = (dir.join("pak01_dir.vpk"), dir.join("pak02_dir.vpk"));
     fs::rename(a, &a2).unwrap();
     fs::rename(b, &b2).unwrap();
-    install::install_files(&[a2, b2], meta("two"), &e.paths, || false).unwrap();
+    install::install_files(
+        &[a2, b2],
+        meta("two"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "two"), ["pak02_dir.vpk", "pak99_dir.vpk"]);
 }
 
@@ -272,12 +352,26 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
 fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
     let e = env();
     let gone = vpk(&e.work, "gone", "pak01_dir.vpk", false);
-    install::install_files(&gone, meta("gone"), &e.paths, || false).unwrap();
+    install::install_files(
+        &gone,
+        meta("gone"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "gone"), ["pak01_dir.vpk"]);
     fs::remove_file(e.paths.addons.join("pak01_dir.vpk")).unwrap();
 
     let next = vpk(&e.work, "next", "pak01_dir.vpk", false);
-    install::install_files(&next, meta("next"), &e.paths, || false).unwrap();
+    install::install_files(
+        &next,
+        meta("next"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(
         vpks_of(&e, "next"),
         ["pak02_dir.vpk"],
@@ -288,9 +382,24 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
     // mod lands on pak08 and its file is deleted by hand; moving `next`
     // off pak02 for Particle Pruning must pass over pak08.
     let hud = vpk(&e.work, "hud", "pak01_dir.vpk", false);
-    install::install_files_in_slots(&hud, meta("complock-hud"), &e.paths, || false, 7).unwrap();
+    install::install_files_in_slots(
+        &hud,
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     let stale = vpk(&e.work, "stale", "pak01_dir.vpk", false);
-    install::install_files(&stale, meta("stale"), &e.paths, || false).unwrap();
+    install::install_files(
+        &stale,
+        meta("stale"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(vpks_of(&e, "stale"), ["pak08_dir.vpk"]);
     fs::remove_file(e.paths.addons.join("pak08_dir.vpk")).unwrap();
     let particles = vpk(&e.work, "particles", "pak02_dir.vpk", false);
@@ -300,6 +409,7 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         &e.paths,
         || false,
         7,
+        shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "next"), ["pak09_dir.vpk"]);
@@ -315,11 +425,25 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
 fn set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record() {
     let e = env();
     let gone = vpk(&e.work, "gone", "pak01_dir.vpk", false);
-    install::install_files(&gone, meta("gone"), &e.paths, || false).unwrap();
+    install::install_files(
+        &gone,
+        meta("gone"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     fs::remove_file(e.paths.addons.join("pak01_dir.vpk")).unwrap();
 
     let keep = vpk(&e.work, "keep", "pak01_dir.vpk", false);
-    install::install_files(&keep, meta("keep"), &e.paths, || false).unwrap();
+    install::install_files(
+        &keep,
+        meta("keep"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
     assert_eq!(
         vpks_of(&e, "keep"),
         ["pak02_dir.vpk"],
@@ -331,7 +455,13 @@ fn set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record() {
         .iter()
         .position(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == "keep"))
         .expect("keep");
-    let moved = sidecar::set_pak(&e.paths.addons, &mods, index, 1);
+    let moved = sidecar::set_pak(
+        &e.paths.addons,
+        &mods,
+        index,
+        1,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    );
     assert!(
         moved.is_err(),
         "set_pak handed out the stale slot: {moved:?}"

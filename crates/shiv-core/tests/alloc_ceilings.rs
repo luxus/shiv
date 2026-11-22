@@ -129,7 +129,14 @@ fn vpk(out: &Path, inner: &[&str], tag: &str) {
 fn install_mod(e: &Env, name: &str, inner: &[&str], tag: &str) -> Sidecar {
     let file = e.work.join(format!("{}.vpk", name.replace(' ', "_")));
     vpk(&file, inner, tag);
-    install::install_local_with(&file, name, &e.paths, || false).unwrap()
+    install::install_local_with(
+        &file,
+        name,
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap()
 }
 
 fn install_local_zip_flow() -> [u64; 1] {
@@ -141,8 +148,16 @@ fn install_local_zip_flow() -> [u64; 1] {
     z.write_all(VPK).unwrap();
     z.finish().unwrap();
 
-    let (bytes, sc) =
-        alloc_measured(|| install::install_local_with(&src, "Zipped", &e.paths, || false).unwrap());
+    let (bytes, sc) = alloc_measured(|| {
+        install::install_local_with(
+            &src,
+            "Zipped",
+            &e.paths,
+            || false,
+            shiv_core::install::InstallGuard::acquire().permit(),
+        )
+        .unwrap()
+    });
     assert_eq!(sc.vpks, ["pak01_dir.vpk"]);
     assert!(sidecar::is_local(&sc.mod_id));
     [bytes]
@@ -173,8 +188,16 @@ fn set_pak_flow() -> [u64; 1] {
     }
     let mods = sidecar::group(dir.path());
 
-    let (bytes, ()) =
-        alloc_measured(|| sidecar::set_pak(dir.path(), &mods, mods.len() - 1, 1).unwrap());
+    let (bytes, ()) = alloc_measured(|| {
+        sidecar::set_pak(
+            dir.path(),
+            &mods,
+            mods.len() - 1,
+            1,
+            shiv_core::install::InstallGuard::acquire().permit(),
+        )
+        .unwrap()
+    });
     assert_eq!(
         sidecar::read(dir.path(), "m25").unwrap().unwrap().vpks,
         ["pak01_dir.vpk"]

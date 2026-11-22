@@ -1,0 +1,30 @@
+Install permit. Recorded 2026-11-22.
+
+The check is the type. `cargo test -p shiv-core --test install_permit --locked`
+compiles the two pre-lock calls and requires `InstallPermit` in the error.
+
+Interchange import before 8b37a9b (parent ab34fba), crates/shiv-core/src/interchange.rs:863.
+No INSTALL_LOCK around the import. The call was:
+
+  install::install_files(files, meta, paths, game_running)
+
+Edit dialog before 6c5beb5 (parent fefe3f9), crates/shiv-ui/src/installed.rs:1047.
+The worker called set_pak with no lock:
+
+  sidecar::set_pak(&paths.addons, &mods, index, pak)
+
+Those two shapes, compiled against this tree:
+
+  cargo check --offline --manifest-path <temp>/Cargo.toml
+
+  error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+    shiv_core::install::install_files(files, meta, paths, game_running)
+    argument #5 of type `InstallPermit<'_>` is missing
+  error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+    shiv_core::sidecar::set_pak(addons, mods, index, pak)
+    argument #5 of type `InstallPermit<'_>` is missing
+  error: could not compile `forgotten-lock` (lib) due to 2 previous errors
+  exit 101
+
+Same check as the test on this tree: forgotten_pak_change_does_not_compile passed.
+`cargo test --workspace --locked` passed. `cargo clippy --workspace --all-targets --locked -- -D warnings` passed.

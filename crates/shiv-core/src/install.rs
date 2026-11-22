@@ -22,18 +22,53 @@ const DISABLED_EXT: &str = ".disabled";
 const SHIV_DIR: &str = ".shiv";
 const TMP_DIR: &str = "tmp";
 
-/// Serialises every path that allocates pak numbers or renames paks:
-/// catalog, file and link installs, interchange imports, and the
-/// load-order moves (`set_pak`, `move_mod`) from the UI. Held from just
-/// before the folder is touched until the change is complete, so the
-/// holders' cancel checks after acquiring it stay meaningful.
+static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Holds the install lock until dropped.
 ///
-/// Not reentrant: [`install_with`] deliberately does **not** take it — its
-/// callers hold it already and need the wait-and-recheck pattern above —
-/// so never call these functions while holding the lock yourself. Any new
-/// path that renames `pakNN_*` files or allocates numbers must take it
-/// first; `docs/code-quality.md` pins the rule.
-pub static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// [`permit`](Self::permit) is the only way to call a function that
+/// allocates a pak number or renames a `pakNN` file. Not reentrant:
+/// acquiring it again on the same thread waits forever, so those
+/// functions take the permit instead of locking themselves. A cancel
+/// check belongs after [`acquire`](Self::acquire), before the permit
+/// is used.
+pub struct InstallGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl InstallGuard {
+    /// Take the install lock, recovering it if a holder panicked.
+    pub fn acquire() -> Self {
+        Self {
+            _guard: INSTALL_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        }
+    }
+
+    /// Mint the proof those functions require. It dies with this guard.
+    pub fn permit(&self) -> InstallPermit<'_> {
+        InstallPermit {
+            _guard: &self._guard,
+        }
+    }
+}
+
+/// Proof an [`InstallGuard`] is still held.
+///
+/// Copy, so one guard covers every pak change in its scope. No other
+/// constructor exists.
+#[derive(Clone, Copy)]
+pub struct InstallPermit<'a> {
+    _guard: &'a std::sync::MutexGuard<'static, ()>,
+}
+
+impl InstallPermit<'_> {
+    pub(crate) fn keep(self) {
+        let Self { _guard } = self;
+        let _ = _guard;
+    }
+}
 
 thread_local! {
     static DISK_BYTES_WRITTEN: Cell<u64> = const { Cell::new(0) };
@@ -150,7 +185,8 @@ impl Default for Limits {
 ///
 /// As [`install_with_limits`].
 pub fn install(archive: &Path, meta: ModMeta, paths: &GamePaths) -> Result<Sidecar, InstallError> {
-    install_with(archive, meta, paths, game::is_running)
+    let guard = InstallGuard::acquire();
+    install_with(archive, meta, paths, game::is_running, guard.permit())
 }
 
 /// [`install`] with an injectable running-game check.
@@ -163,8 +199,16 @@ pub fn install_with(
     meta: ModMeta,
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
+    permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
-    install_with_limits(archive, meta, paths, game_running, Limits::default())
+    install_with_limits(
+        archive,
+        meta,
+        paths,
+        game_running,
+        Limits::default(),
+        permit,
+    )
 }
 
 /// [`install_with`] with explicit extraction limits. Nothing is written
@@ -185,7 +229,9 @@ pub fn install_with_limits(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
     limits: Limits,
+    permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
+    permit.keep();
     // Checked first: nothing may be written while the game runs.
     if game_running() {
         return Err(InstallError::GameRunning);
@@ -224,8 +270,9 @@ pub fn install_files(
     meta: ModMeta,
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
+    permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
-    install_files_to(files, meta, paths, game_running, None)
+    install_files_to(files, meta, paths, game_running, None, permit)
 }
 
 /// Like [`install_files`], for a pack whose paks have a fixed load order
@@ -235,8 +282,7 @@ pub fn install_files(
 /// version of this one, or a pack pak an older Shiv put there) is first
 /// moved to the lowest free slot above `reserved`, its sidecar kept in
 /// step; an earlier version of this mod is then dropped as usual. Other
-/// VPKs get free slots above `reserved`. The caller holds
-/// [`INSTALL_LOCK`], so slot assignment is serialized.
+/// VPKs get free slots above `reserved`. `permit` is the install lock.
 ///
 /// # Errors
 ///
@@ -248,8 +294,9 @@ pub fn install_files_in_slots(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
     reserved: u32,
+    permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
-    install_files_to(files, meta, paths, game_running, Some(reserved))
+    install_files_to(files, meta, paths, game_running, Some(reserved), permit)
 }
 
 fn install_files_to(
@@ -258,6 +305,7 @@ fn install_files_to(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
     reserved: Option<u32>,
+    permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
     // Checked first: nothing may be written while the game runs.
     if game_running() {
@@ -285,8 +333,11 @@ fn install_files_to(
     }
     let staged = collect_vpks(staging.path())?;
     match reserved {
-        None => place_and_record(addons_dir, &staged, meta, old),
-        Some(reserved) => place_in_slots(addons_dir, &staged, meta, reserved),
+        None => {
+            permit.keep();
+            place_and_record(addons_dir, &staged, meta, old)
+        }
+        Some(reserved) => place_in_slots(addons_dir, &staged, meta, reserved, permit),
     }
 }
 
@@ -306,6 +357,7 @@ fn place_in_slots(
     staged: &[StagedVpk],
     meta: ModMeta,
     reserved: u32,
+    permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
     if staged.is_empty() {
         return Err(InstallError::NoVpk);
@@ -329,7 +381,7 @@ fn place_in_slots(
             None => above.next().ok_or(InstallError::AddonsFull)?,
         });
     }
-    sidecar::renumber(addons_dir, &mods, &moves)?;
+    sidecar::renumber(addons_dir, &mods, &moves, permit)?;
     // Moving aside may have renamed this mod's own earlier files.
     let old = match sidecar::read(addons_dir, &meta.mod_id) {
         Ok(s) => s,
@@ -444,7 +496,8 @@ fn place_numbered(
 ///
 /// As [`install_with_limits`].
 pub fn install_local(file: &Path, name: &str, paths: &GamePaths) -> Result<Sidecar, InstallError> {
-    install_local_with(file, name, paths, game::is_running)
+    let guard = InstallGuard::acquire();
+    install_local_with(file, name, paths, game::is_running, guard.permit())
 }
 
 /// [`install_local`] with an injectable running-game check.
@@ -457,6 +510,7 @@ pub fn install_local_with(
     name: &str,
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
+    permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
     let fallback = file
         .file_stem()
@@ -475,7 +529,7 @@ pub fn install_local_with(
         hero: None,
         category: None,
     };
-    let mut sc = install_with(file, meta, paths, game_running)?;
+    let mut sc = install_with(file, meta, paths, game_running, permit)?;
     // Recorded so a newer copy of the same file is recognised as an update.
     if let Some(source) = source_name(file) {
         sc.source = Some(source);
@@ -493,7 +547,8 @@ pub fn install_local_with(
 /// [`InstallError::GameRunning`] before anything is removed;
 /// [`InstallError::Io`] when a removal fails.
 pub fn uninstall(m: &InstalledMod) -> Result<(), InstallError> {
-    uninstall_with(m, game::is_running)
+    let guard = InstallGuard::acquire();
+    uninstall_with(m, game::is_running, guard.permit())
 }
 
 /// [`uninstall`] with an injectable running-game check; refuses before touching anything.
@@ -504,7 +559,9 @@ pub fn uninstall(m: &InstalledMod) -> Result<(), InstallError> {
 pub fn uninstall_with(
     m: &InstalledMod,
     game_running: impl Fn() -> bool,
+    permit: InstallPermit<'_>,
 ) -> Result<(), InstallError> {
+    permit.keep();
     if game_running() {
         return Err(InstallError::GameRunning);
     }
@@ -1341,7 +1398,8 @@ pub fn replace_local(
     target: &InstalledMod,
     paths: &GamePaths,
 ) -> Result<Replaced, InstallError> {
-    replace_local_with(file, target, paths, game::is_running)
+    let guard = InstallGuard::acquire();
+    replace_local_with(file, target, paths, game::is_running, guard.permit())
 }
 
 /// [`replace_local`] with an injectable running-game check.
@@ -1354,7 +1412,9 @@ pub fn replace_local_with(
     target: &InstalledMod,
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
+    permit: InstallPermit<'_>,
 ) -> Result<Replaced, InstallError> {
+    permit.keep();
     if game_running() {
         return Err(InstallError::GameRunning);
     }
