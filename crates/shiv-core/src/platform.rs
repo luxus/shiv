@@ -2,13 +2,34 @@
 
 use std::path::PathBuf;
 
+/// One running process: the names it is known by, its executable if that
+/// path could be read, and argv[0] when the command line could be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessView {
+    pub names: Vec<String>,
+    /// `None` when `/proc/pid/exe` could not be read.
+    pub exe: Option<std::path::PathBuf>,
+    pub exe_unreadable: bool,
+    /// argv[0] as the process wrote it. Under Proton this is a Windows path.
+    pub argv0: Option<String>,
+}
+
 /// Names (process name and argv[0] basename) of every running process.
 #[cfg(target_os = "linux")]
 pub fn process_names() -> Vec<String> {
+    process_views()
+        .into_iter()
+        .flat_map(|view| view.names)
+        .collect()
+}
+
+/// Every running process, with the executable path when it can be read.
+#[cfg(target_os = "linux")]
+pub fn process_views() -> Vec<ProcessView> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
-    let mut names = Vec::new();
+    let mut views = Vec::new();
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let is_pid = file_name
@@ -18,22 +39,35 @@ pub fn process_names() -> Vec<String> {
             continue;
         }
         let dir = entry.path();
+        let mut names = Vec::new();
         if let Ok(comm) = std::fs::read_to_string(dir.join("comm")) {
-            names.push(comm.trim().to_string());
+            let comm = comm.trim();
+            if !comm.is_empty() {
+                names.push(comm.to_string());
+            }
         }
-        // Under Proton the game's argv[0] is a Windows path while comm may be truncated.
-        if let Ok(cmdline) = std::fs::read(dir.join("cmdline"))
-            && let Some(argv0) = cmdline.split(|b| *b == 0).next()
-        {
+        let argv0 = std::fs::read(dir.join("cmdline")).ok().and_then(|cmdline| {
+            let argv0 = cmdline.split(|b| *b == 0).next()?;
             let argv0 = String::from_utf8_lossy(argv0);
+            if argv0.is_empty() {
+                return None;
+            }
             if let Some(base) = argv0.rsplit(['/', '\\']).next()
                 && !base.is_empty()
             {
                 names.push(base.to_string());
             }
-        }
+            Some(argv0.into_owned())
+        });
+        let exe = std::fs::read_link(dir.join("exe"));
+        views.push(ProcessView {
+            names,
+            exe: exe.as_ref().ok().cloned(),
+            exe_unreadable: exe.is_err(),
+            argv0,
+        });
     }
-    names
+    views
 }
 
 /// Whether [`process_names`] can see running processes on this platform.
@@ -42,6 +76,12 @@ pub const CAN_SCAN_PROCESSES: bool = cfg!(target_os = "linux");
 /// Process scanning is only implemented on Linux; other platforms report no processes.
 #[cfg(not(target_os = "linux"))]
 pub fn process_names() -> Vec<String> {
+    Vec::new()
+}
+
+/// Process scanning is only implemented on Linux; other platforms report no processes.
+#[cfg(not(target_os = "linux"))]
+pub fn process_views() -> Vec<ProcessView> {
     Vec::new()
 }
 

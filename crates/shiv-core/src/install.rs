@@ -24,26 +24,30 @@ const TMP_DIR: &str = "tmp";
 
 static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Holds the install lock until dropped.
-///
-/// [`permit`](Self::permit) is the only way to call a function that
-/// allocates a pak number or renames a `pakNN` file. Not reentrant:
-/// acquiring it again on the same thread waits forever, so those
-/// functions take the permit instead of locking themselves. A cancel
-/// check belongs after [`acquire`](Self::acquire), before the permit
-/// is used.
+/// Holds the install lock until dropped: the in-process mutex, then an
+/// exclusive flock on `<addons>/.shiv/lock`. The kernel drops the flock
+/// if this process dies. Not reentrant: acquiring it again on the same
+/// thread waits forever, so pak changes take the permit instead of
+/// locking themselves. A cancel check belongs after [`acquire`](Self::acquire),
+/// before the permit is used.
 pub struct InstallGuard {
+    _file: FileLock,
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
 impl InstallGuard {
-    /// Take the install lock, recovering it if a holder panicked.
-    pub fn acquire() -> Self {
-        Self {
-            _guard: INSTALL_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        }
+    /// Take the install lock for `addons`, recovering the in-process mutex
+    /// if a holder panicked.
+    ///
+    /// # Errors
+    ///
+    /// [`InstallError::Io`] when the lock file cannot be created or locked.
+    pub fn acquire(addons: &Path) -> Result<Self, InstallError> {
+        let _guard = INSTALL_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _file = FileLock::acquire(addons)?;
+        Ok(Self { _file, _guard })
     }
 
     /// Mint the proof those functions require. It dies with this guard.
@@ -68,6 +72,183 @@ impl InstallPermit<'_> {
         let Self { _guard } = self;
         let _ = _guard;
     }
+}
+
+/// Exclusive flock on `<addons>/.shiv/lock`, held until drop.
+struct FileLock {
+    file: File,
+}
+
+impl FileLock {
+    fn acquire(addons: &Path) -> Result<Self, InstallError> {
+        let dir = addons.join(SHIV_DIR);
+        fs::create_dir_all(&dir).map_err(io_err(&dir))?;
+        let path = dir.join("lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(io_err(&path))?;
+        lock_exclusive(&file).map_err(|err| {
+            if lock_busy(&err) {
+                InstallError::AlreadyInstalling
+            } else {
+                io_err(&path)(err)
+            }
+        })?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = unlock(&self.file);
+    }
+}
+
+#[cfg(unix)]
+fn lock_exclusive(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // SAFETY: `fd` is a live descriptor of `file`. LOCK_NB returns
+        // instead of waiting when another process holds the lock. The
+        // descriptor stays open until drop.
+        let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(err);
+    }
+}
+
+#[cfg(unix)]
+fn unlock(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `fd` is the descriptor `lock_exclusive` locked.
+    let rc = unsafe { flock(file.as_raw_fd(), LOCK_UN) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+const LOCK_EX: i32 = 2;
+#[cfg(unix)]
+const LOCK_NB: i32 = 4;
+#[cfg(unix)]
+const LOCK_UN: i32 = 8;
+
+fn lock_busy(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::WouldBlock || matches!(err.raw_os_error(), Some(11 | 33 | 35))
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn flock(fd: i32, op: i32) -> i32;
+}
+
+#[cfg(windows)]
+fn lock_exclusive(file: &File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    let mut overlapped = Overlapped::default();
+    // SAFETY: `handle` is a live file handle and `overlapped` outlives the call.
+    // LOCKFILE_FAIL_IMMEDIATELY returns when another process holds the lock.
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn unlock(file: &File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    let mut overlapped = Overlapped::default();
+    // SAFETY: `handle` is the file `lock_exclusive` locked; the range matches.
+    let ok = unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+const LOCKFILE_EXCLUSIVE_LOCK: u32 = 2;
+#[cfg(windows)]
+const LOCKFILE_FAIL_IMMEDIATELY: u32 = 1;
+
+#[cfg(windows)]
+#[repr(C)]
+struct Overlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    event: *mut core::ffi::c_void,
+}
+
+#[cfg(windows)]
+impl Default for Overlapped {
+    fn default() -> Self {
+        Self {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            event: core::ptr::null_mut(),
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn LockFileEx(
+        file: *mut core::ffi::c_void,
+        flags: u32,
+        reserved: u32,
+        low: u32,
+        high: u32,
+        overlapped: *mut Overlapped,
+    ) -> i32;
+    fn UnlockFileEx(
+        file: *mut core::ffi::c_void,
+        reserved: u32,
+        low: u32,
+        high: u32,
+        overlapped: *mut Overlapped,
+    ) -> i32;
+}
+
+#[cfg(not(any(unix, windows)))]
+fn lock_exclusive(_file: &File) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no cross-process install lock on this os",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn unlock(_file: &File) -> io::Result<()> {
+    Ok(())
 }
 
 thread_local! {
@@ -164,6 +345,8 @@ pub fn slot_note(placed: &SlotPlaced) -> String {
 pub enum InstallError {
     #[error("Deadlock is running; close the game before changing mods")]
     GameRunning,
+    #[error("already installing in another shiv")]
+    AlreadyInstalling,
     #[error("unsupported file (expected a .vpk, or a zip, rar or 7z archive)")]
     UnsupportedArchive,
     #[error("the archive contains no .vpk file")]
@@ -240,8 +423,15 @@ impl Default for Limits {
 ///
 /// As [`install_with_limits`].
 pub fn install(archive: &Path, meta: ModMeta, paths: &GamePaths) -> Result<Sidecar, InstallError> {
-    let guard = InstallGuard::acquire();
-    install_with(archive, meta, paths, game::is_running, guard.permit())
+    let guard = InstallGuard::acquire(&paths.addons)?;
+    let root = paths.root.clone();
+    install_with(
+        archive,
+        meta,
+        paths,
+        move || game::running_at(&root),
+        guard.permit(),
+    )
 }
 
 /// [`install`] with an injectable running-game check.
@@ -731,8 +921,15 @@ fn place_numbered(
 ///
 /// As [`install_with_limits`].
 pub fn install_local(file: &Path, name: &str, paths: &GamePaths) -> Result<Sidecar, InstallError> {
-    let guard = InstallGuard::acquire();
-    install_local_with(file, name, paths, game::is_running, guard.permit())
+    let guard = InstallGuard::acquire(&paths.addons)?;
+    let root = paths.root.clone();
+    install_local_with(
+        file,
+        name,
+        paths,
+        move || game::running_at(&root),
+        guard.permit(),
+    )
 }
 
 /// [`install_local`] with an injectable running-game check.
@@ -782,8 +979,26 @@ pub fn install_local_with(
 /// [`InstallError::GameRunning`] before anything is removed;
 /// [`InstallError::Io`] when a removal fails.
 pub fn uninstall(m: &InstalledMod) -> Result<(), InstallError> {
-    let guard = InstallGuard::acquire();
-    uninstall_with(m, game::is_running, guard.permit())
+    let addons = m
+        .vpks
+        .first()
+        .and_then(|v| v.file.parent())
+        .ok_or_else(|| InstallError::Io {
+            path: PathBuf::from("addons"),
+            source: io::Error::new(io::ErrorKind::NotFound, "the mod has no pak file"),
+        })?;
+    let guard = InstallGuard::acquire(addons)?;
+    let root = install_root(addons);
+    uninstall_with(m, move || game::running_at(&root), guard.permit())
+}
+
+fn install_root(addons: &Path) -> PathBuf {
+    addons
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| addons.to_path_buf())
 }
 
 /// [`uninstall`] with an injectable running-game check; refuses before touching anything.
@@ -1662,8 +1877,15 @@ pub fn replace_local(
     target: &InstalledMod,
     paths: &GamePaths,
 ) -> Result<Replaced, InstallError> {
-    let guard = InstallGuard::acquire();
-    replace_local_with(file, target, paths, game::is_running, guard.permit())
+    let guard = InstallGuard::acquire(&paths.addons)?;
+    let root = paths.root.clone();
+    replace_local_with(
+        file,
+        target,
+        paths,
+        move || game::running_at(&root),
+        guard.permit(),
+    )
 }
 
 /// [`replace_local`] with an injectable running-game check.
@@ -1904,6 +2126,97 @@ fn vpk_paths(file: &Path) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_install_lock_is_held_until_the_guard_drops() {
+        use std::os::unix::io::AsRawFd;
+
+        struct Tmp(PathBuf);
+        impl Drop for Tmp {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let make = |label: &str| {
+            let dir = std::env::temp_dir()
+                .join(format!("shiv-lock-{}-{stamp}-{label}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Tmp(dir)
+        };
+        let here = make("here");
+        let there = make("there");
+        let guard = InstallGuard::acquire(&here.0).unwrap();
+        let held = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(here.0.join(".shiv/lock"))
+            .unwrap();
+        // SAFETY: `held` is the lock file this guard already holds, and
+        // LOCK_NB returns instead of waiting.
+        let blocked = unsafe { super::flock(held.as_raw_fd(), super::LOCK_EX | super::LOCK_NB) };
+        assert_ne!(blocked, 0);
+        std::fs::create_dir_all(there.0.join(".shiv")).unwrap();
+        let free = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(there.0.join(".shiv/lock"))
+            .unwrap();
+        // SAFETY: `free` is a different install's lock file, opened above.
+        let other = unsafe { super::flock(free.as_raw_fd(), super::LOCK_EX | super::LOCK_NB) };
+        assert_eq!(other, 0);
+        // SAFETY: `free` is the descriptor locked just above.
+        let _ = unsafe { super::flock(free.as_raw_fd(), super::LOCK_UN) };
+        drop(guard);
+        // SAFETY: `held` is still open, and the guard that locked it is gone.
+        let after = unsafe { super::flock(held.as_raw_fd(), super::LOCK_EX | super::LOCK_NB) };
+        assert_eq!(after, 0);
+        // SAFETY: `held` is the descriptor locked just above.
+        let _ = unsafe { super::flock(held.as_raw_fd(), super::LOCK_UN) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_second_shiv_is_told_the_install_is_already_running() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = std::env::temp_dir().join(format!(
+            "shiv-lock-busy-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join(".shiv")).unwrap();
+        let held = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(".shiv/lock"))
+            .unwrap();
+        // SAFETY: `held` is the lock file just created, and LOCK_NB returns
+        // if it were already taken.
+        let rc = unsafe { super::flock(held.as_raw_fd(), super::LOCK_EX | super::LOCK_NB) };
+        assert_eq!(rc, 0);
+        let err = match InstallGuard::acquire(&dir) {
+            Err(err) => err,
+            Ok(_guard) => panic!("a second shiv took the lock"),
+        };
+        assert!(matches!(err, InstallError::AlreadyInstalling), "{err}");
+        assert_eq!(err.to_string(), "already installing in another shiv");
+        // SAFETY: `held` is the descriptor locked just above.
+        let _ = unsafe { super::flock(held.as_raw_fd(), super::LOCK_UN) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn old_vpk(
         file: &str,

@@ -78,7 +78,9 @@ fn install(
         meta,
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     found(e, id)
@@ -154,7 +156,9 @@ fn renames_keep_a_mod_pristine() {
         &mods,
         index,
         7,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let moved = found(&e, "m");

@@ -76,7 +76,11 @@ pub(crate) fn attach(app: &App) {
 }
 
 /// Block the calling worker until the slot dialog is answered.
-/// `None` is cancel: the caller changes nothing.
+/// Look-alikes are asked first: replace them, or keep them (which moves).
+/// Any other foreign pak is then move or cancel, and replace is not offered.
+/// `None` is cancel: the caller changes nothing. One choice covers the
+/// whole set: [`install::SlotChoice::Replace`] removes the look-alikes and
+/// moves the rest, and [`install::SlotChoice::Move`] moves every occupant.
 pub(crate) fn ask_slots(
     weak: &Weak<App>,
     occupants: &[install::SlotOccupant],
@@ -356,7 +360,7 @@ fn enable_first(id: &str, enable: bool) -> Result<(), String> {
         .iter()
         .position(is_it)
         .ok_or("The mod is no longer installed.")?;
-    let guard = install::InstallGuard::acquire();
+    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     sidecar::move_mod(
         &paths.addons,
         &mods,

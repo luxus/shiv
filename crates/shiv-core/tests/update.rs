@@ -94,7 +94,9 @@ fn same_source_file_name_matches_the_installed_local_mod() {
         "My Haze",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(
@@ -222,7 +224,9 @@ fn replace_keeps_slot_name_notes_and_state_and_backs_up_the_old_file() {
         "My Haze",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(sc.vpks, ["pak02_dir.vpk"]);
@@ -251,7 +255,9 @@ fn replace_keeps_slot_name_notes_and_state_and_backs_up_the_old_file() {
         target,
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
 
@@ -303,7 +309,9 @@ fn replacing_a_hand_added_pak_adopts_it_in_the_same_slot() {
         target,
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(sidecar::is_local(&r.sidecar.mod_id));
@@ -356,7 +364,9 @@ fn replace_refuses_without_touching_anything() {
         by_file(&mods, "pak01_dir.vpk"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, InstallError::NotLocal), "{err:?}");
@@ -366,7 +376,9 @@ fn replace_refuses_without_touching_anything() {
         by_file(&mods, "pak02_dir.vpk"),
         &e.paths,
         || true,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, InstallError::GameRunning), "{err:?}");
@@ -385,7 +397,9 @@ fn replace_refuses_without_touching_anything() {
         by_file(&mods, "pak02_dir.vpk"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(

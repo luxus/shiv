@@ -329,7 +329,13 @@ pub fn install_registry_mod(
         hero: None,
         category: Some("registry".to_owned()),
     };
-    let sc = install::install_with(downloaded, meta, paths, crate::game::is_running, permit)?;
+    let sc = install::install_with(
+        downloaded,
+        meta,
+        paths,
+        || crate::game::running_at(&paths.root),
+        permit,
+    )?;
     if !enabled {
         disable_by_id(paths, &sc.mod_id)?;
     }

@@ -35,7 +35,7 @@ impl Deps {
     fn system() -> Self {
         Deps {
             locate: Arc::new(crate::locate_game),
-            running: Arc::new(shiv_core::game::is_running),
+            running: Arc::new(shiv_core::game::running_here),
         }
     }
 }

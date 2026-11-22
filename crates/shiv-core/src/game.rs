@@ -100,10 +100,84 @@ pub fn can_detect() -> bool {
     platform::CAN_SCAN_PROCESSES
 }
 
-/// True while a Deadlock process is running.
+/// True while a Deadlock process is running, on any install.
 pub fn is_running() -> bool {
     let names = platform::process_names();
     any_deadlock_process(names.iter().map(String::as_str))
+}
+
+/// True while a game process (`deadlock`, `project8`, `citadel`) is this
+/// install. `root` is the Deadlock folder (`GamePaths::root`): the executable
+/// path, or argv[0] under Proton, has to start with it. A matching name whose
+/// executable path cannot be read counts as this install.
+#[must_use]
+pub fn running_at(root: &Path) -> bool {
+    running_among(&platform::process_views(), root)
+}
+
+/// [`locate`] then [`running_at`]. A machine with no install falls back to
+/// [`is_running`], which has no path to compare.
+#[must_use]
+pub fn running_here() -> bool {
+    match locate() {
+        Ok(paths) => running_at(&paths.root),
+        Err(_) => is_running(),
+    }
+}
+
+pub(crate) fn running_among(views: &[platform::ProcessView], root: &Path) -> bool {
+    views.iter().any(|view| process_is_this_install(view, root))
+}
+
+fn process_is_this_install(view: &platform::ProcessView, root: &Path) -> bool {
+    let named = view.names.iter().any(|n| is_game_process_name(n))
+        || view.argv0.as_deref().is_some_and(is_game_process_name);
+    if !named {
+        return false;
+    }
+    if view.exe_unreadable {
+        return true;
+    }
+    if view
+        .exe
+        .as_ref()
+        .is_some_and(|exe| under_install(exe, root))
+    {
+        return true;
+    }
+    view.argv0
+        .as_deref()
+        .is_some_and(|argv0| under_text(argv0, root))
+}
+
+fn is_game_process_name(name: &str) -> bool {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let lower = base.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    matches!(stem, "deadlock" | "project8" | "citadel")
+}
+
+fn under_install(path: &Path, root: &Path) -> bool {
+    under_text(&path.to_string_lossy(), root)
+}
+
+fn under_text(path: &str, root: &Path) -> bool {
+    let path = canon_path(path);
+    let root = canon_path(&root.to_string_lossy());
+    if root.is_empty() {
+        return false;
+    }
+    path == root || path.starts_with(&(root + "/"))
+}
+
+fn canon_path(raw: &str) -> String {
+    let slashed = raw.replace('\\', "/");
+    let trimmed = slashed.trim_end_matches('/');
+    let without_drive = match trimmed.as_bytes() {
+        [_, b':', b'/', ..] => &trimmed[2..],
+        _ => trimmed,
+    };
+    without_drive.to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -137,6 +211,52 @@ mod tests {
     #[test]
     fn detection_is_available_only_where_processes_are_scanned() {
         assert_eq!(can_detect(), cfg!(target_os = "linux"));
+    }
+
+    #[test]
+    fn a_game_under_another_install_does_not_block_this_one() {
+        let here = PathBuf::from("/g/Deadlock");
+        let other = PathBuf::from("/other/Deadlock");
+        let view = |name: &str, exe: Option<&str>, argv0: Option<&str>| platform::ProcessView {
+            names: vec![name.into()],
+            exe: exe.map(PathBuf::from),
+            exe_unreadable: exe.is_none(),
+            argv0: argv0.map(str::to_owned),
+        };
+        assert!(running_among(
+            &[view(
+                "deadlock",
+                Some("/g/Deadlock/game/bin/linuxsteamrt64/deadlock"),
+                None
+            )],
+            &here
+        ));
+        assert!(!running_among(
+            &[view(
+                "deadlock.exe",
+                Some("/other/Deadlock/game/bin/win64/deadlock.exe"),
+                None
+            )],
+            &here
+        ));
+        assert!(running_among(&[view("project8", None, None)], &here));
+        assert!(running_among(
+            &[view(
+                "wine",
+                Some("/usr/lib/pressure-vessel/bin/wine-preloader"),
+                Some("Z:\\g\\Deadlock\\game\\bin\\win64\\citadel.exe")
+            )],
+            &here
+        ));
+        assert!(!running_among(
+            &[view(
+                "citadel",
+                Some("/usr/bin/wine"),
+                Some("Z:\\other\\Deadlock\\game\\bin\\win64\\citadel.exe")
+            )],
+            &here
+        ));
+        assert!(!running_among(&[view("python3", None, None)], &other));
     }
 
     #[test]

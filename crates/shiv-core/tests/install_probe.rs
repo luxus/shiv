@@ -138,7 +138,9 @@ fn timed_install(fixture: &Fixture) -> Duration {
         "probe mod",
         &paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let elapsed = started.elapsed();

@@ -72,7 +72,7 @@ impl Deps {
         let download = client.clone();
         Deps {
             locate: Arc::new(crate::locate_game),
-            running: Arc::new(shiv_core::game::is_running),
+            running: Arc::new(shiv_core::game::running_here),
             fetch: Arc::new(move |etag| {
                 client
                     .perf_catalog(etag)
@@ -302,7 +302,7 @@ fn run_pack_install(
         .map_err(fail)?;
         vpks.push(dest);
     }
-    let guard = install::InstallGuard::acquire();
+    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| fail(e.to_string()))?;
     if cancel.load(Ordering::Relaxed) {
         return Err((CANCELLED_TEXT.into(), false));
     }

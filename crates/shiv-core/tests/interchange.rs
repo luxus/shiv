@@ -76,7 +76,9 @@ fn install_mod(e: &Env, name: &str, inner: &[&str], tag: &str) -> sidecar::Sidec
         name,
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap()
 }

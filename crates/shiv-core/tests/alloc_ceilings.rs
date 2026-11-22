@@ -134,7 +134,9 @@ fn install_mod(e: &Env, name: &str, inner: &[&str], tag: &str) -> Sidecar {
         name,
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap()
 }
@@ -154,7 +156,9 @@ fn install_local_zip_flow() -> [u64; 1] {
             "Zipped",
             &e.paths,
             || false,
-            shiv_core::install::InstallGuard::acquire().permit(),
+            shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+                .unwrap()
+                .permit(),
         )
         .unwrap()
     });
@@ -194,7 +198,9 @@ fn set_pak_flow() -> [u64; 1] {
             &mods,
             mods.len() - 1,
             1,
-            shiv_core::install::InstallGuard::acquire().permit(),
+            shiv_core::install::InstallGuard::acquire(dir.path())
+                .unwrap()
+                .permit(),
         )
         .unwrap()
     });

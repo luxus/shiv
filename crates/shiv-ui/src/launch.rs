@@ -65,7 +65,7 @@ impl Deps {
             locate: Arc::new(crate::locate_game),
             check: Arc::new(health::check),
             launch: Arc::new(launch::launch_cancellable),
-            running: Arc::new(shiv_core::game::is_running),
+            running: Arc::new(shiv_core::game::running_here),
             vanilla: Arc::new(|paths, on| {
                 if on {
                     shiv_core::vanilla::enable(paths)

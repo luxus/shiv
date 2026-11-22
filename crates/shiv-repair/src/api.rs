@@ -682,7 +682,7 @@ pub fn analyze(paths: &GamePaths, build_id: u64) -> Vec<ModHealth> {
 /// list removes the package). Refuses while the game runs. See the module
 /// docs for what is written and backed up.
 pub fn apply(paths: &GamePaths, mods: &[ModId]) -> Result<FixReport, RepairError> {
-    apply_with(paths, mods, game::is_running)
+    apply_with(paths, mods, || game::running_at(&paths.root))
 }
 
 /// [`apply`] with an injectable running-game check.
@@ -919,7 +919,7 @@ pub fn can_undo(paths: &GamePaths) -> bool {
 /// changes (its previous text goes to [`gameinfo_backup_path`]). If the file
 /// is gone, the saved copy is put back. Refuses while the game runs.
 pub fn restore_last(paths: &GamePaths) -> Result<RestoreReport, RepairError> {
-    restore_last_with(paths, game::is_running)
+    restore_last_with(paths, || game::running_at(&paths.root))
 }
 
 /// [`restore_last`] with an injectable running-game check.
@@ -1089,7 +1089,7 @@ pub fn has_package(paths: &GamePaths) -> bool {
 /// [`restore_last`] can put it back; a failed write restores that set.
 /// Refuses while the game runs.
 pub fn remove_package(paths: &GamePaths) -> Result<RemoveReport, RepairError> {
-    remove_package_with(paths, game::is_running)
+    remove_package_with(paths, || game::running_at(&paths.root))
 }
 
 /// [`remove_package`] with an injectable running-game check.

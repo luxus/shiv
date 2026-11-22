@@ -769,7 +769,7 @@ pub fn import(
         // A file already in the addons folder byte for byte is adopted in
         // place (checked by size, then hash), so the game never loads two
         // copies. All files matching means adopting the whole mod.
-        let guard = install::InstallGuard::acquire();
+        let guard = install::InstallGuard::acquire(addons)?;
         match adopt_or_install(
             addons,
             paths,
