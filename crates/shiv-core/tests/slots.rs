@@ -1,14 +1,16 @@
 //! CompLock slots: every pak of the site's pack goes on the slot its part
-//! name gives (HUD++ pak01, ...), whatever order the installs finish in,
-//! and whatever sat on those slots moves above the pack with its sidecar.
-//! Real installs of real VPKs into a temp addons folder.
+//! name gives (HUD++ pak01, ...), whatever order the installs finish in.
+//! A foreign pak on one of those slots stays put until the caller passes
+//! [`SlotChoice::Move`]. [`SlotChoice::Replace`] removes a look-alike and
+//! moves any other occupant. Real
+//! installs of real VPKs into a temp addons folder.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use shiv_core::game::GamePaths;
-use shiv_core::install::{self, ModMeta};
+use shiv_core::install::{self, ModMeta, SlotChoice};
 use shiv_core::{complock, sidecar};
 use tempfile::{TempDir, tempdir};
 
@@ -122,6 +124,7 @@ fn concurrent_installs_land_on_the_sites_slots_whatever_finishes_first() {
                 &paths,
                 || false,
                 complock::last_slot(),
+                Some(SlotChoice::Move),
                 shiv_core::install::InstallGuard::acquire().permit(),
             )
             .unwrap();
@@ -176,6 +179,7 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
         &e.paths,
         || false,
         7,
+        Some(SlotChoice::Move),
         shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
@@ -196,6 +200,7 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
         &e.paths,
         || false,
         7,
+        Some(SlotChoice::Move),
         shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
@@ -240,6 +245,7 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
         &e.paths,
         || false,
         7,
+        Some(SlotChoice::Move),
         shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
@@ -258,6 +264,7 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
         &e.paths,
         || false,
         7,
+        Some(SlotChoice::Move),
         shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
@@ -305,6 +312,7 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
         &e.paths,
         || false,
         7,
+        Some(SlotChoice::Move),
         shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
@@ -388,6 +396,7 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         &e.paths,
         || false,
         7,
+        Some(SlotChoice::Move),
         shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
@@ -409,6 +418,7 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         &e.paths,
         || false,
         7,
+        Some(SlotChoice::Move),
         shiv_core::install::InstallGuard::acquire().permit(),
     )
     .unwrap();
@@ -480,4 +490,167 @@ fn set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record() {
         }),
         "the stale sidecar owns pak01 after set_pak"
     );
+}
+
+fn holding(work: &Path, name: &str, files: &[(String, String)]) -> PathBuf {
+    let src = tempdir().unwrap();
+    for (rel, body) in files {
+        let path = src.path().join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+    }
+    let out = work.join(name);
+    fs::create_dir_all(out.parent().unwrap()).unwrap();
+    vpkmanager::pack_directory(src.path(), &out).unwrap();
+    out
+}
+
+type TreeFiles = Vec<(String, String)>;
+
+fn ten_and_a_hundred() -> (TreeFiles, TreeFiles) {
+    let local: Vec<(String, String)> = (0..10)
+        .map(|i| (format!("panorama/a{i}.txt"), format!("a{i}")))
+        .collect();
+    let incoming: Vec<(String, String)> = (0..6)
+        .map(|i| (format!("panorama/a{i}.txt"), format!("a{i}")))
+        .chain((0..94).map(|i| (format!("panorama/b{i}.txt"), format!("b{i}"))))
+        .collect();
+    (local, incoming)
+}
+
+/// Six paths of a ten-file pak also live in the pack's pak. Asking does not
+/// rename it. Move then puts it above the pack and says so. Replace removes
+/// it and the pack takes the slot.
+#[test]
+fn asking_about_a_foreign_pak_on_a_pack_slot_leaves_it_there() {
+    let e = env();
+    let (local, incoming) = ten_and_a_hundred();
+    let mine = holding(&e.work, "mine.vpk", &local);
+    install::install_files(
+        &[mine],
+        meta("mine"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
+    let pak01 = e.paths.addons.join("pak01_dir.vpk");
+    let before = fs::read(&pak01).unwrap();
+    let pack = holding(&e.work, "pak01_dir.vpk", &incoming);
+    let refused = install::install_files_in_slots(
+        std::slice::from_ref(&pack),
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        None,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    );
+    let install::InstallError::NeedsChoice(occupants) = refused.unwrap_err() else {
+        panic!("a foreign pak was moved or installed");
+    };
+    assert_eq!(occupants.len(), 1);
+    assert!(occupants[0].look_alike, "{occupants:?}");
+    assert_eq!(fs::read(&pak01).unwrap(), before);
+    assert!(!e.paths.addons.join("pak08_dir.vpk").exists());
+    assert!(sidecar::read(&e.paths.addons, "mine").unwrap().is_some());
+
+    let kept = install::install_files_in_slots(
+        &[pack],
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        Some(SlotChoice::Move),
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
+    assert!(
+        install::slot_note(&kept).starts_with("Moved:"),
+        "{}",
+        install::slot_note(&kept)
+    );
+    assert_eq!(vpks_of(&e, "mine"), ["pak08_dir.vpk"]);
+    assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
+
+    let e = env();
+    let (local, incoming) = ten_and_a_hundred();
+    let mine = holding(&e.work, "mine.vpk", &local);
+    install::install_files(
+        &[mine],
+        meta("mine"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
+    let pack = holding(&e.work, "pak01_dir.vpk", &incoming);
+    let replaced = install::install_files_in_slots(
+        &[pack],
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        Some(SlotChoice::Replace),
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
+    assert!(install::slot_note(&replaced).starts_with("Replaced:"));
+    assert!(sidecar::read(&e.paths.addons, "mine").unwrap().is_none());
+    assert!(!e.paths.addons.join("pak08_dir.vpk").exists());
+    assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
+}
+
+/// A pak that does not look like the pack is moved, even when the caller
+/// passes replace. Replace only removes a look-alike.
+#[test]
+fn a_plain_foreign_pak_is_moved_and_not_deleted() {
+    let e = env();
+    let local = vec![("only/mine.txt".into(), "mine".into())];
+    let incoming = vec![("pack/theirs.txt".into(), "theirs".into())];
+    let mine = holding(&e.work, "mine.vpk", &local);
+    install::install_files(
+        &[mine],
+        meta("mine"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
+    let before = fs::read(e.paths.addons.join("pak01_dir.vpk")).unwrap();
+    let pack = holding(&e.work, "pak01_dir.vpk", &incoming);
+    let asked = install::install_files_in_slots(
+        std::slice::from_ref(&pack),
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        None,
+        shiv_core::install::InstallGuard::acquire().permit(),
+    );
+    let occupants = match asked {
+        Err(install::InstallError::NeedsChoice(occupants)) => occupants,
+        other => panic!("expected a choice, got {other:?}"),
+    };
+    assert!(occupants.iter().all(|o| !o.look_alike));
+    assert_eq!(
+        fs::read(e.paths.addons.join("pak01_dir.vpk")).unwrap(),
+        before
+    );
+    let placed = install::install_files_in_slots(
+        &[pack],
+        meta("complock-hud"),
+        &e.paths,
+        || false,
+        7,
+        Some(SlotChoice::Replace),
+        shiv_core::install::InstallGuard::acquire().permit(),
+    )
+    .unwrap();
+    let note = install::slot_note(&placed);
+    assert!(note.starts_with("Moved:"), "{note}");
+    assert!(!note.contains("Replaced:"), "{note}");
+    assert!(sidecar::read(&e.paths.addons, "mine").unwrap().is_some());
+    assert!(e.paths.addons.join("pak08_dir.vpk").is_file());
+    assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
 }

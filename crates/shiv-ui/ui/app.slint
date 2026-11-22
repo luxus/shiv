@@ -2,7 +2,7 @@
 
 import { Theme } from "theme.slint";
 import { BrowsePage, BrowseState, ModRow, LoadState, InstallState, DownloadPicker, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow } from "browse.slint";
-import { InstalledPage, InstalledState, InstalledRow, ConflictDialog, ConflictState, ModEditDialog, ModEditState, LocalInstallDialog, LocalInstallState, UpdateFileDialog, UpdateFileState, DropState, DropOverlay } from "installed.slint";
+import { InstalledPage, InstalledState, InstalledRow, ConflictDialog, ConflictState, SlotDialog, ModEditDialog, ModEditState, LocalInstallDialog, LocalInstallState, UpdateFileDialog, UpdateFileState, DropState, DropOverlay } from "installed.slint";
 import { SourcesPage, SourcesState, SourceRow } from "sources.slint";
 import { LaunchPanel, LaunchDialog, LaunchState, FindingRow } from "launch.slint";
 import { RepairPage, RepairDialog, RepairState, RepairRow, RepairTone } from "repair.slint";
@@ -228,6 +228,13 @@ export component App inherits Window {
     }
 
     if ConflictState.open: ConflictDialog {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+    }
+
+    if ConflictState.slot-open: SlotDialog {
         x: 0px;
         y: 0px;
         width: root.width;

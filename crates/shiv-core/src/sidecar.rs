@@ -325,6 +325,22 @@ pub fn write(addons: &Path, sidecar: &Sidecar) -> Result<(), SidecarError> {
     })
 }
 
+/// Delete the sidecar file. Missing is success.
+///
+/// # Errors
+///
+/// [`SidecarError::InvalidModId`] when the id cannot name a file;
+/// [`SidecarError::Io`] when the file exists and cannot be removed.
+pub fn remove(addons: &Path, mod_id: &str) -> Result<(), SidecarError> {
+    validate(mod_id)?;
+    let path = path_for(addons, mod_id);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(SidecarError::Io { path, source }),
+    }
+}
+
 /// Record a mod Shiv did not install (no sidecar) as a local mod named
 /// `name`, so it can be named, noted and kept together. Only a sidecar is
 /// written: the mod's files are not moved, renamed or changed.

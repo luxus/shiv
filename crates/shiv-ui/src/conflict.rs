@@ -10,6 +10,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::mpsc::{self, Sender};
 
 use shiv_core::addons;
 use shiv_core::install;
@@ -37,6 +38,8 @@ struct Queue {
 
 thread_local! {
     static QUEUE: RefCell<Queue> = RefCell::new(Queue::default());
+    static SLOT_ANSWER: RefCell<Option<Sender<Option<install::SlotChoice>>>> =
+        const { RefCell::new(None) };
 }
 
 pub(crate) fn attach(app: &App) {
@@ -54,7 +57,93 @@ pub(crate) fn attach(app: &App) {
         let weak = weak.clone();
         move || load_first(&weak)
     });
-    state.on_cancel(move || cancel(&weak));
+    state.on_cancel({
+        let weak = weak.clone();
+        move || cancel(&weak)
+    });
+    state.on_slot_replace({
+        let weak = weak.clone();
+        move || answer_slot(&weak, Some(install::SlotChoice::Replace))
+    });
+    state.on_slot_move({
+        let weak = weak.clone();
+        move || answer_slot(&weak, Some(install::SlotChoice::Move))
+    });
+    state.on_slot_cancel({
+        let weak = weak.clone();
+        move || answer_slot(&weak, None)
+    });
+}
+
+/// Block the calling worker until the slot dialog is answered.
+/// `None` is cancel: the caller changes nothing.
+pub(crate) fn ask_slots(
+    weak: &Weak<App>,
+    occupants: &[install::SlotOccupant],
+) -> Option<install::SlotChoice> {
+    let alikes: Vec<_> = occupants
+        .iter()
+        .filter(|occupant| occupant.look_alike)
+        .cloned()
+        .collect();
+    let plain: Vec<_> = occupants
+        .iter()
+        .filter(|occupant| !occupant.look_alike)
+        .cloned()
+        .collect();
+    let mut replace = false;
+    if !alikes.is_empty() {
+        match prompt_slots(weak, &alikes, true)? {
+            install::SlotChoice::Replace => replace = true,
+            install::SlotChoice::Move => {}
+        }
+    }
+    if !plain.is_empty() {
+        prompt_slots(weak, &plain, false)?;
+    }
+    Some(if replace {
+        install::SlotChoice::Replace
+    } else {
+        install::SlotChoice::Move
+    })
+}
+
+fn prompt_slots(
+    weak: &Weak<App>,
+    occupants: &[install::SlotOccupant],
+    look_alike: bool,
+) -> Option<install::SlotChoice> {
+    let lines = occupants
+        .iter()
+        .map(|o| {
+            if o.look_alike {
+                format!("{} ({}) looks like the pack", o.label, o.file)
+            } else {
+                format!("{} ({})", o.label, o.file)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (tx, rx) = mpsc::channel();
+    let posted = weak.upgrade_in_event_loop(move |app| {
+        SLOT_ANSWER.with(|slot| *slot.borrow_mut() = Some(tx));
+        let state = app.global::<ConflictState>();
+        state.set_slot_text(lines.into());
+        state.set_slot_look_alike(look_alike);
+        state.set_slot_open(true);
+    });
+    if posted.is_err() {
+        return None;
+    }
+    rx.recv().ok().flatten()
+}
+
+fn answer_slot(weak: &Weak<App>, choice: Option<install::SlotChoice>) {
+    let Some(app) = weak.upgrade() else { return };
+    app.global::<ConflictState>().set_slot_open(false);
+    if let Some(tx) = SLOT_ANSWER.with(|slot| slot.borrow_mut().take()) {
+        let _ = tx.send(choice);
+    }
 }
 
 /// Queue an offer; shown at once when no other is open.

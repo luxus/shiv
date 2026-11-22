@@ -108,6 +108,58 @@ pub const MAX_ENTRIES: usize = 100_000;
 /// (tests/install_probe.rs, docs/perf-results.md).
 const ENTRY_COPY_BYTES: usize = 256 * 1024;
 
+/// What to do with a pak that already occupies a slot the pack names.
+///
+/// [`SlotChoice::Move`] moves that pak to the lowest free number above the
+/// pack, and the pack takes the slot. [`SlotChoice::Replace`] removes a
+/// look-alike and moves every other occupant the same way, so a plain
+/// foreign pak is never deleted. `None` at [`install_files_in_slots`] does
+/// neither: the call returns [`InstallError::NeedsChoice`] and leaves every
+/// file where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotChoice {
+    /// Move the occupant above the pack.
+    Move,
+    /// Remove look-alike occupants. Every other occupant is moved.
+    Replace,
+}
+
+/// A pak sitting on a slot a pack install wants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotOccupant {
+    /// `pakNN_dir.vpk` as it is on disk.
+    pub file: String,
+    pub slot: u32,
+    /// The mod's name, or [`Self::file`] when the pak has no sidecar.
+    pub label: String,
+    /// The on-disk tree is at least half contained in the incoming pak, or
+    /// each tree is at least three fifths of the other.
+    pub look_alike: bool,
+}
+
+/// A pack install that finished, including which paks moved or were removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotPlaced {
+    pub sidecar: Sidecar,
+    /// `pak05_dir.vpk to pak08_dir.vpk`, for occupants that were moved.
+    pub moved: Vec<String>,
+    /// File names of occupants that were removed.
+    pub replaced: Vec<String>,
+}
+
+/// The sentence a finished install shows. Empty when nothing moved or was removed.
+#[must_use]
+pub fn slot_note(placed: &SlotPlaced) -> String {
+    let mut parts = Vec::new();
+    if !placed.replaced.is_empty() {
+        parts.push(format!("Replaced: {}.", placed.replaced.join(", ")));
+    }
+    if !placed.moved.is_empty() {
+        parts.push(format!("Moved: {}.", placed.moved.join(", ")));
+    }
+    parts.join(" ")
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
     #[error("Deadlock is running; close the game before changing mods")]
@@ -142,6 +194,9 @@ pub enum InstallError {
     NotLocal,
     #[error("the new file has {new} VPK(s) but the mod has {old}; install it as a new mod instead")]
     VpkCountMismatch { old: usize, new: usize },
+    /// A pak this mod does not own is on a slot the pack names. Nothing was renamed.
+    #[error("other mods use slots this pack needs")]
+    NeedsChoice(Vec<SlotOccupant>),
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> InstallError + '_ {
@@ -272,31 +327,55 @@ pub fn install_files(
     game_running: impl Fn() -> bool,
     permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
-    install_files_to(files, meta, paths, game_running, None, permit)
+    install_files_to(files, meta, paths, game_running, None, None, permit)
+        .map(|placed| placed.sidecar)
 }
 
 /// Like [`install_files`], for a pack whose paks have a fixed load order
 /// (CompLock: HUD++ is pak01): every VPK named `pakNN_dir.vpk` with NN in
 /// `1..=reserved` goes to slot NN, whatever order the pack's paks are
-/// installed in. A VPK already in a wanted slot (another mod, an earlier
-/// version of this one, or a pack pak an older Shiv put there) is first
-/// moved to the lowest free slot above `reserved`, its sidecar kept in
-/// step; an earlier version of this mod is then dropped as usual. Other
-/// VPKs get free slots above `reserved`. `permit` is the install lock.
+/// installed in. A VPK of this same mod already in a wanted slot is moved
+/// aside and then dropped with the old version. A VPK of another mod is
+/// left untouched when `choice` is `None`, and the call returns
+/// [`InstallError::NeedsChoice`]. [`SlotChoice::Move`] moves that pak to the
+/// lowest free slot above `reserved` (its sidecar kept in step).
+/// [`SlotChoice::Replace`] removes a look-alike and moves every other
+/// occupant the same way. Other VPKs of the pack get free slots above
+/// `reserved`. `permit`
+/// is the install lock.
 ///
 /// # Errors
 ///
-/// As [`install_files`]; [`InstallError::AddonsFull`] when nothing above
-/// `reserved` is free for a VPK that has to move.
+/// As [`install_files`]; [`InstallError::NeedsChoice`] before anything is
+/// renamed; [`InstallError::AddonsFull`] when nothing above `reserved` is
+/// free for a VPK that has to move.
 pub fn install_files_in_slots(
     files: &[PathBuf],
     meta: ModMeta,
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
     reserved: u32,
+    choice: Option<SlotChoice>,
     permit: InstallPermit<'_>,
-) -> Result<Sidecar, InstallError> {
-    install_files_to(files, meta, paths, game_running, Some(reserved), permit)
+) -> Result<SlotPlaced, InstallError> {
+    if game_running() {
+        return Err(InstallError::GameRunning);
+    }
+    if choice.is_none() {
+        let occupants = foreign_occupants(&paths.addons, files, &meta.mod_id, reserved)?;
+        if !occupants.is_empty() {
+            return Err(InstallError::NeedsChoice(occupants));
+        }
+    }
+    install_files_to(
+        files,
+        meta,
+        paths,
+        game_running,
+        Some(reserved),
+        choice,
+        permit,
+    )
 }
 
 fn install_files_to(
@@ -305,8 +384,9 @@ fn install_files_to(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
     reserved: Option<u32>,
+    choice: Option<SlotChoice>,
     permit: InstallPermit<'_>,
-) -> Result<Sidecar, InstallError> {
+) -> Result<SlotPlaced, InstallError> {
     // Checked first: nothing may be written while the game runs.
     if game_running() {
         return Err(InstallError::GameRunning);
@@ -335,9 +415,13 @@ fn install_files_to(
     match reserved {
         None => {
             permit.keep();
-            place_and_record(addons_dir, &staged, meta, old)
+            place_and_record(addons_dir, &staged, meta, old).map(|sidecar| SlotPlaced {
+                sidecar,
+                moved: Vec::new(),
+                replaced: Vec::new(),
+            })
         }
-        Some(reserved) => place_in_slots(addons_dir, &staged, meta, reserved, permit),
+        Some(reserved) => place_in_slots(addons_dir, &staged, meta, reserved, choice, permit),
     }
 }
 
@@ -350,28 +434,54 @@ fn wanted_slots(staged: &[StagedVpk], reserved: u32) -> Vec<Option<u32>> {
         .collect()
 }
 
-/// [`install_files_in_slots`]'s placement: clear the wanted slots, then
-/// place and record as usual on exactly those numbers.
+/// [`install_files_in_slots`]'s placement. `choice` of `None` with a foreign
+/// pak on a wanted slot returns [`InstallError::NeedsChoice`] before a rename.
 fn place_in_slots(
     addons_dir: &Path,
     staged: &[StagedVpk],
     meta: ModMeta,
     reserved: u32,
+    choice: Option<SlotChoice>,
     permit: InstallPermit<'_>,
-) -> Result<Sidecar, InstallError> {
+) -> Result<SlotPlaced, InstallError> {
     if staged.is_empty() {
         return Err(InstallError::NoVpk);
     }
     let wanted = wanted_slots(staged, reserved);
     let claimed: BTreeSet<u32> = wanted.iter().flatten().copied().collect();
-    let mods = sidecar::group(addons_dir);
+    let incoming = staged_by_slot(staged, reserved);
+    let mut mods = sidecar::group(addons_dir);
+    let occupants = occupants_in(&mods, &incoming, &meta.mod_id, &claimed);
+    if !occupants.is_empty() && choice.is_none() {
+        return Err(InstallError::NeedsChoice(occupants));
+    }
+    let replaced = if choice == Some(SlotChoice::Replace) {
+        let look_alikes: Vec<SlotOccupant> = occupants
+            .iter()
+            .filter(|occupant| occupant.look_alike)
+            .cloned()
+            .collect();
+        let names = remove_occupants(addons_dir, &mods, &look_alikes)?;
+        mods = sidecar::group(addons_dir);
+        names
+    } else {
+        Vec::new()
+    };
+    let foreign_slots: BTreeSet<u32> = occupants.iter().map(|o| o.slot).collect();
     let mut used = crate::pak_slot::occupied(addons_dir)?;
     used.extend(&claimed);
     let mut above = (reserved + 1..=addons::PAK_CAPACITY).filter(|n| !used.contains(n));
     let mut moves: Vec<(&addons::InstalledVpk, u32)> = Vec::new();
+    let mut moved = Vec::new();
     for vpk in mods.iter().flat_map(|m| &m.vpks) {
         if vpk.pak.is_some_and(|n| claimed.contains(&n)) {
-            moves.push((vpk, above.next().ok_or(InstallError::AddonsFull)?));
+            let to = above.next().ok_or(InstallError::AddonsFull)?;
+            if vpk.pak.is_some_and(|n| foreign_slots.contains(&n))
+                && let Some(name) = vpk.file.file_name().and_then(|n| n.to_str())
+            {
+                moved.push(format!("{name} to pak{to:02}_dir.vpk"));
+            }
+            moves.push((vpk, to));
         }
     }
     let mut numbers = Vec::with_capacity(staged.len());
@@ -388,7 +498,132 @@ fn place_in_slots(
         Err(SidecarError::Parse { .. }) => None,
         Err(e) => return Err(e.into()),
     };
-    place_numbered(addons_dir, staged, &numbers, meta, old)
+    let sidecar = place_numbered(addons_dir, staged, &numbers, meta, old)?;
+    Ok(SlotPlaced {
+        sidecar,
+        moved,
+        replaced,
+    })
+}
+
+fn staged_by_slot(staged: &[StagedVpk], reserved: u32) -> BTreeMap<u32, &Path> {
+    staged
+        .iter()
+        .filter_map(|v| {
+            v.original
+                .filter(|n| (1..=reserved).contains(n))
+                .map(|n| (n, v.file.as_path()))
+        })
+        .collect()
+}
+
+fn foreign_occupants(
+    addons_dir: &Path,
+    files: &[PathBuf],
+    mod_id: &str,
+    reserved: u32,
+) -> Result<Vec<SlotOccupant>, InstallError> {
+    let incoming: BTreeMap<u32, &Path> = files
+        .iter()
+        .filter_map(|file| {
+            let name = file.file_name().and_then(|n| n.to_str())?;
+            let (n, kind) = parse_pak(name)?;
+            matches!(kind, PakKind::Dir)
+                .then_some(n)
+                .filter(|n| (1..=reserved).contains(n))
+                .map(|n| (n, file.as_path()))
+        })
+        .collect();
+    let claimed: BTreeSet<u32> = incoming.keys().copied().collect();
+    Ok(occupants_in(
+        &sidecar::group(addons_dir),
+        &incoming,
+        mod_id,
+        &claimed,
+    ))
+}
+
+fn occupants_in(
+    mods: &[InstalledMod],
+    incoming: &BTreeMap<u32, &Path>,
+    mod_id: &str,
+    claimed: &BTreeSet<u32>,
+) -> Vec<SlotOccupant> {
+    let mut occupants = Vec::new();
+    for m in mods {
+        if m.sidecar.as_ref().is_some_and(|s| s.mod_id == mod_id) {
+            continue;
+        }
+        let label = m.sidecar.as_ref().map(|s| s.name.clone());
+        for vpk in &m.vpks {
+            let Some(slot) = vpk.pak.filter(|n| claimed.contains(n)) else {
+                continue;
+            };
+            let Some(file) = vpk.file.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let remote = incoming
+                .get(&slot)
+                .map(|p| vpk_paths(p))
+                .unwrap_or_default();
+            occupants.push(SlotOccupant {
+                file: file.to_owned(),
+                slot,
+                label: label.clone().unwrap_or_else(|| file.to_owned()),
+                look_alike: look_alike(&vpk_paths(&vpk.file), &remote),
+            });
+        }
+    }
+    occupants.sort_by_key(|o| o.slot);
+    occupants
+}
+
+fn remove_occupants(
+    addons_dir: &Path,
+    mods: &[InstalledMod],
+    occupants: &[SlotOccupant],
+) -> Result<Vec<String>, InstallError> {
+    let slots: BTreeSet<u32> = occupants.iter().map(|o| o.slot).collect();
+    let mut replaced = Vec::new();
+    for m in mods {
+        let mut dropped = false;
+        for vpk in &m.vpks {
+            if vpk.pak.is_some_and(|n| slots.contains(&n)) {
+                remove_pak_file(&vpk.file)?;
+                for chunk in &vpk.chunks {
+                    remove_pak_file(chunk)?;
+                }
+                if let Some(name) = vpk.file.file_name().and_then(|n| n.to_str()) {
+                    replaced.push(name.to_owned());
+                }
+                dropped = true;
+            }
+        }
+        let Some(sidecar) = &m.sidecar else {
+            continue;
+        };
+        if !dropped {
+            continue;
+        }
+        let mut updated = sidecar.clone();
+        updated
+            .vpks
+            .retain(|name| parse_pak(name).is_none_or(|(n, _)| !slots.contains(&n)));
+        if updated.vpks.is_empty() {
+            sidecar::remove(addons_dir, &sidecar.mod_id)?;
+        } else if updated.vpks.len() != sidecar.vpks.len() {
+            sidecar::write(addons_dir, &updated)?;
+        }
+    }
+    Ok(replaced)
+}
+
+fn remove_pak_file(path: &Path) -> Result<(), InstallError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_err(path)(e)),
+    }
 }
 
 /// The shared tail of the install paths: give the staged VPKs free pak
@@ -1338,6 +1573,35 @@ pub fn find_update_target(mods: &[InstalledMod], new: &Inspected) -> Option<Upda
         })
 }
 
+/// The on-disk tree shares at least half its paths with `incoming`
+/// (CompLock `Alike`: `common > 0 && common * 2 >= local`).
+#[must_use]
+pub fn alike(local: &BTreeSet<String>, incoming: &BTreeSet<String>) -> bool {
+    let common = local.intersection(incoming).count();
+    common > 0 && common.saturating_mul(2) >= local.len()
+}
+
+/// Each tree is at least three fifths the other (CompLock `Twin`).
+#[must_use]
+pub fn twin(local: &BTreeSet<String>, incoming: &BTreeSet<String>) -> bool {
+    let common = local.intersection(incoming).count();
+    common > 0
+        && at_least_ratio(common, local.len(), 5, 3)
+        && at_least_ratio(common, incoming.len(), 5, 3)
+}
+
+/// [`alike`] or [`twin`]. A small local tree mostly contained in a large
+/// pak is a look-alike even when the Jaccard index is far under
+/// [`OVERLAP_THRESHOLD`].
+#[must_use]
+pub fn look_alike(local: &BTreeSet<String>, incoming: &BTreeSet<String>) -> bool {
+    alike(local, incoming) || twin(local, incoming)
+}
+
+fn at_least_ratio(common: usize, total: usize, num: usize, den: usize) -> bool {
+    common.saturating_mul(num) >= total.saturating_mul(den)
+}
+
 /// Jaccard index of two path sets (0 when both are empty).
 #[must_use]
 #[allow(
@@ -1743,5 +2007,20 @@ mod tests {
             plan_replacement(&two_staged, &borrowed(&one_slot)),
             Err(InstallError::VpkCountMismatch { old: 1, new: 2 })
         ));
+    }
+
+    /// Six of a ten-file pak sit inside a hundred-file pak. Alike (half the
+    /// local tree) holds; the Jaccard index does not.
+    #[test]
+    fn a_small_set_mostly_inside_a_large_one_is_a_look_alike() {
+        let local: BTreeSet<String> = (0..10).map(|i| format!("a{i}")).collect();
+        let incoming: BTreeSet<String> = (0..6)
+            .map(|i| format!("a{i}"))
+            .chain((0..94).map(|i| format!("b{i}")))
+            .collect();
+        assert!(alike(&local, &incoming));
+        assert!(!twin(&local, &incoming));
+        assert!(look_alike(&local, &incoming));
+        assert!(overlap(&local, &incoming) < OVERLAP_THRESHOLD);
     }
 }
