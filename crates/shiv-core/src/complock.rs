@@ -943,6 +943,234 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     crc32_feed(0xFFFF_FFFF, bytes) ^ 0xFFFF_FFFF
 }
 
+/// [`crc32`] of the file at `path`.
+///
+/// # Errors
+///
+/// The error from opening or reading the file.
+pub fn crc32_file(path: &Path) -> std::io::Result<u32> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut crc = 0xFFFF_FFFF;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        crc = crc32_feed(crc, &buf[..n]);
+    }
+    Ok(crc ^ 0xFFFF_FFFF)
+}
+
+/// A pak already on disk whose bytes are a pack [`Part`] (length, then CRC-32).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReusedPart {
+    pub path: PathBuf,
+    /// Set when this call renamed the file onto the part's name.
+    pub moved_from: Option<String>,
+    /// Chunk files that still sit beside [`Self::path`] because the part's
+    /// name was already a different file. [`ReusedChunk::name`] is the name
+    /// each one takes beside the part. Empty after a rename: those chunks
+    /// moved with the dir VPK.
+    pub chunks: Vec<ReusedChunk>,
+}
+
+/// One `pakNN_###.vpk` that belongs with a reused dir VPK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReusedChunk {
+    pub path: PathBuf,
+    /// The name beside the part: `pak01_000.vpk` when the part is `pak01_dir.vpk`.
+    pub name: String,
+}
+
+/// Write a sidecar for pack files already on disk (a browser or zip install,
+/// or a pak [`claim_reusable`] just moved into place). The files stay where
+/// they are. `stamps` stays empty: Shiv did not download these bytes.
+///
+/// # Errors
+///
+/// The sidecar id or the write, as [`crate::sidecar::write`].
+pub fn adopt_reused(
+    addons: &Path,
+    meta: &crate::install::ModMeta,
+    names: &[String],
+) -> Result<(), crate::sidecar::SidecarError> {
+    crate::sidecar::write(
+        addons,
+        &crate::sidecar::Sidecar {
+            mod_id: meta.mod_id.clone(),
+            name: meta.name.clone(),
+            version: meta.version.clone(),
+            thumbnail_url: meta.thumbnail_url.clone(),
+            vpks: names.to_vec(),
+            nsfw: Some(meta.nsfw),
+            hero: meta.hero.clone(),
+            category: meta.category.clone(),
+            notes: None,
+            source: None,
+            stamps: None,
+        },
+    )
+}
+
+/// Find `part`'s bytes under any `pakNN` name. Nothing is renamed.
+///
+/// `None` when nothing in `addons` has the part's length and CRC. When the
+/// part's name is free, [`ReusedPart::moved_from`] is the name a later
+/// [`claim_reusable`] would move, and [`ReusedPart::chunks`] are the chunk
+/// files that would follow. When the part's name is already a different
+/// file, the match stays described where it is and `moved_from` is `None`.
+///
+/// # Errors
+///
+/// Reading a candidate.
+pub fn locate_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<ReusedPart>> {
+    let Some(found) = find_reusable(addons, part)? else {
+        return Ok(None);
+    };
+    let dest = addons.join(&part.name);
+    if found == dest {
+        return Ok(Some(ReusedPart {
+            path: dest,
+            moved_from: None,
+            chunks: Vec::new(),
+        }));
+    }
+    let moves = chunk_moves(&found, &dest)?;
+    let blocked = dest.is_file() || moves.iter().any(|(_, target)| target.is_file());
+    let from = found
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_owned();
+    Ok(Some(ReusedPart {
+        path: found,
+        moved_from: (!blocked).then_some(from),
+        chunks: moves
+            .into_iter()
+            .map(|(path, target)| ReusedChunk {
+                name: target
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                path,
+            })
+            .collect(),
+    }))
+}
+
+/// Find `part`'s bytes under any `pakNN` name and, when the part's name is
+/// free, rename them there (chunks of that number follow the dir VPK).
+///
+/// `None` when nothing in `addons` has the part's length and CRC. When the
+/// part's name is already a different file, the match stays put: `path` is
+/// that other file and `moved_from` is `None`.
+///
+/// # Errors
+///
+/// Reading a candidate or renaming the match onto a free name.
+pub fn claim_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<ReusedPart>> {
+    let Some(found) = locate_reusable(addons, part)? else {
+        return Ok(None);
+    };
+    let Some(from) = found.moved_from.clone() else {
+        return Ok(Some(found));
+    };
+    let dest = addons.join(&part.name);
+    let moves = found
+        .chunks
+        .iter()
+        .map(|chunk| (chunk.path.clone(), dest.with_file_name(&chunk.name)))
+        .collect::<Vec<_>>();
+    rename_pak(&found.path, &dest, &moves)?;
+    Ok(Some(ReusedPart {
+        path: dest,
+        moved_from: Some(from),
+        chunks: Vec::new(),
+    }))
+}
+
+fn find_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<PathBuf>> {
+    let entries = match std::fs::read_dir(addons) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut other = None;
+    for entry in entries {
+        let entry = entry?;
+        let Some(name) = entry.file_name().into_string().ok() else {
+            continue;
+        };
+        if crate::addons::parse_pak(&name).is_none() {
+            continue;
+        }
+        let path = entry.path();
+        let len = entry.metadata()?.len();
+        if len != part.size {
+            continue;
+        }
+        if crc32_file(&path)? != part.crc {
+            continue;
+        }
+        if name.eq_ignore_ascii_case(&part.name) {
+            return Ok(Some(path));
+        }
+        other = Some(path);
+    }
+    Ok(other)
+}
+
+fn rename_pak(from: &Path, dest: &Path, chunks: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
+    std::fs::rename(from, dest)?;
+    for (chunk, target) in chunks {
+        std::fs::rename(chunk, target)?;
+    }
+    Ok(())
+}
+
+fn chunk_moves(from: &Path, dest: &Path) -> std::io::Result<Vec<(PathBuf, PathBuf)>> {
+    let Some(from_name) = from.file_name().and_then(|n| n.to_str()) else {
+        return Ok(Vec::new());
+    };
+    let Some(dest_name) = dest.file_name().and_then(|n| n.to_str()) else {
+        return Ok(Vec::new());
+    };
+    let Some((from_n, crate::addons::PakKind::Dir)) = crate::addons::parse_pak(from_name) else {
+        return Ok(Vec::new());
+    };
+    let Some((dest_n, _)) = crate::addons::parse_pak(dest_name) else {
+        return Ok(Vec::new());
+    };
+    if from_n == dest_n {
+        return Ok(Vec::new());
+    }
+    let Some(dir) = from.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().into_string().ok() else {
+            continue;
+        };
+        let Some((n, crate::addons::PakKind::Chunk(digits))) = crate::addons::parse_pak(&name)
+        else {
+            continue;
+        };
+        if n != from_n {
+            continue;
+        }
+        out.push((
+            entry.path(),
+            dir.join(format!("pak{dest_n:02}_{digits}.vpk")),
+        ));
+    }
+    Ok(out)
+}
+
 fn crc32_feed(state: u32, bytes: &[u8]) -> u32 {
     let mut crc = state;
     for &byte in bytes {
