@@ -70,7 +70,25 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     }
     let mut out = BTreeMap::new();
     walk(root, &mut out);
+    out.retain(|path, _| !is_install_lock(path));
+    let empty_shiv: Vec<PathBuf> = out
+        .iter()
+        .filter(|(path, bytes)| bytes.is_none() && path.file_name().is_some_and(|n| n == ".shiv"))
+        .map(|(path, _)| path.clone())
+        .filter(|dir| !out.keys().any(|path| path.starts_with(dir) && path != dir))
+        .collect();
+    for dir in empty_shiv {
+        out.remove(&dir);
+    }
     out
+}
+
+fn is_install_lock(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "lock")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == ".shiv")
 }
 
 fn names(dir: &Path) -> Vec<String> {
@@ -93,7 +111,9 @@ fn run(e: &Env, archive: &Path, id: &str) -> Result<Sidecar, InstallError> {
         meta(id),
         &e.paths,
         not_running,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
 }
 
@@ -125,7 +145,9 @@ fn install_records_the_nsfw_flag() {
         m,
         &e.paths,
         not_running,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(sc.nsfw, Some(true));
@@ -138,7 +160,9 @@ fn install_records_the_nsfw_flag() {
         meta("plain"),
         &e.paths,
         not_running,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(plain.nsfw, Some(false));
@@ -254,7 +278,7 @@ fn rejects_symlink_entry() {
     let err = run(&e, &p, "m1").unwrap_err();
     assert!(matches!(err, InstallError::UnsafePath(_)), "{err:?}");
     assert!(names(&e.paths.addons).is_empty());
-    assert!(!e.paths.addons.join(".shiv").exists());
+    assert_only_the_lock(&e.paths.addons);
 }
 
 #[test]
@@ -278,12 +302,26 @@ fn refuses_while_game_running() {
         meta("m1"),
         &e.paths,
         || true,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, InstallError::GameRunning), "{err:?}");
     assert_eq!(snapshot(&e.paths.addons), before);
-    assert!(!e.paths.addons.join(".shiv").exists());
+    assert_only_the_lock(&e.paths.addons);
+}
+
+fn assert_only_the_lock(addons: &Path) {
+    let shiv = addons.join(".shiv");
+    if !shiv.exists() {
+        return;
+    }
+    let names: Vec<_> = fs::read_dir(&shiv)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(names.iter().all(|name| name == "lock"), "{names:?}");
 }
 
 #[test]
@@ -355,7 +393,9 @@ fn uninstall_removes_vpks_chunks_and_sidecar() {
     install::uninstall_with(
         m,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(names(&e.paths.addons), vec!["pak09_dir.vpk"]);
@@ -368,7 +408,9 @@ fn uninstall_removes_vpks_chunks_and_sidecar() {
     install::uninstall_with(
         &mods[0],
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(names(&e.paths.addons).is_empty());
@@ -531,7 +573,9 @@ fn size_cap_is_enforced() {
         &e.paths,
         not_running,
         small,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, InstallError::TooLarge), "{err:?}");
@@ -548,7 +592,9 @@ fn size_cap_is_enforced() {
         &e.paths,
         not_running,
         few,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, InstallError::TooLarge), "{err:?}");
@@ -600,7 +646,9 @@ fn uninstall_refuses_while_game_running() {
     let err = install::uninstall_with(
         &m,
         || true,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, InstallError::GameRunning), "{err:?}");
@@ -608,7 +656,9 @@ fn uninstall_refuses_while_game_running() {
     install::uninstall_with(
         &m,
         not_running,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
 }
@@ -629,7 +679,9 @@ fn uninstall_unknown_vpk_removes_its_chunks() {
     install::uninstall_with(
         &m,
         not_running,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(names(d), vec!["pak04_000.vpk"]);
@@ -673,7 +725,9 @@ fn sidecar_with_traversal_vpk_name_deletes_nothing_outside_addons() {
     install::uninstall_with(
         &m,
         not_running,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(victim.exists() && abs.exists());

@@ -53,7 +53,7 @@ impl Deps {
     fn system() -> Self {
         Deps {
             locate: Arc::new(crate::locate_game),
-            running: Arc::new(game::is_running),
+            running: Arc::new(game::running_here),
             download: Arc::new(|url, dest| {
                 Client::new(crate::DEFAULT_API_URL)
                     .fetch_cancellable(url, dest, &AtomicBool::new(false), |_, _| {})
@@ -457,7 +457,7 @@ fn run_reset(
         .map_err(|e| format!("Could not create a temporary folder: {e}"))?;
     let fetched = fetch_release(deps, dir.path(), plan)?;
     let running = deps.running.clone();
-    let guard = install::InstallGuard::acquire();
+    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     let note = RefCell::new(String::new());
     reset::reset_with(
         &paths,
@@ -568,7 +568,7 @@ fn fetch_release(deps: &Deps, dir: &Path, plan: &ResetPlan) -> Result<Vec<PathBu
 fn run_restore(deps: &Deps, id: &str, name: &str) -> Result<(), String> {
     let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
     let running = deps.running.clone();
-    let guard = install::InstallGuard::acquire();
+    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     reset::restore_previous(&paths, id, || running(), guard.permit())
         .map(|_| ())
         .map_err(|e| match e {
@@ -628,13 +628,19 @@ fn run_action(
         }
         Action::Move(to) => {
             let paths = (deps.locate)().map_err(|e| fail(&game_error_text(&e)))?;
-            let guard = shiv_core::install::InstallGuard::acquire();
+            let guard = shiv_core::install::InstallGuard::acquire(&paths.addons)
+                .map_err(|e| fail(&e.to_string()))?;
             sidecar::move_mod(&paths.addons, mods, index, to, guard.permit())
                 .map_err(|e| fail(&e.to_string()))
         }
         Action::Uninstall => {
             let running = deps.running.clone();
-            let guard = install::InstallGuard::acquire();
+            let addons = m
+                .vpks
+                .first()
+                .and_then(|vpk| vpk.file.parent())
+                .ok_or_else(|| fail("the mod has no pak file"))?;
+            let guard = install::InstallGuard::acquire(addons).map_err(|e| fail(&e.to_string()))?;
             install::uninstall_with(m, move || running(), guard.permit()).map_err(|e| match e {
                 InstallError::GameRunning => fail(GAME_RUNNING_TEXT),
                 other => fail(&install_error_text(&other)),
@@ -690,7 +696,8 @@ fn run_link_install(
         return Err(LinkFailure::Cancelled);
     }
     report(LinkUpdate::Installing);
-    let guard = shiv_core::install::InstallGuard::acquire();
+    let guard = shiv_core::install::InstallGuard::acquire(&paths.addons)
+        .map_err(|e| link_fail(e.to_string()))?;
     // Cancel may have been pressed while waiting for another install.
     if cancel.load(Ordering::Relaxed) {
         return Err(LinkFailure::Cancelled);
@@ -1577,7 +1584,8 @@ impl Installed {
             "shiv-installed-edit",
             move || -> Result<(), String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
-                let guard = shiv_core::install::InstallGuard::acquire();
+                let guard = shiv_core::install::InstallGuard::acquire(&paths.addons)
+                    .map_err(|e| e.to_string())?;
                 // The sidecar edit runs first: it is idempotent, so a failed
                 // `set_pak` after it can be retried without renaming twice.
                 let done = if adopt {
@@ -1704,7 +1712,8 @@ impl Installed {
             move || -> Result<String, String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
-                let guard = shiv_core::install::InstallGuard::acquire();
+                let guard = shiv_core::install::InstallGuard::acquire(&paths.addons)
+                    .map_err(|e| e.to_string())?;
                 let sc = install::install_local_with(
                     &path,
                     &name,
@@ -2025,7 +2034,8 @@ impl Installed {
             move || -> Result<String, String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
-                let guard = install::InstallGuard::acquire();
+                let guard =
+                    install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
                 let r = install::replace_local_with(
                     &path,
                     &target,

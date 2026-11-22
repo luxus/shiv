@@ -255,7 +255,9 @@ fn move_top_renumbers_files_chunks_and_sidecars() {
         &mods,
         2,
         sidecar::Move::Top,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
 
@@ -312,7 +314,9 @@ fn move_up_and_down_swap_neighbours_and_stop_at_the_ends() {
         &mods,
         0,
         sidecar::Move::Up,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(ids(d.path()), ["a", "b", "c"]);
@@ -321,7 +325,9 @@ fn move_up_and_down_swap_neighbours_and_stop_at_the_ends() {
         &mods,
         0,
         sidecar::Move::Down,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(ids(d.path()), ["b", "a", "c"]);
@@ -331,7 +337,9 @@ fn move_up_and_down_swap_neighbours_and_stop_at_the_ends() {
         &mods,
         2,
         sidecar::Move::Down,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(ids(d.path()), ["b", "a", "c"]);
@@ -357,7 +365,9 @@ fn move_to_places_a_mod_at_a_position_and_clamps() {
         &mods,
         0,
         sidecar::Move::To(1),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(ids(d.path()), ["b", "a", "c"]);
@@ -367,7 +377,9 @@ fn move_to_places_a_mod_at_a_position_and_clamps() {
         &mods,
         0,
         sidecar::Move::To(99),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(ids(d.path()), ["a", "c", "b"]);
@@ -387,7 +399,9 @@ fn move_fails_cleanly_when_a_file_is_gone() {
             &mods,
             1,
             sidecar::Move::Top,
-            shiv_core::install::InstallGuard::acquire().permit()
+            shiv_core::install::InstallGuard::acquire(d.path())
+                .unwrap()
+                .permit()
         )
         .is_err()
     );
@@ -420,7 +434,9 @@ fn set_pak_inserts_the_mod_and_shifts_higher_numbers_up() {
         &mods,
         2,
         2,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
 
@@ -476,7 +492,9 @@ fn set_pak_moving_down_to_an_occupied_number_shifts_the_rest_up() {
         &mods,
         0,
         3,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     for f in ["pak02_dir.vpk", "pak03_dir.vpk", "pak04_dir.vpk"] {
@@ -514,7 +532,9 @@ fn set_pak_shifts_by_the_target_size_not_by_one() {
         &mods,
         3,
         2,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     for f in [
@@ -553,7 +573,9 @@ fn set_pak_renumbers_a_target_straddling_other_mods() {
         &mods,
         0,
         3,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     for f in ["pak03_dir.vpk", "pak04_dir.vpk", "pak05_dir.vpk"] {
@@ -598,7 +620,9 @@ fn set_pak_to_the_mods_own_range_touches_nothing() {
         &mods,
         0,
         7,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(fs::read(d.path().join("pak07_dir.vpk")).unwrap(), before);
@@ -623,7 +647,9 @@ fn set_pak_fails_cleanly_when_a_file_is_gone() {
             &mods,
             1,
             1,
-            shiv_core::install::InstallGuard::acquire().permit()
+            shiv_core::install::InstallGuard::acquire(d.path())
+                .unwrap()
+                .permit()
         )
         .is_err()
     );
@@ -647,7 +673,9 @@ fn set_pak_moves_only_pak_numbered_files_of_a_mixed_mod() {
         &mods,
         0,
         5,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(d.path().join("pak05_dir.vpk").is_file());
@@ -688,7 +716,9 @@ fn set_pak_refuses_a_broken_slice_instead_of_overwriting() {
         &mods,
         0,
         1,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, SidecarError::DuplicatePak(_)), "{err:?}");
@@ -716,7 +746,9 @@ fn set_pak_on_a_free_number_keeps_the_others_in_place() {
         &mods,
         0,
         40,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(d.path().join("pak40_dir.vpk").is_file());
@@ -745,7 +777,9 @@ fn set_pak_gives_a_multi_vpk_mod_consecutive_numbers() {
         &mods,
         1,
         2,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     for f in ["pak01_dir.vpk", "pak02_dir.vpk", "pak03_dir.vpk"] {
@@ -774,7 +808,9 @@ fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
         &mods,
         0,
         99,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, SidecarError::PakPush { pak: 99 }), "{err:?}");
@@ -788,7 +824,9 @@ fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
         &mods,
         0,
         0,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, SidecarError::BadPak(0)), "{err:?}");
@@ -812,7 +850,9 @@ fn set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing() {
         &mods,
         hand,
         5,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(d.path())
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(d.path().join("custom.vpk").is_file());
@@ -833,7 +873,9 @@ fn set_pak_refuses_huge_numbers_without_overflowing() {
             &mods,
             0,
             bad,
-            shiv_core::install::InstallGuard::acquire().permit(),
+            shiv_core::install::InstallGuard::acquire(d.path())
+                .unwrap()
+                .permit(),
         )
         .unwrap_err();
         assert!(matches!(err, SidecarError::BadPak(_)), "{err:?} for {bad}");
@@ -870,6 +912,9 @@ fn snapshot(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>
     let mut out: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut add = |base: &std::path::Path, prefix: &str| {
         for entry in fs::read_dir(base).unwrap().flatten() {
+            if prefix == ".shiv/" && entry.file_name() == "lock" {
+                continue;
+            }
             if entry.file_type().unwrap().is_file() {
                 out.insert(
                     format!("{prefix}{}", entry.file_name().to_string_lossy()),
@@ -954,7 +999,9 @@ fn set_pak_invariants_hold_across_random_configurations() {
             &mods,
             target_pos,
             ask,
-            shiv_core::install::InstallGuard::acquire().permit(),
+            shiv_core::install::InstallGuard::acquire(d.path())
+                .unwrap()
+                .permit(),
         );
 
         match result {

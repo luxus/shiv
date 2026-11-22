@@ -61,7 +61,9 @@ fn bare_vpk_installs_into_a_free_slot_and_keeps_the_source() {
         "",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
 
@@ -93,7 +95,9 @@ fn pak_named_vpk_brings_its_chunks() {
         "Hitsound",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
 
@@ -119,7 +123,9 @@ fn archive_installs_as_local_mod() {
         "Zipped",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(sidecar::is_local(&sc.mod_id));
@@ -136,7 +142,9 @@ fn local_install_refuses_while_the_game_runs() {
         "A",
         &e.paths,
         || true,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap_err();
     assert!(matches!(err, install::InstallError::GameRunning), "{err:?}");
@@ -184,7 +192,9 @@ fn edit_changes_only_name_and_notes() {
         "A",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
 
@@ -224,7 +234,9 @@ fn local_ids_do_not_collide() {
         "A",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let two = install::install_local_with(
@@ -232,7 +244,9 @@ fn local_ids_do_not_collide() {
         "B",
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_ne!(one.mod_id, two.mod_id);

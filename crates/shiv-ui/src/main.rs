@@ -129,7 +129,7 @@ pub(crate) fn game_running() -> bool {
     }
     #[cfg(not(test))]
     {
-        shiv_core::game::is_running()
+        shiv_core::game::running_here()
     }
 }
 
@@ -382,7 +382,9 @@ mod tests {
             meta,
             &paths,
             || false,
-            shiv_core::install::InstallGuard::acquire().permit(),
+            shiv_core::install::InstallGuard::acquire(&paths.addons)
+                .expect("install lock")
+                .permit(),
         )
         .expect("install soundcap");
         let installed = || {
@@ -798,7 +800,7 @@ mod tests {
             cache,
             installed::Deps {
                 locate: locate.clone(),
-                running: Arc::new(shiv_core::game::is_running),
+                running: Arc::new(shiv_core::game::running_here),
                 download: Arc::new(move |url, dest| {
                     client
                         .fetch_cancellable(
@@ -3882,7 +3884,7 @@ mod tests {
         // then retrying: the retry waits for the cancelled worker's answer,
         // so one link can never install twice.
         let rows_before = state.get_rows().row_count();
-        let guard = shiv_core::install::InstallGuard::acquire();
+        let guard = shiv_core::install::InstallGuard::acquire(&addons).expect("install lock");
         state.invoke_install_file();
         local.set_path(format!("{link_url}/dl/Haze%20Skin.vpk").into());
         local.invoke_install();

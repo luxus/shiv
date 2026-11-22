@@ -49,7 +49,9 @@ fn reorder_benches(c: &mut Criterion) {
                         &shifted,
                         0,
                         Move::To(shifted.len() - 1),
-                        shiv_core::install::InstallGuard::acquire().permit(),
+                        shiv_core::install::InstallGuard::acquire(dir.path())
+                            .unwrap()
+                            .permit(),
                     )
                     .unwrap();
                     sidecar::group(dir.path())
@@ -60,7 +62,9 @@ fn reorder_benches(c: &mut Criterion) {
                         &mods,
                         mods.len() - 1,
                         Move::Top,
-                        shiv_core::install::InstallGuard::acquire().permit(),
+                        shiv_core::install::InstallGuard::acquire(dir.path())
+                            .unwrap()
+                            .permit(),
                     )
                     .unwrap();
                 },
@@ -79,7 +83,9 @@ fn reorder_benches(c: &mut Criterion) {
                         &shifted,
                         0,
                         Move::To(shifted.len() - 1),
-                        shiv_core::install::InstallGuard::acquire().permit(),
+                        shiv_core::install::InstallGuard::acquire(dir.path())
+                            .unwrap()
+                            .permit(),
                     )
                     .unwrap();
                     sidecar::group(dir.path())
@@ -90,7 +96,9 @@ fn reorder_benches(c: &mut Criterion) {
                         &mods,
                         mods.len() - 1,
                         1,
-                        shiv_core::install::InstallGuard::acquire().permit(),
+                        shiv_core::install::InstallGuard::acquire(dir.path())
+                            .unwrap()
+                            .permit(),
                     )
                     .unwrap();
                 },

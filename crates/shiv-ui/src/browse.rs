@@ -348,6 +348,7 @@ pub(crate) fn catalog_error_text(e: &ApiError) -> String {
 pub(crate) fn install_error_text(e: &InstallError) -> String {
     match e {
         InstallError::GameRunning => "Close Deadlock before installing mods.".into(),
+        InstallError::AlreadyInstalling => "already installing in another shiv".into(),
         InstallError::AddonsFull => {
             "The addons folder is full (99 paks). Remove a mod, then try again.".into()
         }
@@ -1012,7 +1013,7 @@ fn run_install(
     shiv_core::registry::verify_download(&dest, task.published_sha256.as_deref())
         .map_err(|e| msg(e.to_string()))?;
     post(Update::Installing);
-    let guard = install::InstallGuard::acquire();
+    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| msg(e.to_string()))?;
     // Cancel may have been pressed while waiting for another install.
     if cancel.load(Ordering::Relaxed) {
         return Err(Failure::Cancelled);

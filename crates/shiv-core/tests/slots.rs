@@ -125,7 +125,9 @@ fn concurrent_installs_land_on_the_sites_slots_whatever_finishes_first() {
                 || false,
                 complock::last_slot(),
                 Some(SlotChoice::Move),
-                shiv_core::install::InstallGuard::acquire().permit(),
+                shiv_core::install::InstallGuard::acquire(&paths.addons)
+                    .unwrap()
+                    .permit(),
             )
             .unwrap();
         }));
@@ -157,7 +159,9 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
         meta("mine-a"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let b = vpk(&e.work, "mine-b", "pak01_dir.vpk", false);
@@ -166,7 +170,9 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
         meta("mine-b"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "mine-a"), ["pak01_dir.vpk"]);
@@ -180,7 +186,9 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
@@ -201,7 +209,9 @@ fn a_mod_on_a_pack_slot_moves_above_the_pack_with_its_chunks() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "complock-particles"), ["pak02_dir.vpk"]);
@@ -223,7 +233,9 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
             meta(&format!("filler{n}")),
             &e.paths,
             || false,
-            shiv_core::install::InstallGuard::acquire().permit(),
+            shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+                .unwrap()
+                .permit(),
         )
         .unwrap();
     }
@@ -233,7 +245,9 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
         meta("complock-hud"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak05_dir.vpk"]);
@@ -246,7 +260,9 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
@@ -265,7 +281,9 @@ fn an_update_or_an_old_shivs_slot_converges_on_the_named_slot() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "complock-hud"), ["pak01_dir.vpk"]);
@@ -300,7 +318,9 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
         meta("first"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "first"), ["pak01_dir.vpk"]);
@@ -313,7 +333,9 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "first"), ["pak08_dir.vpk"]);
@@ -324,7 +346,9 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
         meta("browse"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "browse"), ["pak09_dir.vpk"], "not pak02");
@@ -346,7 +370,9 @@ fn with_the_pack_in_other_mods_go_above_it_and_only_spill_back_when_full() {
         meta("two"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "two"), ["pak02_dir.vpk", "pak99_dir.vpk"]);
@@ -365,7 +391,9 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         meta("gone"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "gone"), ["pak01_dir.vpk"]);
@@ -377,7 +405,9 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         meta("next"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(
@@ -397,7 +427,9 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let stale = vpk(&e.work, "stale", "pak01_dir.vpk", false);
@@ -406,7 +438,9 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         meta("stale"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "stale"), ["pak08_dir.vpk"]);
@@ -419,7 +453,9 @@ fn a_slot_a_stale_sidecar_still_names_is_not_handed_out() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(vpks_of(&e, "next"), ["pak09_dir.vpk"]);
@@ -440,7 +476,9 @@ fn set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record() {
         meta("gone"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     fs::remove_file(e.paths.addons.join("pak01_dir.vpk")).unwrap();
@@ -451,7 +489,9 @@ fn set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record() {
         meta("keep"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert_eq!(
@@ -470,7 +510,9 @@ fn set_pak_onto_a_stale_sidecar_slot_keeps_the_mods_own_record() {
         &mods,
         index,
         1,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     );
     assert!(
         moved.is_err(),
@@ -531,7 +573,9 @@ fn asking_about_a_foreign_pak_on_a_pack_slot_leaves_it_there() {
         meta("mine"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let pak01 = e.paths.addons.join("pak01_dir.vpk");
@@ -544,7 +588,9 @@ fn asking_about_a_foreign_pak_on_a_pack_slot_leaves_it_there() {
         || false,
         7,
         None,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     );
     let install::InstallError::NeedsChoice(occupants) = refused.unwrap_err() else {
         panic!("a foreign pak was moved or installed");
@@ -562,7 +608,9 @@ fn asking_about_a_foreign_pak_on_a_pack_slot_leaves_it_there() {
         || false,
         7,
         Some(SlotChoice::Move),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(
@@ -581,7 +629,9 @@ fn asking_about_a_foreign_pak_on_a_pack_slot_leaves_it_there() {
         meta("mine"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let pack = holding(&e.work, "pak01_dir.vpk", &incoming);
@@ -592,7 +642,9 @@ fn asking_about_a_foreign_pak_on_a_pack_slot_leaves_it_there() {
         || false,
         7,
         Some(SlotChoice::Replace),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     assert!(install::slot_note(&replaced).starts_with("Replaced:"));
@@ -614,7 +666,9 @@ fn a_plain_foreign_pak_is_moved_and_not_deleted() {
         meta("mine"),
         &e.paths,
         || false,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let before = fs::read(e.paths.addons.join("pak01_dir.vpk")).unwrap();
@@ -626,7 +680,9 @@ fn a_plain_foreign_pak_is_moved_and_not_deleted() {
         || false,
         7,
         None,
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     );
     let occupants = match asked {
         Err(install::InstallError::NeedsChoice(occupants)) => occupants,
@@ -644,7 +700,9 @@ fn a_plain_foreign_pak_is_moved_and_not_deleted() {
         || false,
         7,
         Some(SlotChoice::Replace),
-        shiv_core::install::InstallGuard::acquire().permit(),
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
     )
     .unwrap();
     let note = install::slot_note(&placed);
