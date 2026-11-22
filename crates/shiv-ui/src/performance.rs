@@ -43,6 +43,16 @@ pub(crate) type PackDownload = Arc<
         + Sync,
 >;
 
+/// The site's front page, HTML. Tests pass a closure; nothing here opens a socket.
+pub(crate) type PackPage = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+
+/// A page fetch that fails, so a test stays on the baked pack.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn pack_page_offline() -> PackPage {
+    Arc::new(|_| Err("pack page is not fetched in tests".into()))
+}
+
 /// Injectable so tests never touch the real install, the network or the
 /// user's cache.
 #[derive(Clone)]
@@ -52,6 +62,8 @@ pub(crate) struct Deps {
     pub fetch: Fetch,
     pub cache: Option<CatalogCache>,
     pub pack_download: PackDownload,
+    pub pack_page: PackPage,
+    pub pack_cache: Option<PathBuf>,
 }
 
 impl Deps {
@@ -72,8 +84,52 @@ impl Deps {
                     .fetch_cancellable(url, dest, cancel, progress)
                     .map_err(|e| e.to_string())
             }),
+            pack_page: system_pack_page(),
+            pack_cache: system_pack_cache(),
         }
     }
+}
+
+fn system_pack_page() -> PackPage {
+    #[cfg(test)]
+    {
+        pack_page_offline()
+    }
+    #[cfg(not(test))]
+    {
+        Arc::new(fetch_pack_page)
+    }
+}
+
+fn system_pack_cache() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        complock::pack_cache_dir()
+    }
+}
+
+#[cfg(not(test))]
+fn fetch_pack_page(url: &str) -> Result<String, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(10)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(20)))
+        .timeout_recv_body(Some(std::time::Duration::from_secs(20)))
+        .build()
+        .into();
+    let mut resp = agent
+        .get(url)
+        .header("user-agent", concat!("shiv/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|e| e.to_string())?;
+    resp.body_mut()
+        .with_config()
+        .limit(2 * 1024 * 1024)
+        .read_to_string()
+        .map_err(|e| e.to_string())
 }
 
 const GAME_RUNNING_TEXT: &str = "Deadlock is running. Close it, then apply again.";
@@ -433,17 +489,20 @@ fn paths_equal(a: &[String], b: &[String]) -> bool {
 /// build, the fetch date, the admitted count and the left-out count beside
 /// it. Without a catalog, or with nothing left after admission, the card is
 /// unavailable and the subtitle says why.
-fn complock_card(catalog: Option<&Catalog>) -> PerfComplock {
+fn complock_card(catalog: Option<&Catalog>, pack: &complock::PackLoad) -> PerfComplock {
     let unavailable = |subtitle: &str| PerfComplock {
         title: COMPLOCK_TITLE.into(),
         subtitle: subtitle.into(),
         note: COMPLOCK_NOTE.into(),
         available: false,
     };
+    if pack.too_old() {
+        return unavailable(complock::UPDATE_NEEDED);
+    }
     let Some(catalog) = catalog else {
         return unavailable("Needs the performance catalog.");
     };
-    let admission = catalog.admitted(&complock::entries());
+    let admission = catalog.admitted(&pack.entries());
     if admission.entries.is_empty() {
         return unavailable("Nothing Shiv may write from their gameinfo.");
     }
@@ -456,8 +515,8 @@ fn complock_card(catalog: Option<&Catalog>) -> PerfComplock {
         title: COMPLOCK_TITLE.into(),
         subtitle: format!(
             "deadlockconfig.com · build {} · fetched {} · {} settings{left_out}",
-            complock::game(),
-            complock::fetched(),
+            pack.game(),
+            pack.fetched(),
             admission.entries.len()
         )
         .into(),
@@ -607,6 +666,10 @@ struct Perf {
     /// Pack installs by Downloads-screen id.
     pack_jobs: RefCell<HashMap<String, PackJob>>,
     pack_generation: Cell<u64>,
+    pack_load: RefCell<complock::PackLoad>,
+    pack_at: Cell<Option<std::time::Instant>>,
+    pack_busy: Cell<bool>,
+    pack_timer: RefCell<Option<slint::Timer>>,
 }
 
 /// A pack install, addressable from the Downloads screen. `generation`
@@ -661,6 +724,10 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
         pack_choices: RefCell::new(BTreeMap::new()),
         pack_jobs: RefCell::new(HashMap::new()),
         pack_generation: Cell::new(0),
+        pack_load: RefCell::new(complock::baked_pack()),
+        pack_at: Cell::new(None),
+        pack_busy: Cell::new(false),
+        pack_timer: RefCell::new(None),
     });
     PERF.with(|p| *p.borrow_mut() = Some(controller.clone()));
     let state = app.global::<PerfState>();
@@ -747,6 +814,8 @@ impl Perf {
 
     fn shown(&self) {
         self.on_screen.set(true);
+        self.arm_pack_timer();
+        self.refresh_pack();
         if self.catalog.borrow().is_none() {
             self.load();
         } else {
@@ -761,6 +830,7 @@ impl Perf {
         if !self.on_screen.replace(false) {
             return;
         }
+        self.disarm_pack_timer();
         self.drop_catalog();
     }
 
@@ -942,7 +1012,7 @@ impl Perf {
     }
 
     fn publish_complock(&self) {
-        self.with_state(|s| s.set_complock(complock_card(self.catalog().as_deref())));
+        self.with_state(|s| s.set_complock(complock_card(self.catalog().as_deref(), &self.pack())));
     }
 
     /// The value a convar of the file or the staged changes reads now:
@@ -1171,21 +1241,86 @@ impl Perf {
         row
     }
 
+    fn pack(&self) -> complock::PackLoad {
+        self.pack_load.borrow().clone()
+    }
+
+    fn arm_pack_timer(&self) {
+        let mut slot = self.pack_timer.borrow_mut();
+        if slot.is_some() {
+            return;
+        }
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, complock::PACK_REFRESH, || {
+            with_perf(|p| {
+                if p.on_screen.get() {
+                    p.refresh_pack();
+                }
+            });
+        });
+        *slot = Some(timer);
+    }
+
+    fn disarm_pack_timer(&self) {
+        if let Some(timer) = self.pack_timer.borrow_mut().take() {
+            timer.stop();
+        }
+    }
+
+    fn refresh_pack(&self) {
+        if !self.on_screen.get() || self.pack_busy.get() {
+            return;
+        }
+        if !complock::pack_refresh_due(self.pack_at.get(), std::time::Instant::now()) {
+            return;
+        }
+        self.pack_busy.set(true);
+        let fetch = self.deps.pack_page.clone();
+        let cache = self.deps.pack_cache.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-pack-data",
+            move || complock::load_pack(|url| fetch(url), cache.as_deref()),
+            move |result| {
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_perf(|p| p.pack_loaded(result));
+                });
+            },
+        );
+        if !started {
+            self.pack_busy.set(false);
+        }
+    }
+
+    fn pack_loaded(&self, result: Result<complock::PackLoad, String>) {
+        self.pack_busy.set(false);
+        self.pack_at.set(Some(std::time::Instant::now()));
+        if let Ok(load) = result {
+            *self.pack_load.borrow_mut() = load;
+        }
+        if self.on_screen.get() {
+            self.publish_complock();
+            self.publish_pack_rows();
+        }
+    }
+
     /// The CompLock options list: the HUD++ base, the FOV slider, then the
     /// options under their group headings, all in the site's order.
     fn publish_pack_rows(&self) {
+        let pack = self.pack();
         let mut rows = Vec::new();
         let mut ids = Vec::new();
-        if let Some(hud) = complock::hud() {
+        if let Some(hud) = pack.hud() {
             rows.push(self.hud_row(hud));
             ids.push(PACK_HUD_ID.to_string());
         }
-        if let Some(fov) = complock::fov() {
+        if let Some(fov) = pack.fov() {
             rows.push(self.fov_row(fov));
             ids.push(PACK_FOV_ID.to_string());
         }
-        for group in complock::groups() {
-            let options: Vec<&complock::PackOption> = complock::options()
+        for group in pack.groups() {
+            let options: Vec<&complock::PackOption> = pack
+                .options()
                 .iter()
                 .filter(|o| o.group.as_deref() == Some(group.id.as_str()))
                 .collect();
@@ -1222,12 +1357,13 @@ impl Perf {
     /// Re-draw the pack row of `id` in place, from the same state its
     /// builder reads.
     fn refresh_pack_row(&self, id: &str) {
+        let pack = self.pack();
         let rebuilt = if id == PACK_HUD_ID {
-            complock::hud().map(|hud| self.hud_row(hud))
+            pack.hud().map(|hud| self.hud_row(hud))
         } else if id == PACK_FOV_ID {
-            complock::fov().map(|fov| self.fov_row(fov))
+            pack.fov().map(|fov| self.fov_row(fov))
         } else {
-            complock::options()
+            pack.options()
                 .iter()
                 .find(|o| o.id == id)
                 .map(|option| self.option_row(option))
@@ -1643,7 +1779,12 @@ impl Perf {
         let Some(catalog) = self.catalog() else {
             return;
         };
-        let admission = catalog.admitted(&complock::entries());
+        let pack = self.pack();
+        if pack.too_old() {
+            self.show_result("CompLock", complock::UPDATE_NEEDED, true);
+            return;
+        }
+        let admission = catalog.admitted(&pack.entries());
         if admission.entries.is_empty() {
             return;
         }
@@ -1654,7 +1795,7 @@ impl Perf {
         self.note.borrow_mut().clear();
         let mut detail = format!(
             "Engine settings from deadlockconfig.com for game build {}. Review the pending changes, then apply.",
-            complock::game()
+            pack.game()
         );
         if admission.skipped > 0 {
             detail.push_str(&format!(
@@ -1683,7 +1824,8 @@ impl Perf {
         if self.busy() {
             return;
         }
-        let Some(option) = complock::options().iter().find(|o| o.id == id) else {
+        let pack = self.pack();
+        let Some(option) = pack.options().iter().find(|o| o.id == id) else {
             return;
         };
         let on = self.pack_option_is_on(&option.convars);
@@ -1735,23 +1877,27 @@ impl Perf {
         if self.busy() {
             return;
         }
+        let pack = self.pack();
         let picked = usize::try_from(index).ok().filter(|&i| {
-            complock::options()
+            pack.options()
                 .iter()
                 .find(|o| o.id == id)
                 .is_some_and(|o| i < o.choices.len())
-                || complock::hud().is_some_and(|hud| id == PACK_HUD_ID && i < hud.choices.len())
+                || pack
+                    .hud()
+                    .is_some_and(|hud| id == PACK_HUD_ID && i < hud.choices.len())
         });
         let Some(picked) = picked else {
             return;
         };
         self.pack_choices.borrow_mut().insert(id.to_owned(), picked);
-        let choice = complock::options()
+        let choice = pack
+            .options()
             .iter()
             .find(|o| o.id == id)
             .and_then(|o| o.choices.get(picked))
             .or_else(|| {
-                complock::hud()
+                pack.hud()
                     .filter(|_| id == PACK_HUD_ID)
                     .and_then(|hud| hud.choices.get(picked))
             });
@@ -1785,7 +1931,8 @@ impl Perf {
         if self.busy() {
             return;
         }
-        let Some(fov) = complock::fov() else {
+        let pack = self.pack();
+        let Some(fov) = pack.fov() else {
             return;
         };
         let value = Self::fov_text(fov, v.clamp(fov.from, fov.to));
@@ -1798,8 +1945,13 @@ impl Perf {
     /// choice's. The download shows on the Downloads screen under the
     /// option's stable mod id; a re-install replaces the mod in place.
     fn install_pack(&self, id: &str) {
+        let pack = self.pack();
+        if pack.too_old() {
+            self.show_result("CompLock", complock::UPDATE_NEEDED, true);
+            return;
+        }
         let task = if id == PACK_HUD_ID {
-            complock::hud().and_then(|hud| {
+            pack.hud().and_then(|hud| {
                 let picked = self
                     .pack_choices
                     .borrow()
@@ -1816,7 +1968,7 @@ impl Perf {
                 })
             })
         } else {
-            complock::options()
+            pack.options()
                 .iter()
                 .find(|o| o.id == id)
                 .and_then(|option| {
@@ -2212,6 +2364,8 @@ mod tests {
             fetch,
             cache: Some(cache),
             pack_download: Arc::new(|_, _, _, _| Err("no pack downloads in unit tests".into())),
+            pack_page: pack_page_offline(),
+            pack_cache: None,
         }
     }
 
@@ -2386,7 +2540,7 @@ mod tests {
             admission.skipped > 0,
             "the fixture denies some of their set"
         );
-        let card = complock_card(Some(&catalog));
+        let card = complock_card(Some(&catalog), &complock::baked_pack());
         assert!(card.available, "{}", card.subtitle);
         assert_eq!(card.title.as_str(), "CompLock engine settings");
         assert!(
@@ -2402,9 +2556,23 @@ mod tests {
             card.subtitle
         );
         assert!(card.note.contains("hero models"), "{}", card.note);
-        let bare = complock_card(None);
+        let bare = complock_card(None, &complock::baked_pack());
         assert!(!bare.available);
         assert!(bare.subtitle.contains("catalog"), "{}", bare.subtitle);
+    }
+
+    #[test]
+    fn the_card_says_shiv_update_needed_when_app_min_is_newer() {
+        let json = r#"{"files":{},"base":[],"option":[],"gameinfo":"GameInfo { ConVars { fps_max \"1\" } }","app_min":2}"#;
+        let html = format!(
+            "<html><script id=\"pack-data\" type=\"application/json\">{json}</script></html>"
+        );
+        let pack = complock::load_pack(|_| Ok(html), None);
+        let catalog = Catalog::parse(crate::tests::PERF_CATALOG.as_bytes()).expect("catalog");
+        let card = complock_card(Some(&catalog), &pack);
+        assert!(pack.too_old());
+        assert!(!card.available);
+        assert_eq!(card.subtitle.as_str(), "shiv update needed");
     }
 
     #[test]

@@ -1586,6 +1586,8 @@ mod tests {
                     }
                     Ok(())
                 }),
+                pack_page: performance::pack_page_offline(),
+                pack_cache: None,
             },
         );
         app.show().expect("show");
@@ -1945,6 +1947,8 @@ mod tests {
                     }
                     Ok(())
                 }),
+                pack_page: performance::pack_page_offline(),
+                pack_cache: None,
             },
         );
         app.show().expect("show");

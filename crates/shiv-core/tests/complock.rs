@@ -475,3 +475,135 @@ fn the_part_check_proves_the_bytes_and_names_a_bad_crc_or_a_failed_download() {
         "{missing:?}"
     );
 }
+
+/// The page at deadlockconfig.com, then the cache file, then the baked copy.
+/// The fetcher is the only source of the page: this test never opens a socket.
+#[test]
+fn live_pack_data_uses_the_page_then_the_cache_then_the_baked_copy() {
+    let asset = std::fs::read_to_string(manifest("assets/complock-options.json")).expect("asset");
+    let gameinfo =
+        std::fs::read_to_string(manifest("assets/complock-gameinfo.gi")).expect("gameinfo");
+    let mut live: serde_json::Value = serde_json::from_str(&asset).expect("asset json");
+    live["gameinfo"] = serde_json::Value::String(gameinfo);
+    let newer = live.clone();
+    live["app_min"] = serde_json::json!(complock::PACK_APP_VERSION);
+    let mut ahead = newer;
+    ahead["app_min"] = serde_json::json!(complock::PACK_APP_VERSION + 1);
+    let current_html = page(&live.to_string());
+    let ahead_html = page(&ahead.to_string());
+    let baked_ids: BTreeSet<String> = complock::options().iter().map(|o| o.id.clone()).collect();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fetches = 0u32;
+    let html = current_html.clone();
+    let loaded = complock::load_pack(
+        |url| {
+            fetches += 1;
+            assert_eq!(url, "https://deadlockconfig.com/");
+            Ok(html.clone())
+        },
+        Some(dir.path()),
+    );
+    assert_eq!(fetches, 1);
+    assert_eq!(loaded.origin(), complock::PackOrigin::Live);
+    assert!(!loaded.too_old());
+    assert_eq!(
+        loaded
+            .options()
+            .iter()
+            .map(|o| o.id.as_str())
+            .collect::<BTreeSet<_>>(),
+        baked_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+    );
+    assert!(
+        !loaded.entries().is_empty(),
+        "the page's gameinfo has ConVars"
+    );
+    let cached =
+        std::fs::read_to_string(dir.path().join(complock::PACK_CACHE_FILE)).expect("cache");
+    assert_eq!(cached, live.to_string());
+
+    let from_cache = complock::load_pack(|_| Err("offline".into()), Some(dir.path()));
+    assert_eq!(from_cache.origin(), complock::PackOrigin::Cache);
+    assert!(!from_cache.too_old());
+
+    let ahead_load = complock::load_pack(|_| Ok(ahead_html.clone()), Some(dir.path()));
+    assert!(ahead_load.too_old());
+    assert!(complock::app_requires_newer_shiv(&ahead.to_string()));
+    assert!(!complock::app_requires_newer_shiv(&live.to_string()));
+    assert!(!complock::app_requires_newer_shiv(
+        &serde_json::json!({"files": {}, "base": [], "option": [], "gameinfo": "x", "app_min": 0})
+            .to_string()
+    ));
+    assert!(!complock::app_requires_newer_shiv(
+        &serde_json::json!({"files": {}, "base": [], "option": [], "gameinfo": "x", "app_min": "0.3.5"})
+            .to_string()
+    ));
+
+    std::fs::write(dir.path().join(complock::PACK_CACHE_FILE), "{").expect("corrupt");
+    let baked = complock::load_pack(|_| Err("offline".into()), Some(dir.path()));
+    assert_eq!(baked.origin(), complock::PackOrigin::Baked);
+    assert!(!baked.too_old());
+    assert_eq!(
+        baked
+            .options()
+            .iter()
+            .map(|o| o.id.as_str())
+            .collect::<BTreeSet<_>>(),
+        baked_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+    );
+
+    let ignored = complock::load_pack(|_| Ok("<html>no pack</html>".into()), Some(dir.path()));
+    assert_eq!(ignored.origin(), complock::PackOrigin::Baked);
+
+    let now = std::time::Instant::now();
+    assert!(complock::pack_refresh_due(None, now));
+    assert!(!complock::pack_refresh_due(Some(now), now));
+    assert!(!complock::pack_refresh_due(
+        Some(now),
+        now + std::time::Duration::from_secs(1)
+    ));
+    assert!(complock::pack_refresh_due(
+        Some(now),
+        now + complock::PACK_REFRESH
+    ));
+}
+
+/// `app_min` of 1 is this build. `app_min` of 2 asks for an update. A version
+/// string is not a number, so it does not.
+#[test]
+fn app_min_above_the_pack_app_version_asks_for_an_update() {
+    let pack = |app_min| {
+        serde_json::json!({
+            "files": {},
+            "base": [],
+            "option": [],
+            "gameinfo": "GameInfo { }",
+            "app_min": app_min,
+        })
+        .to_string()
+    };
+    let current = page(&pack(1));
+    let newer = page(&pack(2));
+    let loaded = complock::load_pack(|_| Ok(current), None);
+    assert!(!loaded.too_old());
+    assert_eq!(loaded.origin(), complock::PackOrigin::Live);
+    let ahead = complock::load_pack(|_| Ok(newer), None);
+    assert!(ahead.too_old());
+    assert!(complock::app_requires_newer_shiv(&pack(2)));
+    assert!(!complock::app_requires_newer_shiv(&pack(1)));
+}
+
+fn manifest(rel: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
+}
+
+fn page(json: &str) -> String {
+    format!("<html><script id=\"pack-data\" type=\"application/json\">{json}</script></html>")
+}

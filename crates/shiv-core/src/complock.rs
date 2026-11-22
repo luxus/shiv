@@ -10,7 +10,9 @@
 //! through [`part_url`] and installed through [`crate::install::install_files`].
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use kv_parser::{ParseOptions, SourceDocument, SourceKind};
 use serde::Deserialize;
@@ -23,6 +25,18 @@ const OPTIONS: &str = include_str!("../assets/complock-options.json");
 
 /// Where the pack data's part urls download from: they are site-relative.
 pub const SITE: &str = "https://deadlockconfig.com";
+
+/// Shown when the pack's `app_min` is newer than [`PACK_APP_VERSION`].
+pub const UPDATE_NEEDED: &str = "shiv update needed";
+
+/// The pack-data app version CompLock compares `app_min` with (`Web.AppVersion`).
+pub const PACK_APP_VERSION: u64 = 1;
+
+/// How long a successful look at the site stays current while the screen is open.
+pub const PACK_REFRESH: Duration = Duration::from_secs(5 * 60);
+
+/// The cached pack-data file inside the shiv cache directory.
+pub const PACK_CACHE_FILE: &str = "pack-data.json";
 
 /// The game build the settings were crafted for, from the site's meta.
 #[must_use]
@@ -418,7 +432,7 @@ pub struct Group {
 
 /// The pack data resolved: the paks an option, choice or base names are
 /// looked up in the site's files list.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct PackData {
     hud: Option<Hud>,
     gameinfo: Option<GameinfoCard>,
@@ -525,6 +539,235 @@ fn parse_pack(text: &str) -> Option<PackData> {
             })
             .collect(),
     })
+}
+
+/// Where a [`PackLoad`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackOrigin {
+    /// The site's page, just now.
+    Live,
+    /// The last page that parsed, kept in the shiv cache.
+    Cache,
+    /// The `include_str!` copies shipped with this build.
+    Baked,
+}
+
+/// One resolved pack: the options, the gameinfo text, and whether this Shiv
+/// is older than the pack's `app_min` ([`PACK_APP_VERSION`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackLoad {
+    origin: PackOrigin,
+    too_old: bool,
+    game: String,
+    fetched: String,
+    gameinfo_text: String,
+    data: PackData,
+}
+
+impl PackLoad {
+    /// Where this pack was read from.
+    #[must_use]
+    pub fn origin(&self) -> PackOrigin {
+        self.origin
+    }
+
+    /// The pack's `app_min` is a number greater than [`PACK_APP_VERSION`].
+    #[must_use]
+    pub fn too_old(&self) -> bool {
+        self.too_old
+    }
+
+    /// The game build the settings were crafted for.
+    #[must_use]
+    pub fn game(&self) -> &str {
+        &self.game
+    }
+
+    /// When this copy was fetched, or `live` / `cached` for a page that
+    /// carries no fetch date.
+    #[must_use]
+    pub fn fetched(&self) -> &str {
+        &self.fetched
+    }
+
+    /// The site's options, in the order the pack data lists them.
+    #[must_use]
+    pub fn options(&self) -> &[PackOption] {
+        &self.data.options
+    }
+
+    /// The pack's group headings, in the site's order.
+    #[must_use]
+    pub fn groups(&self) -> &[Group] {
+        &self.data.groups
+    }
+
+    /// The HUD++ base, when the pack data has one.
+    #[must_use]
+    pub fn hud(&self) -> Option<&Hud> {
+        self.data.hud.as_ref()
+    }
+
+    /// The gameinfo card, when the pack data has one.
+    #[must_use]
+    pub fn gameinfo_card(&self) -> Option<&GameinfoCard> {
+        self.data.gameinfo.as_ref()
+    }
+
+    /// The field of view the gameinfo card's slider writes.
+    #[must_use]
+    pub fn fov(&self) -> Option<&Fov> {
+        self.data.gameinfo.as_ref().and_then(|c| c.fov.as_ref())
+    }
+
+    /// CompLock's ConVars as staged entries, from this pack's gameinfo text.
+    #[must_use]
+    pub fn entries(&self) -> Vec<ConfigEntry> {
+        entries_of(&self.gameinfo_text)
+    }
+}
+
+/// The pack shipped in this build. The screen shows it until a page or a
+/// cache loads, and again when both of those fail.
+#[must_use]
+pub fn baked_pack() -> PackLoad {
+    PackLoad {
+        origin: PackOrigin::Baked,
+        too_old: false,
+        game: game().to_owned(),
+        fetched: fetched().to_owned(),
+        gameinfo_text: GAMEINFO.to_owned(),
+        data: parse_pack(OPTIONS).unwrap_or_default(),
+    }
+}
+
+/// `<user cache>/shiv`, the directory [`load_pack`] writes `pack-data.json` into.
+#[must_use]
+pub fn pack_cache_dir() -> Option<PathBuf> {
+    crate::platform::cache_dir().map(|dir| dir.join("shiv"))
+}
+
+/// Whether another look at the site is due. `None` has never looked.
+/// A look younger than [`PACK_REFRESH`] is not due.
+#[must_use]
+pub fn pack_refresh_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|then| now.saturating_duration_since(then) >= PACK_REFRESH)
+}
+
+/// The page at `{SITE}/`, then the cache in `cache_dir`, then [`baked_pack`].
+///
+/// `fetch` receives the page url and returns the HTML. A body whose
+/// `<script id="pack-data">` is not an object with `files`, arrays `base`
+/// and `option`, and a string `gameinfo` is the same as a failed fetch:
+/// nothing is cached. A cache write that fails still returns the live pack.
+/// A numeric `app_min` greater than [`PACK_APP_VERSION`] sets
+/// [`PackLoad::too_old`]. A missing `app_min`, or one that is not a number,
+/// does not.
+#[must_use]
+pub fn load_pack(
+    fetch: impl FnOnce(&str) -> Result<String, String>,
+    cache_dir: Option<&Path>,
+) -> PackLoad {
+    let url = format!("{SITE}/");
+    if let Ok(html) = fetch(&url)
+        && let Some(json) = script_pack_json(&html).filter(|json| pack_shape(json))
+        && let Some(load) = pack_from_json(json, PackOrigin::Live)
+    {
+        if let Some(dir) = cache_dir {
+            let _ = write_pack_cache(dir, json);
+        }
+        return load;
+    }
+    if let Some(dir) = cache_dir
+        && let Ok(cached) = std::fs::read_to_string(dir.join(PACK_CACHE_FILE))
+        && pack_shape(&cached)
+        && let Some(load) = pack_from_json(&cached, PackOrigin::Cache)
+    {
+        return load;
+    }
+    baked_pack()
+}
+
+/// `app_min` in `pack_json` is a number greater than [`PACK_APP_VERSION`].
+/// Missing, zero, a non-number, and a pack that is not the site's shape are not.
+#[must_use]
+pub fn app_requires_newer_shiv(pack_json: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(pack_json) else {
+        return false;
+    };
+    let Some(min) = value.get("app_min") else {
+        return false;
+    };
+    app_min_is_newer(min)
+}
+
+fn pack_from_json(json: &str, origin: PackOrigin) -> Option<PackLoad> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let data = parse_pack(json)?;
+    let gameinfo_text = value.get("gameinfo")?.as_str()?.to_owned();
+    let game = value
+        .get("game")
+        .and_then(|g| g.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let fetched = match origin {
+        PackOrigin::Live => "live".to_owned(),
+        PackOrigin::Cache => "cached".to_owned(),
+        PackOrigin::Baked => fetched().to_owned(),
+    };
+    let too_old = value.get("app_min").is_some_and(app_min_is_newer);
+    Some(PackLoad {
+        origin,
+        too_old,
+        game,
+        fetched,
+        gameinfo_text,
+        data,
+    })
+}
+
+/// The reference `Checked`: `files` object, `base` and `option` arrays, `gameinfo` string.
+fn pack_shape(json: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    value.get("files").is_some_and(serde_json::Value::is_object)
+        && value.get("base").is_some_and(serde_json::Value::is_array)
+        && value.get("option").is_some_and(serde_json::Value::is_array)
+        && value
+            .get("gameinfo")
+            .is_some_and(serde_json::Value::is_string)
+}
+
+fn script_pack_json(html: &str) -> Option<&str> {
+    let start = html.find("<script id=\"pack-data\"")?;
+    let rest = &html[start..];
+    let open = rest.find('>')?;
+    let tag = &rest[..=open];
+    if !tag.contains("type=\"application/json\"") {
+        return None;
+    }
+    let body = &rest[open + 1..];
+    let end = body.find("</script>")?;
+    let json = body[..end].trim();
+    (!json.is_empty()).then_some(json)
+}
+
+fn app_min_is_newer(min: &serde_json::Value) -> bool {
+    min.as_f64()
+        .is_some_and(|version| version > PACK_APP_VERSION as f64)
+}
+
+fn write_pack_cache(dir: &Path, json: &str) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(dir)?;
+    let dest = dir.join(PACK_CACHE_FILE);
+    let tmp = dir.join(format!(".{PACK_CACHE_FILE}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, json)?;
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// The site's options, in the order the pack data lists them.
