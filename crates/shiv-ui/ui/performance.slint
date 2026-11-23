@@ -335,6 +335,18 @@ component InstalledMark inherits Rectangle {
     }
 }
 
+// The lead mark of the FOV card: a view cone, so its lead slot is not empty.
+component FovMark inherits Path {
+    width: 20px;
+    height: 20px;
+    viewbox-width: 20;
+    viewbox-height: 20;
+    commands: "M 10 17 L 2.5 5 M 10 17 L 17.5 5 M 4.2 7.6 A 11 11 0 0 1 15.8 7.6";
+    stroke: Theme.text-muted;
+    stroke-width: 1.5px;
+    fill: transparent;
+}
+
 // One CompLock option as its own card: lead control, name and one line,
 // the measured gains, the pak's state, and its choices or the FOV slider
 // inside the card.
@@ -367,7 +379,7 @@ component PackCard inherits Rectangle {
             HorizontalLayout {
                 spacing: Theme.s2;
 
-                // Lead: the option's switch, else the pak's installed mark.
+                // Lead: the option's switch, else the pak's installed mark, else the FOV mark.
                 VerticalLayout {
                     width: 40px;
                     alignment: center;
@@ -379,6 +391,10 @@ component PackCard inherits Rectangle {
                     if !root.item.has-toggle && root.item.has-pak: HorizontalLayout {
                         alignment: center;
                         InstalledMark { installed: root.item.installed; }
+                    }
+                    if root.item.kind == PerfPackKind.fov: HorizontalLayout {
+                        alignment: center;
+                        FovMark { }
                     }
                 }
 
