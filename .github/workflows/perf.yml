@@ -35,6 +35,10 @@ jobs:
           fi
           echo "BENCH_BASE=$base" >> "$GITHUB_ENV"
       - name: Bench the comparison base, saving the criterion baseline
+        # tempfile honours TMPDIR: the benches' temp addons folders sit on
+        # tmpfs, so the runner disk's write jitter is not in either arm.
+        env:
+          TMPDIR: /dev/shm
         run: |
           git checkout --detach "$BENCH_BASE"
           cargo bench -p shiv-core --bench reorder \
@@ -44,6 +48,8 @@ jobs:
             -- --warm-up-time 2 --measurement-time 2 --save-baseline push \
             | tee "$RUNNER_TEMP/catalog-base.log"
       - name: Bench the pushed tree against the saved baseline
+        env:
+          TMPDIR: /dev/shm
         run: |
           git checkout --detach "${{ github.sha }}"
           cargo bench -p shiv-core --bench reorder \
