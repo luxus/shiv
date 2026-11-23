@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain
-        run: rustup toolchain install stable --profile minimal && rustup default stable
+        run: rustup show active-toolchain
       - name: Run the live API tests
         id: first
         continue-on-error: true

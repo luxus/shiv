@@ -21,7 +21,12 @@ cd "$work"
 # winit loads libxkbcommon and libxkbcommon-x11 with dlopen at startup, so
 # linuxdeploy cannot see them as dependencies; bundle them explicitly or the
 # app panics on systems that lack the X11 one.
-libdir="$(dirname "$(ldconfig -p | awk '/libxkbcommon\.so\.0 /{print $NF; exit}')")"
+libpath="$(ldconfig -p | awk '/libxkbcommon\.so\.0 / && /x86-64/ {print $NF; exit}')"
+if [[ -z "$libpath" ]]; then
+  echo "error: libxkbcommon.so.0 (x86-64) not found via ldconfig" >&2
+  exit 1
+fi
+libdir="$(dirname "$libpath")"
 ARCH=x86_64 LINUXDEPLOY_OUTPUT_VERSION="$version" \
   linuxdeploy --appdir AppDir \
     --executable "$root/target/release/shiv" \
@@ -33,5 +38,11 @@ ARCH=x86_64 LINUXDEPLOY_OUTPUT_VERSION="$version" \
 
 out="$root/dist/Shiv-$version-x86_64.AppImage"
 mv ./*.AppImage "$out"
+size_bytes="$(stat -c%s "$out")"
+max_bytes=$((25 * 1024 * 1024))
+if (( size_bytes > max_bytes )); then
+  echo "error: AppImage size ${size_bytes} bytes exceeds 25 MiB gate (${max_bytes})" >&2
+  exit 1
+fi
 (cd "$root/dist" && sha256sum "$(basename "$out")" > "$(basename "$out").sha256")
-echo "built $out"
+echo "built $out (${size_bytes} bytes)"

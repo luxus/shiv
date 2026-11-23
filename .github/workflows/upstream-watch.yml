@@ -32,7 +32,7 @@ jobs:
           jq -Rr --argjson p "$paths" \
             'select(test("(^|/)(CHANGELOG\\.md|package\\.json)$") | not)
              | select(. as $f | any($p[]; . as $x | $f | startswith($x)))' \
-            all-files.txt > changed.txt || true
+            all-files.txt > changed.txt
           head="$(gh api "repos/$repo/commits/$branch" --jq .sha)"
           echo "Upstream $branch is at $head; pinned at $pin."
           if [[ ! -s changed.txt ]]; then

@@ -220,25 +220,45 @@
           # The library, core and API tests: everything that needs no
           # windowing environment. The one Slint integration test runs on
           # the GitHub CI, where the environment is a real one.
-          tests =
-            pkgs.runCommand "shiv-tests"
-              {
-                nativeBuildInputs =
-                  [
-                    (toolchain pkgs)
-                    pkgs.git
-                  ]
-                  ++ windowingDeps pkgs
-                  ++ zstdForPkgConfig pkgs;
-                env = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-                  ZSTD_SYS_USE_PKG_CONFIG = "1";
-                };
-              }
-              ''
-                cd ${self}
-                cargo test --workspace --offline -p shiv-core -p shiv-api -p shiv-repair -p kv-parser -p vpk-parser -p vpkmanager -p source2-model
-                touch $out
-              '';
+          tests = (rustPlatform pkgs).buildRustPackage {
+            pname = "shiv-tests";
+            version = (pkgs.lib.importTOML "${self}/crates/shiv-ui/Cargo.toml").package.version;
+
+            src = self;
+            cargoLock.lockFile = "${self}/Cargo.lock";
+
+            env = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              ZSTD_SYS_USE_PKG_CONFIG = "1";
+            };
+
+            nativeBuildInputs =
+              windowingDeps pkgs
+              ++ zstdForPkgConfig pkgs
+              ++ [ pkgs.python3 ];
+            buildInputs = runtimeDeps pkgs;
+
+            doBuild = false;
+            doCheck = true;
+            cargoTestFlags = [
+              "-p"
+              "shiv-core"
+              "-p"
+              "shiv-api"
+              "-p"
+              "shiv-repair"
+              "-p"
+              "kv-parser"
+              "-p"
+              "vpk-parser"
+              "-p"
+              "vpkmanager"
+              "-p"
+              "source2-model"
+            ];
+            installPhase = ''
+              touch $out
+            '';
+          };
         }
       );
     };

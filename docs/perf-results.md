@@ -306,7 +306,7 @@ cargo test -p shiv-core --test alloc_ceilings
 
 | Flow | Fixture | Worst of 3 | Ceiling |
 |---|---|---|---|
-| `install_local_with` | one-VPK zip (18-byte VPK) | 70,691 B | 96,000 B |
+| `install_local_with` | one-VPK zip (18-byte VPK; includes 2 × 256 KiB extraction buffers added by the install probe fix below) | 594,965 B | 620,288 B |
 | `set_pak` | 25 movable mods, last mod → pak 1 (worst case: every file renames, every sidecar rewrites) | 57,957 B | 80,000 B |
 | `interchange::export` | 3-mod library, one mod disabled | 26,162 B | 36,000 B |
 | `interchange::import` | the exported 3-mod bundle into a fresh library | 53,464 B | 72,000 B |

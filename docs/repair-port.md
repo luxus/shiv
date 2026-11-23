@@ -38,7 +38,6 @@ the engine uses to decode compiled Source 2 resources.
 - `source2-model` and `vpkmanager`: mechanical fixes for clippy lints this
   toolchain (clippy 1.98) reports (`chunks_exact_to_as_chunks`,
   `needless_late_init`, `collapsible_if`, `double_must_use`). No behaviour change.
-- Test-only dev-dependency `hex` added (used by the ignored corpus tests).
 
 ## Removed tests
 

@@ -3,8 +3,7 @@ name: perf
 on:
   push:
     branches: [main]
-  # A fork does not run push workflows until Actions is enabled in its
-  # Actions tab; dispatch makes the gates runnable by hand either way.
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -26,14 +25,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libfontconfig1-dev libxkbcommon-dev libwayland-dev pkg-config
       - name: Rust toolchain
-        run: rustup toolchain install stable --profile minimal && rustup default stable
+        run: rustup show active-toolchain
       - name: Resolve the bench comparison base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          base="${{ github.event.before }}"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base="${{ github.sha }}^"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$PR_BASE_SHA" ]; then
+            base="$PR_BASE_SHA"
+          elif [ -n "$EVENT_BEFORE" ] && [ "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${EVENT_BEFORE}^{commit}" 2>/dev/null; then
+            base="$EVENT_BEFORE"
+          else
+            base="${HEAD_SHA}^"
           fi
           echo "BENCH_BASE=$base" >> "$GITHUB_ENV"
+          echo "BENCH_HEAD=$HEAD_SHA" >> "$GITHUB_ENV"
       - name: Bench the comparison base, saving the criterion baseline
         # tempfile honours TMPDIR: the benches' temp addons folders sit on
         # tmpfs, so the runner disk's write jitter is not in either arm.
@@ -51,7 +59,7 @@ jobs:
         env:
           TMPDIR: /dev/shm
         run: |
-          git checkout --detach "${{ github.sha }}"
+          git checkout --detach "$BENCH_HEAD"
           cargo bench -p shiv-core --bench reorder \
             -- --warm-up-time 2 --measurement-time 2 --baseline-lenient push \
             | tee "$RUNNER_TEMP/reorder-candidate.log"
@@ -63,6 +71,6 @@ jobs:
           python3 scripts/bench_diff_summary.py
           --base "$RUNNER_TEMP/reorder-base.log" "$RUNNER_TEMP/catalog-base.log"
           --candidate "$RUNNER_TEMP/reorder-candidate.log" "$RUNNER_TEMP/catalog-candidate.log"
-          --base-ref "$BENCH_BASE" --head-ref "${{ github.sha }}"
+          --base-ref "$BENCH_BASE" --head-ref "$BENCH_HEAD"
       - name: Allocation gates
         run: cargo test -p shiv-core --test alloc_ceilings --test interchange_import_peak

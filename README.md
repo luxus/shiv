@@ -36,18 +36,16 @@ Wayland), the linked run 2026-11-20, the Nix flake package at
 | Memory — idle, 60 s later | no leak while idle (±10 %) | 114.5 MB, no growth | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Battery — idle CPU | 0 ticks in 10 min | 0 ticks over 60 s | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Start-up — process start → first activity | < 1.5 s cold, < 600 ms warm | warm 172–198 ms, cold 387–529 ms (3 runs each) | [lea, 2026-11-21](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
-| Binary — size | AppImage < 25 MB | 45 MB store path (binary ~34 MiB) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
+| Binary — size | AppImage < 25 MB | 19.7 MB AppImage (v0.2.0); 45 MB Nix store path (binary ~34 MiB) | [lea, 2026-11-20](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
 | Memory — 60 s full-list scroll | post-scroll within 10 % of loaded | 138 MB loaded → 151 MB peak (+9.4 %) | [lea, 2026-11-21](docs/perf-results.md#scroll-peak-experiments-lea-2026-11-21) |
-| Scroll — frame budget while flinging | no frame > 16 ms at 144 Hz | not yet recorded (needs a frame-tap probe) | [issue #4](https://github.com/luxus/shiv/issues/4) |
+| Scroll — frame budget while flinging | no frame > 16 ms at 144 Hz | not yet recorded (needs a frame-tap probe) | [issue #9](https://github.com/luxus/shiv/issues/9) |
 | Search — keystroke → list updated | < 16 ms on 10k mods | 3.3–3.4 ms steady, 6.6 ms first letter | [lea, 2026-11-21](docs/perf-results.md#baselines--lea-2026-11-20-nix-package-main--81ea837) |
-| Install — 100 MB archive | extraction > 60 % of disk-read speed; cancel responds < 50 ms | 7.4–7.6 GB/s: 51 % of the warm raw read (the copy ceiling), ~110 % of the disk's cold read; cancel 88 µs in the download phase, extraction not cancellable | [lea, 2026-11-21](docs/perf-results.md#install-probe-lea-2026-11-21) |
+| Install — 100 MB archive | extraction > 60 % of cold disk-read speed; download cancel < 50 ms | 7.4–7.6 GB/s: 51 % of the warm raw read (the copy ceiling), ~110 % of the disk's cold read; cancel 88 µs in the download phase, extraction not cancellable | [lea, 2026-11-21](docs/perf-results.md#install-probe-lea-2026-11-21) |
 
-The scroll and search gates, and the AppImage size from a release
-build, are what [issue #1](https://github.com/luxus/shiv/issues/1) is still
-recording on lea; the 45 MB above is the Nix store path, not the AppImage.
-Two core paths are also held by criterion benches, recorded 2026-11-20 on the
-dev workstation (Apple M1 Pro, macOS — not lea, which records its own when
-the suites run there):
+The remaining unrecorded hardware gate is the scroll frame-budget probe
+([issue #9](https://github.com/luxus/shiv/issues/9)). Two core paths are also
+held by criterion benches, recorded 2026-11-20 on the dev workstation (Apple M1
+Pro, macOS — not lea, which records its own when the suites run there):
 
 - **Load order.** `move_mod` and `set_pak`, worst case (every VPK renames):
   294–308 µs per mod, flat from 25 to 99 movable mods — 99 is the engine's
@@ -142,7 +140,7 @@ port story are in [docs/](docs/).
 package yourself from the drafts in [`packaging/aur/`](packaging/aur/):
 
 ```sh
-git clone https://github.com/Siebe-Uy/shiv.git
+git clone https://github.com/luxus/shiv.git
 cd shiv/packaging/aur/shiv-git
 makepkg -si
 ```
