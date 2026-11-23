@@ -16,21 +16,25 @@ struct ArchivedBindings {
     bindings: BTreeMap<String, Vec<String>>,
 }
 
-fn observed_binding(history: &VdataHistoryIndex, row: &str, model: &str) -> bool {
+#[allow(
+    clippy::expect_used,
+    reason = "hero-model-bindings.json is a compile-time asset verified by tests"
+)]
+fn archived_bindings() -> &'static ArchivedBindings {
     static ARCHIVE: OnceLock<ArchivedBindings> = OnceLock::new();
+    ARCHIVE.get_or_init(|| {
+        serde_json::from_slice(include_bytes!("../../assets/hero-model-bindings.json"))
+            .expect("archived hero bindings must be valid")
+    })
+}
+
+fn observed_binding(history: &VdataHistoryIndex, row: &str, model: &str) -> bool {
     history.observed_string_field(HEROES_VDATA_PATH, row, "m_strModelName", model)
-        || ARCHIVE
-            .get_or_init(|| {
-                serde_json::from_slice(include_bytes!("../../assets/hero-model-bindings.json"))
-                    .expect("archived hero bindings must be valid")
-            })
-            .bindings
-            .get(row)
-            .is_some_and(|models| {
-                models
-                    .iter()
-                    .any(|name| resource_path(name) == resource_path(model))
-            })
+        || archived_bindings().bindings.get(row).is_some_and(|models| {
+            models
+                .iter()
+                .any(|name| resource_path(name) == resource_path(model))
+        })
 }
 
 /// Mod model paths that once held the primary model of a current hero, which

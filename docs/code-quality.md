@@ -11,11 +11,10 @@ review.
 
 ## No panics in the libraries or on the event loop
 
-`shiv-core`, `shiv-api`, and `shiv-ui` deny `clippy::unwrap_used` and
-`clippy::expect_used` at the crate root (`shiv-repair` follows in the
-`shiv-repair` hardening PR). A library must not panic on the user's disk, and a
-panic on the Slint event loop takes the whole app down (workers report a panic
-as a message instead — `spawn_worker`).
+`shiv-core`, `shiv-api`, `shiv-repair`, and `shiv-ui` deny `clippy::unwrap_used`
+and `clippy::expect_used` at the crate root. A library must not panic on the
+user's disk, and a panic on the Slint event loop takes the whole app down
+(workers report a panic as a message instead — `spawn_worker`).
 
 The few `expect`s that genuinely cannot fail carry a scoped
 `#[allow(clippy::expect_used, reason = "…")]` on a small function that holds
@@ -134,8 +133,10 @@ backed by `scripts/check_pak_occupancy.py`
 
 Process-lifetime `OnceLock` caches must either stay within an explicit budget
 in `docs/proof-plan.md` or release back to the OS when a batch finishes (`Weak`
-or scope-bound), matching `VdataHistoryIndex::embedded()` and the `shiv-repair`
-resource caches.
+or scope-bound). `VdataHistoryIndex::embedded()` uses `Weak`, and
+`shiv-repair`'s `compiled_resource`, `observed_data`, and
+`animation_contract::cache` caches are released by `CacheScope` when the last
+active `analyze` or `apply` call finishes.
 
 ## A second pair of eyes for every feature
 

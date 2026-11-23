@@ -115,11 +115,10 @@ impl GameBytes {
             return;
         }
         while self.bytes + size > MAX_GAME_BYTES || self.entries.len() >= MAX_GAME_ENTRIES {
-            let (_, removed) = self
-                .entries
-                .pop_front()
-                .expect("cache has an eviction candidate");
-            self.bytes -= removed.capacity();
+            let Some((_, removed)) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(removed.capacity());
         }
         self.bytes += size;
         self.entries.push_back((key, bytes));
@@ -167,6 +166,10 @@ impl ResourceSnapshot {
         })
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "callers pass archive paths obtained from this snapshot's own index"
+    )]
     pub(super) fn archive(&self, path: &Path) -> &VpkArchive {
         self.archives
             .get(path)

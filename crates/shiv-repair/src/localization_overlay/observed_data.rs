@@ -24,7 +24,23 @@ struct ObservationCache {
     bytes: usize,
 }
 
+static CACHE: OnceLock<Mutex<ObservationCache>> = OnceLock::new();
+
+pub(crate) fn clear_cache() {
+    if let Some(cache) = CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
 impl ObservationCache {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.entries.shrink_to_fit();
+        self.bytes = 0;
+    }
+
     fn get(&mut self, path: &str, digest: &[u8; 32]) -> Option<Arc<VdataSnapshot>> {
         let index = self
             .entries
@@ -45,11 +61,10 @@ impl ObservationCache {
             return;
         }
         while self.bytes + size > MAX_BYTES || self.entries.len() >= MAX_ENTRIES {
-            let entry = self
-                .entries
-                .pop_front()
-                .expect("cache has an eviction candidate");
-            self.bytes -= entry.size;
+            let Some(entry) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(entry.size);
         }
         self.bytes += size;
         self.entries.push_back(Entry {
@@ -67,7 +82,6 @@ pub(super) fn record(
     version: u32,
     bytes: &[u8],
 ) -> Result<bool, Error> {
-    static CACHE: OnceLock<Mutex<ObservationCache>> = OnceLock::new();
     // Include the whole resource: even a malformed header must miss. The path
     // scopes learned string bindings; neither build number nor file metadata is
     // sufficient to identify content. Parser changes invalidate on process restart.
@@ -164,5 +178,8 @@ mod tests {
         assert!(cache.get("table", &[1; 32]).is_none());
         assert!(cache.get("table", &[0; 32]).is_some());
         assert!(cache.bytes <= MAX_BYTES);
+        cache.clear();
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.bytes, 0);
     }
 }

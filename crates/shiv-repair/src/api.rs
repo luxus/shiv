@@ -42,7 +42,7 @@ use crate::repair_backup::{
 use crate::vdata_history::{BaselineStatus, VdataHistoryIndex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use shiv_core::addons::{self, InstalledVpk};
+use shiv_core::addons::InstalledVpk;
 use shiv_core::game::{self, GamePaths};
 use shiv_core::sidecar;
 use shiv_core::timestamp::rfc3339_utc_now;
@@ -203,8 +203,13 @@ fn file_name(path: &Path) -> String {
 }
 
 fn installed(addons_dir: &Path) -> Result<Vec<Installed>, RepairError> {
-    // `group` hides listing errors, so surface them first.
-    addons::list(addons_dir).map_err(|error| RepairError::InvalidInput(error.to_string()))?;
+    // `sidecar::group` hides listing errors; probe the directory once instead
+    // of calling `addons::list` twice.
+    match fs::read_dir(addons_dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(RepairError::InvalidInput(error.to_string())),
+    }
     Ok(sidecar::group(addons_dir)
         .into_iter()
         .map(|group| {
@@ -339,21 +344,22 @@ fn applied(paths: &GamePaths, version: Option<u32>, installed: &[Installed]) -> 
     }
 }
 
-/// Whether the package on disk still matches the installed mods and game.
+/// Whether the package on disk is mounted and still matches the installed mods and game.
 pub fn overlay_state(paths: &GamePaths) -> OverlayState {
     let dir = overlay_dir(paths);
     let overlay = dir.join(OVERLAY_VPK_NAME);
     if !overlay.is_file() {
         return OverlayState::Absent;
     }
-    let current = load_receipt(&dir).is_some_and(|receipt| {
-        installed(&paths.addons)
-            .ok()
-            .and_then(|installed| stamps(&installed).ok())
-            .is_some_and(|inputs| {
-                receipt.is_current(game_build(paths).and_then(version), &inputs, &overlay)
-            })
-    });
+    let current = mounts_overlay(paths)
+        && load_receipt(&dir).is_some_and(|receipt| {
+            installed(&paths.addons)
+                .ok()
+                .and_then(|installed| stamps(&installed).ok())
+                .is_some_and(|inputs| {
+                    receipt.is_current(game_build(paths).and_then(version), &inputs, &overlay)
+                })
+        });
     if current {
         OverlayState::Current
     } else {
@@ -623,6 +629,7 @@ fn check_mod(
 /// [`game_build`] (0 when unknown). A mod that cannot be read is reported as
 /// [`RepairStatus::NotChecked`]; an unreadable addons folder yields no rows.
 pub fn analyze(paths: &GamePaths, build_id: u64) -> Vec<ModHealth> {
+    let _cache_scope = localization_overlay::enter_cache_scope();
     let installed = match installed(&paths.addons) {
         Ok(installed) => installed,
         Err(error) => {
@@ -691,6 +698,7 @@ pub fn apply_with(
     mods: &[ModId],
     game_running: impl Fn() -> bool,
 ) -> Result<FixReport, RepairError> {
+    let _cache_scope = localization_overlay::enter_cache_scope();
     // Checked first: nothing may be written while the game runs.
     if game_running() {
         return Err(RepairError::GameRunning);
@@ -780,9 +788,19 @@ pub fn apply_with(
         }
     }
     if result.is_none() {
-        // Nothing to package: no mount is needed and the receipt goes too.
-        new_gameinfo = None;
+        // Nothing to package: remove any leftover mount and receipt too.
         selected.clear();
+        new_gameinfo = match fs::read_to_string(&paths.gameinfo) {
+            Ok(text) => {
+                let updated = gameinfo::without_overlay(&text)?;
+                if updated.is_some() {
+                    gameinfo_permissions = Some(fs::metadata(&paths.gameinfo)?.permissions());
+                }
+                updated
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
     }
 
     // Back up, in one set, every file this call may replace, create or
@@ -796,7 +814,9 @@ pub fn apply_with(
     if new_gameinfo.is_some() {
         targets.push((gameinfo_dir, &gameinfo_name));
     }
-    let writes = result.is_some() || targets.iter().any(|(d, n)| d.join(n).is_file());
+    let writes = result.is_some()
+        || new_gameinfo.is_some()
+        || targets.iter().any(|(d, n)| d.join(n).is_file());
     let backup = if writes {
         let new_dirs: Vec<&Path> = if dir_guard.existed {
             Vec::new()
@@ -936,31 +956,27 @@ pub fn restore_last_with(
             "There is no repair to undo".to_owned(),
         ));
     };
-    // Worked out before anything is written.
-    let mut restored = Vec::new();
-    let mut skip = Vec::new();
-    match undo_mount(paths, &backup)? {
-        MountUndo::RestoreWhole => {}
-        MountUndo::Leave(stored) => skip.push(stored),
-        MountUndo::Rewrite {
-            stored,
-            text,
-            modified,
-        } => {
-            rewrite_gameinfo(paths, &text)?;
-            if let Some(modified) = modified {
-                // Byte-identical to the file before the repair: keep its timestamp too.
-                fs::OpenOptions::new()
-                    .write(true)
-                    .open(&paths.gameinfo)?
-                    .set_modified(modified)?;
-            }
-            restored.push(paths.gameinfo.clone());
-            skip.push(stored);
-        }
-    }
-    let skip: Vec<&Path> = skip.iter().map(PathBuf::as_path).collect();
+    // Plan the mount edit before anything is written, then restore the backup
+    // files before mutating `gameinfo.gi` so a failed restore leaves gameinfo untouched.
+    let mount = undo_mount(paths, &backup)?;
+    let skip_storage = match &mount {
+        MountUndo::RestoreWhole => Vec::new(),
+        MountUndo::Leave(stored) | MountUndo::Rewrite { stored, .. } => vec![stored.clone()],
+    };
+    let skip: Vec<&Path> = skip_storage.iter().map(PathBuf::as_path).collect();
     let outcome = restore_backup_set_except(&backup, &skip)?;
+    let mut restored = Vec::new();
+    if let MountUndo::Rewrite { text, modified, .. } = mount {
+        rewrite_gameinfo(paths, &text)?;
+        if let Some(modified) = modified {
+            // Byte-identical to the file before the repair: keep its timestamp too.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&paths.gameinfo)?
+                .set_modified(modified)?;
+        }
+        restored.push(paths.gameinfo.clone());
+    }
     restored.extend(outcome.restored);
     let consumed = root.join(format!("restored-{}", file_name(&backup)));
     let backup = match fs::rename(&backup, &consumed) {
@@ -1748,8 +1764,39 @@ mod tests {
         let after_first = snapshot_except(&fx.paths.root, Some(&backups));
         apply_with(&fx.paths, &[], || false).unwrap();
         assert!(!fx.overlay().exists());
+        assert!(!has_package(&fx.paths));
         restore_last_with(&fx.paths, || false).unwrap();
+        let bak = gameinfo_backup_path(&fx.paths);
+        assert!(!crate::gameinfo::mounts_overlay(&fs::read_to_string(&bak).unwrap()).unwrap());
+        fs::remove_file(bak).unwrap();
         assert_eq!(snapshot_except(&fx.paths.root, Some(&backups)), after_first);
         assert_eq!(only(&analyze(&fx.paths, 100)).status, RepairStatus::Fixed);
+    }
+
+    #[test]
+    fn empty_apply_unmounts_gameinfo_so_has_package_is_false() {
+        let fx = fixture();
+        apply_with(&fx.paths, &["data".into()], || false).unwrap();
+        assert!(has_package(&fx.paths));
+        apply_with(&fx.paths, &[], || false).unwrap();
+        assert!(!fx.overlay().exists());
+        assert!(!has_package(&fx.paths));
+        assert!(
+            !crate::gameinfo::mounts_overlay(&fs::read_to_string(&fx.paths.gameinfo).unwrap())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn overlay_state_is_stale_when_gameinfo_does_not_mount_overlay() {
+        let fx = fixture();
+        apply_with(&fx.paths, &["data".into()], || false).unwrap();
+        assert_eq!(overlay_state(&fx.paths), OverlayState::Current);
+        let unmounted =
+            crate::gameinfo::without_overlay(&fs::read_to_string(&fx.paths.gameinfo).unwrap())
+                .unwrap()
+                .unwrap();
+        fs::write(&fx.paths.gameinfo, unmounted).unwrap();
+        assert_eq!(overlay_state(&fx.paths), OverlayState::Stale);
     }
 }

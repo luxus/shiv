@@ -200,6 +200,32 @@ fn same_file_path(folder: &Path, name: &str, path: &Path) -> bool {
     }
 }
 
+fn files_equal(a: &Path, b: &Path) -> bool {
+    use std::io::Read as _;
+    let (Ok(meta_a), Ok(meta_b)) = (fs::metadata(a), fs::metadata(b)) else {
+        return false;
+    };
+    if !meta_a.is_file() || !meta_b.is_file() || meta_a.len() != meta_b.len() {
+        return false;
+    }
+    let (Ok(mut fa), Ok(mut fb)) = (fs::File::open(a), fs::File::open(b)) else {
+        return false;
+    };
+    let mut buf_a = [0u8; 64 * 1024];
+    let mut buf_b = [0u8; 64 * 1024];
+    loop {
+        let Ok(na) = fa.read(&mut buf_a) else {
+            return false;
+        };
+        if na == 0 {
+            return fb.read(&mut buf_b[..1]).is_ok_and(|nb| nb == 0);
+        }
+        if fb.read_exact(&mut buf_b[..na]).is_err() || buf_a[..na] != buf_b[..na] {
+            return false;
+        }
+    }
+}
+
 /// A file as a [`create_backup_set`] backup recorded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedFile {
@@ -249,7 +275,10 @@ pub fn restore_backup_set_except(backup: &Path, skip: &[&Path]) -> Result<Restor
     for entry in &index.entries {
         let name = bare_file_name(&entry.name)?;
         let destination = entry.target.join(name);
-        if skip.contains(&destination.as_path()) {
+        if skip
+            .iter()
+            .any(|path| same_file_path(&entry.target, name, path))
+        {
             continue;
         }
         if !entry.existed {
@@ -259,14 +288,14 @@ pub fn restore_backup_set_except(backup: &Path, skip: &[&Path]) -> Result<Restor
             continue;
         }
         let source = backup.join("files").join(name);
-        let saved = fs::read(&source)?;
-        if fs::read(&destination).is_ok_and(|current| current == saved) {
+        if files_equal(&source, &destination) {
             touch.push((destination, entry.modified));
             continue;
         }
         fs::create_dir_all(&entry.target)?;
         let mut file = tempfile::NamedTempFile::new_in(&entry.target)?;
-        std::io::Write::write_all(&mut file, &saved)?;
+        let mut src = fs::File::open(&source)?;
+        std::io::copy(&mut src, &mut file)?;
         fs::set_permissions(file.path(), fs::metadata(&source)?.permissions())?;
         if let Some(modified) = entry.modified {
             file.as_file().set_modified(modified)?;

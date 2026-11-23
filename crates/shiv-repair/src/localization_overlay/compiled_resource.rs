@@ -25,7 +25,23 @@ struct ParseCache {
     bytes: usize,
 }
 
+static CACHE: OnceLock<Mutex<ParseCache>> = OnceLock::new();
+
+pub(crate) fn clear_cache() {
+    if let Some(cache) = CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
 impl ParseCache {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.entries.shrink_to_fit();
+        self.bytes = 0;
+    }
+
     fn get(&mut self, key: &[u8; 32]) -> Option<Arc<Decoded>> {
         let index = self
             .entries
@@ -46,11 +62,10 @@ impl ParseCache {
             return;
         }
         while self.bytes + size > MAX_BYTES || self.entries.len() >= MAX_ENTRIES {
-            let (_, _, removed) = self
-                .entries
-                .pop_front()
-                .expect("cache has an eviction candidate");
-            self.bytes -= removed;
+            let Some((_, _, removed)) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(removed);
         }
         self.bytes += size;
         self.entries.push_back((key, decoded, size));
@@ -83,7 +98,6 @@ fn charge(value: &Kv3Value) -> usize {
 }
 
 pub(super) fn decode(bytes: &[u8], source: &str) -> Result<Arc<Decoded>, Error> {
-    static CACHE: OnceLock<Mutex<ParseCache>> = OnceLock::new();
     let resource = Resource::parse(bytes)
         .map_err(|error| Error::ModInvalid(format!("Failed to parse {source}: {error}")))?;
     let data = resource.data_block().map_err(|error| {
@@ -159,5 +173,8 @@ mod tests {
         cache.insert([255; 32], oversized);
         assert!(cache.get(&[255; 32]).is_none());
         assert!(cache.bytes <= MAX_BYTES);
+        cache.clear();
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.bytes, 0);
     }
 }

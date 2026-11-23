@@ -107,8 +107,10 @@ impl VdataSnapshot {
     pub fn new(file_path: &str, root: &Kv3Value) -> Result<Self, String> {
         let discovery = row_fingerprints(root, FingerprintMode::Discovery)
             .ok_or("Observed VData root is not an object")?;
-        let exact = row_fingerprints(root, FingerprintMode::Exact).expect("root was validated");
-        let fields = field_fingerprints(root, FingerprintMode::Exact).expect("root was validated");
+        let exact = row_fingerprints(root, FingerprintMode::Exact)
+            .ok_or("Observed VData root is not an object")?;
+        let fields = field_fingerprints(root, FingerprintMode::Exact)
+            .ok_or("Observed VData root is not an object")?;
         Ok(Self {
             discovery,
             exact,
@@ -158,6 +160,15 @@ enum FingerprintMode {
     Exact,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "vdata-history.bin is a compile-time asset verified by tests"
+)]
+fn decode_embedded_vdata_history() -> VdataHistoryIndex {
+    VdataHistoryIndex::from_bytes(include_bytes!("../assets/vdata-history.bin"))
+        .expect("embedded VData history index must be valid")
+}
+
 impl VdataHistoryIndex {
     /// String bindings remain exact even in the older numeric history format.
     pub fn observed_string_field(
@@ -187,10 +198,7 @@ impl VdataHistoryIndex {
         if let Some(index) = cached.upgrade() {
             return index;
         }
-        let index = Arc::new(
-            Self::from_bytes(include_bytes!("../assets/vdata-history.bin"))
-                .expect("embedded VData history index must be valid"),
-        );
+        let index = Arc::new(decode_embedded_vdata_history());
         *cached = Arc::downgrade(&index);
         index
     }
@@ -240,27 +248,46 @@ impl VdataHistoryIndex {
             tables.insert(normalize_path(&path), TableHistory { exact, builds });
         }
         if magic == MAGIC {
-            let mut bindings = BTreeMap::<Fingerprint, BTreeSet<Fingerprint>>::new();
             let count = reader.u32()? as usize;
             if count > reader.remaining.len() / 36 {
                 return Err("String binding count exceeds its payload".into());
             }
+            let bindings_start = reader.remaining;
+            observed_strings.reserve(reader.remaining.len() / FINGERPRINT_SIZE);
+            let mut prev_key: Option<Fingerprint> = None;
+            let mut strictly_increasing = true;
             for _ in 0..count {
                 let key = reader.fingerprint()?;
-                let count = reader.u32()? as usize;
-                if count > reader.remaining.len() / FINGERPRINT_SIZE {
+                strictly_increasing &= prev_key.is_none_or(|prev| key > prev);
+                prev_key = Some(key);
+                let value_count = reader.u32()? as usize;
+                if value_count > reader.remaining.len() / FINGERPRINT_SIZE {
                     return Err("String binding value count exceeds its payload".into());
                 }
-                let values = (0..count)
-                    .map(|_| reader.fingerprint())
-                    .collect::<Result<_, _>>()?;
-                bindings.insert(key, values);
+                for _ in 0..value_count {
+                    observed_strings.push((key, reader.fingerprint()?));
+                }
             }
-            observed_strings.extend(
-                bindings
-                    .into_iter()
-                    .flat_map(|(key, values)| values.into_iter().map(move |value| (key, value))),
-            );
+            if !strictly_increasing {
+                // Unsorted or duplicate keys keep last-key-wins map semantics.
+                reader.remaining = bindings_start;
+                observed_strings.clear();
+                let mut deduped: BTreeMap<Fingerprint, BTreeSet<Fingerprint>> = BTreeMap::new();
+                for _ in 0..count {
+                    let key = reader.fingerprint()?;
+                    let value_count = reader.u32()? as usize;
+                    let mut values = BTreeSet::new();
+                    for _ in 0..value_count {
+                        values.insert(reader.fingerprint()?);
+                    }
+                    deduped.insert(key, values);
+                }
+                for (key, values) in deduped {
+                    for value in values {
+                        observed_strings.push((key, value));
+                    }
+                }
+            }
         }
         if !reader.is_empty() {
             return Err("VData history index has trailing bytes".to_string());
@@ -405,7 +432,9 @@ impl VdataHistoryIndex {
         let mut selected_intent = None;
         let candidate_intent =
             (best_indices.len() > 1).then(|| CandidateIntent::new(candidate_root));
-        let last_index = *best_indices.last().expect("a best build exists");
+        let Some(&last_index) = best_indices.last() else {
+            return (None, evidence);
+        };
         for (index, build) in table.builds.iter().enumerate() {
             apply_changes(
                 &mut rows,
@@ -642,8 +671,9 @@ pub fn encode_history_index(tables: &[(String, Vec<(u32, Kv3Value)>)]) -> Result
             let rows = row_fingerprints(root, FingerprintMode::Discovery).ok_or_else(|| {
                 format!("Historical {path} build {version} root is not an object")
             })?;
-            let exact_rows =
-                row_fingerprints(root, FingerprintMode::Exact).expect("root was validated");
+            let exact_rows = row_fingerprints(root, FingerprintMode::Exact).ok_or_else(|| {
+                format!("Historical {path} build {version} root is not an object")
+            })?;
             let fields = field_fingerprints(root, FingerprintMode::Exact).ok_or_else(|| {
                 format!("Historical {path} build {version} root is not an object")
             })?;
@@ -951,15 +981,17 @@ impl<'a> Reader<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, String> {
-        let bytes: [u8; 4] = self.take(4)?.try_into().expect("four bytes requested");
+        let bytes: [u8; 4] = self
+            .take(4)?
+            .try_into()
+            .map_err(|_| "VData history index is truncated".to_string())?;
         Ok(u32::from_le_bytes(bytes))
     }
 
     fn fingerprint(&mut self) -> Result<Fingerprint, String> {
-        Ok(self
-            .take(FINGERPRINT_SIZE)?
+        self.take(FINGERPRINT_SIZE)?
             .try_into()
-            .expect("fingerprint-sized slice requested"))
+            .map_err(|_| "VData history index is truncated".to_string())
     }
 
     fn string(&mut self) -> Result<String, String> {

@@ -104,10 +104,10 @@ To verify any number: its commands are recorded beside it in
 
 The rules are enforced by the build, not by review:
 
-- **No panics in the libraries or on the event loop.** `shiv-core`, `shiv-api`
-  and `shiv-ui` deny `clippy::unwrap_used` and `clippy::expect_used` at the
-  crate root; the few `expect`s that cannot fail carry a scoped `#[allow]`
-  naming the reason.
+- **No panics in the libraries or on the event loop.** `shiv-core`, `shiv-api`,
+  `shiv-repair` and `shiv-ui` deny `clippy::unwrap_used` and
+  `clippy::expect_used` at the crate root; the few `expect`s that cannot fail
+  carry a scoped `#[allow]` naming the reason.
 - **Nothing blocks the event loop; no worker polls.**
   [`crates/shiv-ui/tests/guards.rs`](crates/shiv-ui/tests/guards.rs) reads the
   controller sources and fails the suite on file, network, dialog or sleep

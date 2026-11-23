@@ -69,8 +69,10 @@ impl<'a> HeroRebaser<'a> {
         if tied {
             return Ok(None);
         }
-        let current_donor = object_get_case_insensitive(self.current_rows, donor_name)
-            .expect("donor presence was checked");
+        let current_donor =
+            object_get_case_insensitive(self.current_rows, donor_name).ok_or_else(|| {
+                Error::ModInvalid(format!("Missing current hero row for {donor_name}"))
+            })?;
         let current_encoding = encoding_get_case_insensitive(self.current_encodings, donor_name)
             .ok_or_else(|| {
                 Error::ModInvalid(format!("Missing current hero encoding for {donor_name}"))
