@@ -387,6 +387,13 @@ fn part_urls_resolve_only_on_the_site() {
         complock::part_url("https://example.com/x.z").as_deref(),
         Some("https://example.com/x.z")
     );
+    assert_eq!(
+        complock::part_url("http://127.0.0.1:8080/x.z").as_deref(),
+        Some("http://127.0.0.1:8080/x.z")
+    );
+    assert_eq!(complock::part_url("http://example.com/x.z"), None);
+    assert_eq!(complock::part_url("http://127.0.0.1@evil.com/x.z"), None);
+    assert_eq!(complock::part_url("//evil.com/x.z"), None);
     assert_eq!(complock::part_url("dl/pack/hud.z"), None);
     assert_eq!(complock::part_url(""), None);
 }
@@ -723,7 +730,8 @@ fn a_pak_with_the_parts_bytes_is_reused_under_any_number() {
     };
     std::fs::write(addons.join("pak12_dir.vpk"), bytes).expect("pak12");
     std::fs::write(addons.join("pak12_000.vpk"), b"chunk").expect("chunk");
-    let reused = complock::claim_reusable(&addons, &part)
+    let guard = shiv_core::install::InstallGuard::acquire(&addons).expect("install guard");
+    let reused = complock::claim_reusable(&addons, &part, guard.permit())
         .expect("scan")
         .expect("the bytes are on disk");
     assert_eq!(reused.moved_from.as_deref(), Some("pak12_dir.vpk"));
@@ -752,7 +760,7 @@ fn a_pak_with_the_parts_bytes_is_reused_under_any_number() {
     std::fs::write(addons.join(&part.name), b"someone else").expect("occupant");
     std::fs::write(addons.join("pak03_dir.vpk"), bytes).expect("other number");
     std::fs::write(addons.join("pak03_000.vpk"), b"other chunk").expect("other chunk");
-    let blocked = complock::claim_reusable(&addons, &part)
+    let blocked = complock::claim_reusable(&addons, &part, guard.permit())
         .expect("scan")
         .expect("the bytes are still on disk");
     assert!(blocked.moved_from.is_none());
@@ -768,6 +776,51 @@ fn a_pak_with_the_parts_bytes_is_reused_under_any_number() {
         std::fs::read(addons.join("pak03_000.vpk")).expect("chunk stays"),
         b"other chunk"
     );
+
+    // Unsafe traversal part.name is refused before touching disk.
+    let evil = complock::Part {
+        name: "../escape.vpk".into(),
+        ..part.clone()
+    };
+    assert_eq!(
+        complock::locate_reusable(&addons, &evil)
+            .expect_err("traversal part.name refused")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    // A VPK owned by an existing sidecar is never silently renamed.
+    std::fs::remove_file(addons.join(&part.name)).expect("free pak01");
+    std::fs::remove_file(addons.join("pak01_000.vpk")).expect("free pak01 chunk");
+    shiv_core::sidecar::remove(&addons, "complock-hud").expect("remove old sidecar");
+    shiv_core::sidecar::write(
+        &addons,
+        &shiv_core::sidecar::Sidecar {
+            mod_id: "owner".into(),
+            name: "Owner".into(),
+            version: None,
+            thumbnail_url: None,
+            vpks: vec!["pak03_dir.vpk".into()],
+            nsfw: None,
+            hero: None,
+            category: None,
+            notes: None,
+            source: None,
+            stamps: None,
+            unverified: None,
+            generated: None,
+        },
+    )
+    .expect("write owner sidecar");
+    let owned = complock::claim_reusable(&addons, &part, guard.permit())
+        .expect("scan")
+        .expect("still found");
+    assert!(
+        owned.moved_from.is_none(),
+        "a VPK owned by a sidecar must not be renamed"
+    );
+    assert!(addons.join("pak03_dir.vpk").is_file());
+    assert!(!addons.join(&part.name).exists());
 }
 
 fn manifest(rel: &str) -> PathBuf {

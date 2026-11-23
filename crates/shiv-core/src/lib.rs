@@ -1,11 +1,6 @@
 //! Shiv core: game location and the addons model.
 
-// A library must not panic on the user's disk: every failure is a value.
-// The few `expect`s that cannot fail carry a scoped `#[allow]` naming the
-// reason (docs/code-quality.md).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
-// Unit tests inside src may unwrap freely; the integration tests in
-// tests/ are their own crates and are unaffected either way.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod addons;
@@ -13,6 +8,7 @@ pub mod alloc_count;
 pub mod complock;
 pub mod crosshair;
 pub mod drift;
+mod fs_util;
 pub mod game;
 pub mod generated;
 pub mod health;

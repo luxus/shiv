@@ -215,8 +215,12 @@ pub fn revision_in(spec: &Spec, root: &Path) -> Result<String, Error> {
     let dir = root.join(spec.mod_id());
     match spec {
         Spec::Hitsound { name, body, head } => {
-            let body_pcm = read_pcm(&dir.join(&body.pcm))?;
-            let head_pcm = read_pcm(&dir.join(&head.pcm))?;
+            let body_path = crate::fs_util::safe_child(&dir, &body.pcm)
+                .ok_or_else(|| Error::Invalid(format!("unsafe clip path {}", body.pcm)))?;
+            let head_path = crate::fs_util::safe_child(&dir, &head.pcm)
+                .ok_or_else(|| Error::Invalid(format!("unsafe clip path {}", head.pcm)))?;
+            let body_pcm = read_pcm(&body_path)?;
+            let head_pcm = read_pcm(&head_path)?;
             let inputs = stored_hitsound(name, body, &body_pcm, head, &head_pcm);
             Ok(version_of(&hitsound_template_bytes(), &inputs))
         }
@@ -353,10 +357,10 @@ pub fn classify(remote: &RemoteBuilders<'_>) -> Watch {
     if pinned_logic != fetched_logic {
         changed.push("hit_builder.js".into());
     }
-    if sha256(templates::LAME_JS.as_bytes()) != sha256(remote.lame) {
+    if templates::LAME_JS.as_bytes() != remote.lame {
         changed.push("lame.min.js".into());
     }
-    if sha256(templates::HPBARS_JS.as_bytes()) != sha256(remote.hpbars_js.as_bytes()) {
+    if templates::HPBARS_JS.as_bytes() != remote.hpbars_js.as_bytes() {
         changed.push("hp_hpbars.js".into());
     }
     if !changed.is_empty() {
@@ -365,7 +369,7 @@ pub fn classify(remote: &RemoteBuilders<'_>) -> Watch {
     let pinned_tpl = hitsound_template_bytes();
     let fetched_tpl = templates::hitsound_template(&fetched).unwrap_or_default();
     let tpl_changed = pinned_tpl != fetched_tpl;
-    let base_changed = sha256(templates::BASE_PAK) != sha256(remote.base_pak);
+    let base_changed = templates::BASE_PAK != remote.base_pak;
     if !tpl_changed && !base_changed {
         return Watch::Current;
     }
@@ -404,10 +408,6 @@ fn place(
         path: dir.clone(),
         source,
     })?;
-    let names = ["body.f32", "head.f32"];
-    for (name, samples) in names.iter().zip(samples.iter()) {
-        write_pcm(&dir.join(name), samples)?;
-    }
     let staging = dir.join("build.vpk");
     std::fs::write(&staging, pak).map_err(|source| Error::Io {
         path: staging.clone(),
@@ -430,6 +430,10 @@ fn place(
             &game_running,
             permit,
         )?;
+        let names = ["body.f32", "head.f32"];
+        for (name, samples) in names.iter().zip(samples.iter()) {
+            write_pcm(&dir.join(name), samples)?;
+        }
         side.generated =
             Some(serde_json::to_value(spec).map_err(|e| Error::Invalid(e.to_string()))?);
         side.version = Some(version.to_owned());
@@ -437,13 +441,15 @@ fn place(
         sidecar::write(&paths.addons, &side)?;
         Ok(side)
     };
-    let side = install_once(permit)?;
+    let result = install_once(permit);
     let _ = std::fs::remove_file(&staging);
-    Ok(side)
+    result
 }
 
 fn load_clip(dir: &Path, clip: &spec::Clip) -> Result<ClipIn, Error> {
-    let bytes = read_pcm(&dir.join(&clip.pcm))?;
+    let path = crate::fs_util::safe_child(dir, &clip.pcm)
+        .ok_or_else(|| Error::Invalid(format!("unsafe clip path {}", clip.pcm)))?;
+    let bytes = read_pcm(&path)?;
     if !bytes.len().is_multiple_of(4) {
         return Err(Error::Invalid(format!("{} is not a sample file", clip.pcm)));
     }
@@ -620,12 +626,6 @@ fn pcm_root() -> Result<PathBuf, Error> {
     crate::settings_dir()
         .map(|dir| dir.join("complock-generated"))
         .ok_or(Error::NoSettings)
-}
-
-fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher.finalize().into()
 }
 
 fn hex(bytes: &[u8]) -> String {

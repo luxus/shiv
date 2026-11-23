@@ -140,8 +140,21 @@ const LOCK_NB: i32 = 4;
 #[cfg(unix)]
 const LOCK_UN: i32 = 8;
 
+#[cfg(unix)]
 fn lock_busy(err: &io::Error) -> bool {
-    err.kind() == io::ErrorKind::WouldBlock || matches!(err.raw_os_error(), Some(11 | 33 | 35))
+    // EAGAIN / EWOULDBLOCK: 11 on Linux, 35 on macOS/BSD.
+    err.kind() == io::ErrorKind::WouldBlock || matches!(err.raw_os_error(), Some(11 | 35))
+}
+
+#[cfg(windows)]
+fn lock_busy(err: &io::Error) -> bool {
+    // ERROR_LOCK_VIOLATION = 33.
+    err.kind() == io::ErrorKind::WouldBlock || err.raw_os_error() == Some(33)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn lock_busy(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::WouldBlock
 }
 
 #[cfg(unix)]
@@ -635,22 +648,59 @@ fn place_in_slots(
     if !occupants.is_empty() && choice.is_none() {
         return Err(InstallError::NeedsChoice(occupants));
     }
-    let replaced = if choice == Some(SlotChoice::Replace) {
-        let look_alikes: Vec<SlotOccupant> = occupants
+
+    // Check free capacity above `reserved` before deleting any look-alike
+    // occupants so Replace fails atomically on AddonsFull.
+    let mut used = crate::pak_slot::occupied(addons_dir)?;
+    let look_alikes: Vec<SlotOccupant> = if choice == Some(SlotChoice::Replace) {
+        occupants
             .iter()
             .filter(|occupant| occupant.look_alike)
             .cloned()
-            .collect();
-        let names = remove_occupants(addons_dir, &mods, &look_alikes)?;
-        mods = sidecar::group(addons_dir);
-        names
+            .collect()
     } else {
         Vec::new()
     };
+    let replaced_slots: BTreeSet<u32> = look_alikes.iter().map(|o| o.slot).collect();
+    let mut above_slots: Vec<u32> = reserved
+        .checked_add(1)
+        .map(|start| {
+            (start..=addons::PAK_CAPACITY)
+                .filter(|n| !used.contains(n) && !claimed.contains(n))
+                .collect()
+        })
+        .unwrap_or_default();
+    let to_move_count = mods
+        .iter()
+        .flat_map(|m| &m.vpks)
+        .filter(|v| {
+            v.pak
+                .is_some_and(|n| claimed.contains(&n) && !replaced_slots.contains(&n))
+        })
+        .count();
+    let unslotted_count = wanted.iter().filter(|s| s.is_none()).count();
+    if to_move_count + unslotted_count > above_slots.len() {
+        return Err(InstallError::AddonsFull);
+    }
+
+    let replaced = if look_alikes.is_empty() {
+        Vec::new()
+    } else {
+        let names = remove_occupants(addons_dir, &mods, &look_alikes)?;
+        mods = sidecar::group(addons_dir);
+        used = crate::pak_slot::occupied(addons_dir)?;
+        above_slots = reserved
+            .checked_add(1)
+            .map(|start| {
+                (start..=addons::PAK_CAPACITY)
+                    .filter(|n| !used.contains(n) && !claimed.contains(n))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names
+    };
     let foreign_slots: BTreeSet<u32> = occupants.iter().map(|o| o.slot).collect();
-    let mut used = crate::pak_slot::occupied(addons_dir)?;
-    used.extend(&claimed);
-    let mut above = (reserved + 1..=addons::PAK_CAPACITY).filter(|n| !used.contains(n));
+    let mut above = above_slots.into_iter();
     let mut moves: Vec<(&addons::InstalledVpk, u32)> = Vec::new();
     let mut moved = Vec::new();
     for vpk in mods.iter().flat_map(|m| &m.vpks) {
@@ -769,9 +819,9 @@ fn remove_occupants(
         let mut dropped = false;
         for vpk in &m.vpks {
             if vpk.pak.is_some_and(|n| slots.contains(&n)) {
-                remove_pak_file(&vpk.file)?;
+                remove_if_exists(&vpk.file)?;
                 for chunk in &vpk.chunks {
-                    remove_pak_file(chunk)?;
+                    remove_if_exists(chunk)?;
                 }
                 if let Some(name) = vpk.file.file_name().and_then(|n| n.to_str()) {
                     replaced.push(name.to_owned());
@@ -786,9 +836,30 @@ fn remove_occupants(
             continue;
         }
         let mut updated = sidecar.clone();
-        updated
+        let keep: Vec<bool> = sidecar
             .vpks
-            .retain(|name| parse_pak(name).is_none_or(|(n, _)| !slots.contains(&n)));
+            .iter()
+            .map(|name| parse_pak(name).is_none_or(|(n, _)| !slots.contains(&n)))
+            .collect();
+        updated.vpks = sidecar
+            .vpks
+            .iter()
+            .zip(&keep)
+            .filter(|&(_, &k)| k)
+            .map(|(name, _)| name.clone())
+            .collect();
+        if let Some(stamps) = &sidecar.stamps
+            && stamps.len() == sidecar.vpks.len()
+        {
+            updated.stamps = Some(
+                stamps
+                    .iter()
+                    .zip(&keep)
+                    .filter(|&(_, &k)| k)
+                    .map(|(&stamp, _)| stamp)
+                    .collect(),
+            );
+        }
         if updated.vpks.is_empty() {
             sidecar::remove(addons_dir, &sidecar.mod_id)?;
         } else if updated.vpks.len() != sidecar.vpks.len() {
@@ -796,14 +867,6 @@ fn remove_occupants(
         }
     }
     Ok(replaced)
-}
-
-fn remove_pak_file(path: &Path) -> Result<(), InstallError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(io_err(path)(e)),
-    }
 }
 
 /// The shared tail of the install paths: give the staged VPKs free pak
@@ -881,7 +944,7 @@ fn place_numbered(
         nsfw: Some(meta.nsfw),
         hero: meta.hero,
         category: meta.category,
-        notes: None,
+        notes: old.as_ref().and_then(|s| s.notes.clone()),
         source: None,
         stamps: Some(stamps),
         unverified: None,
@@ -1164,8 +1227,17 @@ fn allocate_paks(addons_dir: &Path, count: usize) -> Result<Vec<u32>, InstallErr
 }
 
 fn move_into_place(from: &Path, to: &Path) -> Result<(), InstallError> {
-    let disabled = PathBuf::from(format!("{}{DISABLED_EXT}", to.display()));
-    if to.exists() || disabled.exists() {
+    let counterpart = match to.file_name().and_then(|n| n.to_str()) {
+        Some(name) if let Some(enabled) = name.strip_suffix(DISABLED_EXT) => {
+            to.with_file_name(enabled)
+        }
+        _ => {
+            let mut os = to.as_os_str().to_os_string();
+            os.push(DISABLED_EXT);
+            PathBuf::from(os)
+        }
+    };
+    if to.exists() || counterpart.exists() {
         return Err(io_err(to)(io::Error::from(io::ErrorKind::AlreadyExists)));
     }
     fs::rename(from, to).map_err(io_err(to))
@@ -1410,6 +1482,9 @@ fn copy_vpk(file: &Path, dest: &Path, budget: &mut Budget) -> Result<(), Install
     let mut sources = vec![(file.to_path_buf(), name.clone())];
     if let (Some((number, PakKind::Dir)), Some(dir)) = (parse_pak(&name), file.parent()) {
         for entry in fs::read_dir(dir).map_err(io_err(dir))?.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
             let Some(n) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
@@ -1565,6 +1640,10 @@ fn extract_rar(
     while let Some(header) = open.read_header()? {
         let name = header.entry().filename.to_string_lossy().into_owned();
         open = if header.entry().is_file() && is_vpk_name(&name) {
+            if header.entry().unpacked_size > budget.remaining {
+                budget.exceeded = true;
+                return Err(InstallError::TooLarge);
+            }
             let target = dest.join(relative_entry_path(&name, false)?);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(io_err(parent))?;
@@ -1982,12 +2061,38 @@ pub fn replace_local_with(
     }
 
     let source = source_name(file);
+    let stamps_for = |vpks: &[String]| -> Result<Option<Vec<sidecar::Stamp>>, InstallError> {
+        let mut out = Vec::with_capacity(vpks.len());
+        for name in vpks {
+            let Some(files) = plan.placed_by_name.get(name) else {
+                return Ok(None);
+            };
+            out.push(sidecar::Stamp::of_files(
+                files.iter().map(PathBuf::as_path),
+            )?);
+        }
+        Ok(Some(out))
+    };
     let sc = if let Some(mut sc) = target.sidecar.clone() {
         sc.source = source;
+        sc.stamps = match stamps_for(&sc.vpks) {
+            Ok(s) => s,
+            Err(e) => {
+                undo(&retired, &placed);
+                return Err(e);
+            }
+        };
         sc
     } else {
         let mut vpks = plan.dir_names;
         vpks.sort();
+        let stamps = match stamps_for(&vpks) {
+            Ok(s) => s,
+            Err(e) => {
+                undo(&retired, &placed);
+                return Err(e);
+            }
+        };
         Sidecar {
             mod_id: sidecar::new_local_id(addons_dir),
             name: file_stem(file),
@@ -1999,7 +2104,7 @@ pub fn replace_local_with(
             category: None,
             notes: None,
             source,
-            stamps: None,
+            stamps,
             unverified: None,
             generated: None,
         }
@@ -2021,6 +2126,7 @@ struct ReplacementPlan {
     place: Vec<(PathBuf, PathBuf)>,
     retire: Vec<PathBuf>,
     dir_names: Vec<String>,
+    placed_by_name: BTreeMap<String, Vec<PathBuf>>,
 }
 
 /// The swap plan pairing each staged VPK with the old slot it takes over,
@@ -2040,6 +2146,7 @@ fn plan_replacement(
         place: Vec::new(),
         retire: Vec::new(),
         dir_names: Vec::new(),
+        placed_by_name: BTreeMap::new(),
     };
     for (new, old) in staged.iter().zip(old) {
         let dir = old.file.parent().ok_or(InstallError::NotLocal)?;
@@ -2053,10 +2160,9 @@ fn plan_replacement(
             return Err(InstallError::NotLocal);
         }
         let suffix = if old.enabled { "" } else { DISABLED_EXT };
-        plan.place.push((
-            new.file.clone(),
-            dir.join(format!("{enabled_name}{suffix}")),
-        ));
+        let dest_dir = dir.join(format!("{enabled_name}{suffix}"));
+        let mut group = vec![dest_dir.clone()];
+        plan.place.push((new.file.clone(), dest_dir));
         if !new.chunks.is_empty() {
             // Chunk files are named after the pak number.
             let Some(number) = old.pak else {
@@ -2065,12 +2171,12 @@ fn plan_replacement(
                 )));
             };
             for (digits, chunk) in &new.chunks {
-                plan.place.push((
-                    chunk.clone(),
-                    dir.join(format!("pak{number:02}_{digits}.vpk{suffix}")),
-                ));
+                let dest_chunk = dir.join(format!("pak{number:02}_{digits}.vpk{suffix}"));
+                group.push(dest_chunk.clone());
+                plan.place.push((chunk.clone(), dest_chunk));
             }
         }
+        plan.placed_by_name.insert(enabled_name.to_owned(), group);
         plan.dir_names.push(enabled_name.to_owned());
         plan.retire.push(old.file.clone());
         plan.retire.extend(old.chunks.iter().cloned());

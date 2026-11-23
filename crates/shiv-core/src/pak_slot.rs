@@ -5,15 +5,50 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io;
 use std::path::Path;
 
-use crate::addons::{self, AddonsError, parse_pak};
+use crate::addons::{self, AddonsError, parse_pak, split_name};
 use crate::sidecar;
 
+fn file_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
+    let io_err = |source| AddonsError::Io {
+        path: addons.to_path_buf(),
+        source,
+    };
+    let entries = match fs::read_dir(addons) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_err(e)),
+    };
+    let mut used = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_err)?;
+        if !entry.file_type().map_err(io_err)?.is_file() {
+            continue;
+        }
+        if let Some(n) = entry.file_name().to_str()
+            && let Some((stem, _)) = split_name(n)
+            && let Some((num, _)) = parse_pak(stem)
+        {
+            used.push(num);
+        }
+    }
+    Ok(used)
+}
+
 pub(crate) fn occupied(addons: &Path) -> Result<BTreeSet<u32>, AddonsError> {
-    let mut used: BTreeSet<u32> = addons::file_pak_numbers(addons)?.into_iter().collect();
-    let Ok(entries) = fs::read_dir(addons.join(sidecar::DIR)) else {
-        return Ok(used);
+    let mut used: BTreeSet<u32> = file_pak_numbers(addons)?.into_iter().collect();
+    let sidecar_dir = addons.join(sidecar::DIR);
+    let entries = match fs::read_dir(&sidecar_dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(used),
+        Err(source) => {
+            return Err(AddonsError::Io {
+                path: sidecar_dir,
+                source,
+            });
+        }
     };
     for entry in entries.flatten() {
         let name = entry.file_name();

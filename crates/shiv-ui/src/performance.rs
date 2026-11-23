@@ -334,8 +334,8 @@ fn run_pack_install(
     let mut reused_moves = Vec::new();
     let claim_free = |in_place: &mut Vec<String>, reused_moves: &mut Vec<String>| {
         for part in &free_names {
-            let reused =
-                complock::claim_reusable(&paths.addons, part).map_err(|e| fail(e.to_string()))?;
+            let reused = complock::claim_reusable(&paths.addons, part, guard.permit())
+                .map_err(|e| fail(e.to_string()))?;
             if let Some(reused) = reused {
                 if let Some(from) = reused.moved_from {
                     reused_moves.push(format!("{from} to {}", part.name));

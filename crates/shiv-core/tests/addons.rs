@@ -212,3 +212,22 @@ fn set_enabled_rolls_back_when_a_chunk_target_exists() {
     assert!(!dir.path().join("pak01_dir.vpk.disabled").exists());
     assert!(!dir.path().join("pak01_000.vpk.disabled").exists());
 }
+
+#[test]
+fn pak00_is_not_treated_as_a_valid_pak_number() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "pak00_dir.vpk");
+    touch(dir.path(), "pak01_dir.vpk");
+    touch(dir.path(), "pak99_dir.vpk");
+    let listed = addons::list(dir.path()).unwrap();
+    let pak_of = |name: &str| {
+        listed
+            .iter()
+            .find(|v| v.file.file_name().and_then(|n| n.to_str()) == Some(name))
+            .unwrap()
+            .pak
+    };
+    assert_eq!(pak_of("pak00_dir.vpk"), None);
+    assert_eq!(pak_of("pak01_dir.vpk"), Some(1));
+    assert_eq!(pak_of("pak99_dir.vpk"), Some(99));
+}

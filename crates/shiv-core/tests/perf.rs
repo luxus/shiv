@@ -403,3 +403,16 @@ fn bom_and_already_commented_keys_are_kept() {
     );
     assert!(read(&paths.gameinfo).starts_with('\u{feff}'));
 }
+
+#[test]
+fn apply_refuses_while_vanilla_is_active_and_values_equal_handles_negative_zero() {
+    assert!(perf::values_equal("-0", "0"));
+    assert!(perf::values_equal("-0.0", "0"));
+
+    let (_d, paths) = fixture(GAMEINFO);
+    shiv_core::vanilla::enable(&paths).unwrap();
+    let before = read(&paths.gameinfo);
+    let err = perf::apply(&paths, &[entry(&["ConVars", "r_ssao"], Some("0"))]).unwrap_err();
+    assert!(matches!(err, PerfError::VanillaActive), "{err:?}");
+    assert_eq!(read(&paths.gameinfo), before);
+}

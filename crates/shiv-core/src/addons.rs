@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 /// Extension appended to a pak file's name while it is disabled.
-const DISABLED_EXT: &str = ".disabled";
+pub(crate) const DISABLED_EXT: &str = ".disabled";
 /// The engine loads at most 99 paks per search path.
 pub const PAK_CAPACITY: u32 = 99;
 
@@ -44,14 +44,17 @@ pub(crate) enum PakKind {
 }
 
 /// Parse an enabled-form file name `pakNN_dir.vpk` / `pakNN_<digits>.vpk`
-/// (case-sensitive, lowercase `pak`).
+/// (case-sensitive, lowercase `pak`, `01..=99`).
 pub(crate) fn parse_pak(stem: &str) -> Option<(u32, PakKind)> {
     let rest = stem.strip_prefix("pak")?.strip_suffix(".vpk")?;
     let (num, tail) = rest.split_once('_')?;
     if num.len() != 2 || !num.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let number = num.parse().ok()?;
+    let number: u32 = num.parse().ok()?;
+    if !(1..=PAK_CAPACITY).contains(&number) {
+        return None;
+    }
     if tail == "dir" {
         Some((number, PakKind::Dir))
     } else if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
@@ -62,7 +65,7 @@ pub(crate) fn parse_pak(stem: &str) -> Option<(u32, PakKind)> {
 }
 
 /// Split `*.vpk[.disabled]` into (enabled-form stem, enabled).
-fn split_name(name: &str) -> Option<(&str, bool)> {
+pub(crate) fn split_name(name: &str) -> Option<(&str, bool)> {
     let (stem, enabled) = match name.strip_suffix(DISABLED_EXT) {
         Some(s) => (s, false),
         None => (name, true),
@@ -220,6 +223,15 @@ pub fn set_enabled(vpk: &InstalledVpk, enabled: bool) -> Result<(), AddonsError>
 /// target must be free or itself be moved; renames already done are undone if
 /// a later one fails.
 pub(crate) fn apply_moves(moves: &[(PathBuf, PathBuf)]) -> Result<(), AddonsError> {
+    let sources: std::collections::HashSet<&Path> =
+        moves.iter().map(|(f, _)| f.as_path()).collect();
+    let mut targets: std::collections::HashSet<&Path> =
+        std::collections::HashSet::with_capacity(moves.len());
+    let tmp = |p: &Path| {
+        let mut name = p.as_os_str().to_owned();
+        name.push(".reorder");
+        PathBuf::from(name)
+    };
     for (from, to) in moves {
         if !from.exists() {
             return Err(AddonsError::Io {
@@ -227,15 +239,14 @@ pub(crate) fn apply_moves(moves: &[(PathBuf, PathBuf)]) -> Result<(), AddonsErro
                 source: io::Error::from(io::ErrorKind::NotFound),
             });
         }
-        if to.exists() && !moves.iter().any(|(f, _)| f == to) {
+        if !targets.insert(to.as_path()) || (to.exists() && !sources.contains(to.as_path())) {
             return Err(AddonsError::TargetExists { target: to.clone() });
         }
+        let temp = tmp(from);
+        if temp.exists() {
+            return Err(AddonsError::TargetExists { target: temp });
+        }
     }
-    let tmp = |p: &Path| {
-        let mut name = p.as_os_str().to_owned();
-        name.push(".reorder");
-        PathBuf::from(name)
-    };
     let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut step = |from: PathBuf, to: PathBuf| match fs::rename(&from, &to) {
         Ok(()) => {
@@ -265,7 +276,6 @@ fn renumbered(file: &Path, number: u32) -> Option<PathBuf> {
     let name = file.file_name()?.to_str()?;
     let (stem, _) = split_name(name)?;
     parse_pak(stem)?;
-    // `pakNN` is always the first five bytes (checked by `parse_pak`).
     Some(file.with_file_name(format!("pak{number:02}{}", name.get(5..)?)))
 }
 
@@ -322,29 +332,6 @@ pub(crate) fn plan_renumber(
         }
     }
     Ok(plan)
-}
-
-pub(crate) fn file_pak_numbers(addons: &Path) -> Result<Vec<u32>, AddonsError> {
-    let io_err = |source| AddonsError::Io {
-        path: addons.to_path_buf(),
-        source,
-    };
-    let entries = match fs::read_dir(addons) {
-        Ok(e) => e,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io_err(e)),
-    };
-    let mut used = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(io_err)?;
-        if let Some(n) = entry.file_name().to_str()
-            && let Some((stem, _)) = split_name(n)
-            && let Some((num, _)) = parse_pak(stem)
-        {
-            used.push(num);
-        }
-    }
-    Ok(used)
 }
 
 #[allow(

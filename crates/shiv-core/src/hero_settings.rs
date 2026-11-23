@@ -46,8 +46,8 @@ impl Parser<'_> {
             self.position += rest.len() - trimmed.len();
             if trimmed.starts_with("//") {
                 self.position += trimmed.find('\n').unwrap_or(trimmed.len());
-            } else if trimmed.starts_with("/*") {
-                self.position += trimmed.find("*/").ok_or(Invalid)? + 2;
+            } else if let Some(rest) = trimmed.strip_prefix("/*") {
+                self.position += rest.find("*/").ok_or(Invalid)? + 4;
             } else {
                 break;
             }

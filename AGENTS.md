@@ -36,8 +36,8 @@ Pick one issue or one coherent concern per PR, with its own proof.
 
 | Rule | Enforcer |
 | --- | --- |
-| A new pak number comes from `pak_slot::occupied` / `pak_slot::free_slots`, never from files alone | `scripts/check_pak_occupancy.py` (`cargo test -p shiv-core --test pak_occupancy`) |
-| Every pak rename or slot allocation takes `InstallPermit`, minted only by `InstallGuard`. `addons::next_pak` is `pub(crate)` | Type system + `crates/shiv-core/tests/install_permit.rs` |
+| A new pak number comes from `pak_slot::occupied` / `pak_slot::free_slots`, never from files alone | Private `file_pak_numbers` inside `pak_slot.rs` + `scripts/check_pak_occupancy.py` (`cargo test -p shiv-core --test pak_occupancy`) |
+| Every pak rename or slot allocation takes `InstallPermit`, minted only by `InstallGuard` (including `complock::claim_reusable`). `addons::next_pak` is `pub(crate)` | Type system + `crates/shiv-core/tests/install_permit.rs` |
 | No blocking I/O on the Slint event loop; workers park on a `Condvar`, never poll | `crates/shiv-ui/tests/guards.rs` |
 | No `unwrap`/`expect` in production code of `shiv-core`, `shiv-api`, `shiv-ui` | `#![deny(clippy::unwrap_used, clippy::expect_used)]` at each crate root |
 | CI bench diffs fail closed on missing baselines or >25% significant regressions | `.github/workflows/perf.yml` + `scripts/bench_diff_summary.py` |

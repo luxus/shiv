@@ -1082,3 +1082,34 @@ fn set_pak_invariants_hold_across_random_configurations() {
         }
     }
 }
+
+#[test]
+fn renumber_refuses_bad_duplicate_and_stale_targets() {
+    let d = tempdir().unwrap();
+    touch(d.path(), &["pak01_dir.vpk", "pak02_dir.vpk"]);
+    sidecar::write(d.path(), &sc("a", &["pak01_dir.vpk"])).unwrap();
+    sidecar::write(d.path(), &sc("b", &["pak02_dir.vpk"])).unwrap();
+    // Stale sidecar claiming pak05 with no file on disk.
+    sidecar::write(d.path(), &sc("stale", &["pak05_dir.vpk"])).unwrap();
+    let mods = sidecar::group(d.path());
+    let guard = shiv_core::install::InstallGuard::acquire(d.path()).unwrap();
+    let v0 = &mods[0].vpks[0];
+    let v1 = &mods[1].vpks[0];
+
+    assert!(matches!(
+        sidecar::renumber(d.path(), &mods, &[(v0, 0)], guard.permit()),
+        Err(SidecarError::BadPak(0))
+    ));
+    assert!(matches!(
+        sidecar::renumber(d.path(), &mods, &[(v0, 100)], guard.permit()),
+        Err(SidecarError::BadPak(100))
+    ));
+    assert!(matches!(
+        sidecar::renumber(d.path(), &mods, &[(v0, 4), (v1, 4)], guard.permit()),
+        Err(SidecarError::DuplicatePak(4))
+    ));
+    assert!(matches!(
+        sidecar::renumber(d.path(), &mods, &[(v0, 5)], guard.permit()),
+        Err(SidecarError::StalePak(5))
+    ));
+}

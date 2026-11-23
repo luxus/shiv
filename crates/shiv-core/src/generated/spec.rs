@@ -228,7 +228,11 @@ impl Control {
             Self::Choice { options, .. } => options
                 .contains(&text)
                 .then(|| Value::String(text.to_owned())),
-            Self::Bool { .. } => Some(Value::Bool(text == "true")),
+            Self::Bool { .. } => match text {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                _ => None,
+            },
             Self::Color { .. } => {
                 let bytes = text.as_bytes();
                 if bytes.len() == 7

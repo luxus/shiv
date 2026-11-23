@@ -28,6 +28,13 @@ fn set_pak_before_6c5beb5(
 fn next_pak_from_outside(addons: &std::path::Path) -> Result<u32, shiv_core::addons::AddonsError> {
     shiv_core::addons::next_pak(addons)
 }
+
+fn claim_reusable_without_permit(
+    addons: &std::path::Path,
+    part: &shiv_core::complock::Part,
+) -> std::io::Result<Option<shiv_core::complock::ReusedPart>> {
+    shiv_core::complock::claim_reusable(addons, part)
+}
 "#;
 
 #[test]
@@ -59,7 +66,7 @@ fn forgotten_pak_change_does_not_compile() {
     );
     assert!(
         !output.status.success(),
-        "the pre-lock calls compiled. install_files and set_pak must take InstallPermit.\n{text}"
+        "the pre-lock calls compiled. install_files, set_pak, and claim_reusable must take InstallPermit.\n{text}"
     );
     assert!(
         text.contains("InstallPermit"),
@@ -72,6 +79,10 @@ fn forgotten_pak_change_does_not_compile() {
     assert!(
         text.contains("set_pak"),
         "6c5beb5's edit dialog called set_pak with no lock.\n{text}"
+    );
+    assert!(
+        text.contains("claim_reusable"),
+        "claim_reusable renames paks and must require InstallPermit.\n{text}"
     );
     assert!(
         text.contains("next_pak") && text.contains("private"),

@@ -648,3 +648,97 @@ fn import_refuses_while_the_game_runs_and_exports_into_a_new_folder() {
     assert_eq!(doc.mods.len(), 2);
     assert!(doc.mods.iter().any(|m| m.name == "custom.vpk"));
 }
+
+#[test]
+fn import_verifies_size_sha256_version_zero_and_preserves_description() {
+    let e = env();
+    let bundle = e.work.join("bundle");
+    fs::create_dir_all(bundle.join("files/0000-mod")).unwrap();
+    fs::write(
+        bundle.join("files/0000-mod/pak01_dir.vpk"),
+        b"\x34\x12\xaa\x55\x02\x00\x00\x00good",
+    )
+    .unwrap();
+
+    // Version 0 is refused just like version 2.
+    fs::write(
+        bundle.join("mod-interchange.json"),
+        r#"{"format":"deadlock-mod-interchange","version":0,"mods":[]}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        interchange::read_manifest(&bundle),
+        Err(InterchangeError::Version(0))
+    ));
+
+    // Wrong size and wrong sha256 are skipped; valid entry installs with notes preserved.
+    fs::write(
+        bundle.join("mod-interchange.json"),
+        serde_json::json!({
+            "format": "deadlock-mod-interchange",
+            "version": 1,
+            "mods": [
+                {
+                    "key": "local:sha256:badsize",
+                    "name": "Bad Size",
+                    "enabled": true,
+                    "order": 0,
+                    "files": [{
+                        "name": "pak01_dir.vpk",
+                        "path": "files/0000-mod/pak01_dir.vpk",
+                        "size": 999,
+                        "selected": true
+                    }]
+                },
+                {
+                    "key": "local:sha256:badhash",
+                    "name": "Bad Hash",
+                    "enabled": true,
+                    "order": 1,
+                    "files": [{
+                        "name": "pak01_dir.vpk",
+                        "path": "files/0000-mod/pak01_dir.vpk",
+                        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                        "selected": true
+                    }]
+                },
+                {
+                    "key": "local:sha256:good",
+                    "name": "With Notes",
+                    "description": "keep my notes",
+                    "enabled": true,
+                    "order": 2,
+                    "files": [{
+                        "name": "pak01_dir.vpk",
+                        "path": "files/0000-mod/pak01_dir.vpk",
+                        "size": 12,
+                        "selected": true
+                    }]
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let imported = interchange::import(&bundle, &e.paths, || false, &|_| None).unwrap();
+    assert_eq!(imported.installed, ["With Notes"]);
+    assert_eq!(imported.skipped.len(), 2);
+    let mods = sidecar::group(&e.paths.addons);
+    assert_eq!(mods.len(), 1);
+    assert_eq!(
+        mods[0].sidecar.as_ref().and_then(|s| s.notes.as_deref()),
+        Some("keep my notes")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bundle_file_refuses_symlinks_escaping_bundle() {
+    let e = env();
+    let bundle = e.work.join("bundle");
+    fs::create_dir_all(bundle.join("files")).unwrap();
+    let outside = e.work.join("secret.vpk");
+    fs::write(&outside, b"secret").unwrap();
+    std::os::unix::fs::symlink(&outside, bundle.join("files/link.vpk")).unwrap();
+    assert_eq!(interchange::bundle_file(&bundle, "files/link.vpk"), None);
+}

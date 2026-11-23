@@ -4,7 +4,7 @@
 //! enabled-form file names (no `.disabled` suffix) so toggling a mod never
 //! breaks the link.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -298,7 +298,7 @@ fn read_file(path: &Path) -> Result<Option<Sidecar>, SidecarError> {
 ///
 /// # Errors
 ///
-/// [`SidecarError::BadId`] when the id cannot name a file;
+/// [`SidecarError::InvalidModId`] when the id cannot name a file;
 /// [`SidecarError::Parse`] when the sidecar exists but is not valid JSON
 /// for a sidecar; [`SidecarError::Io`] when it cannot be read.
 pub fn read(addons: &Path, mod_id: &str) -> Result<Option<Sidecar>, SidecarError> {
@@ -310,7 +310,7 @@ pub fn read(addons: &Path, mod_id: &str) -> Result<Option<Sidecar>, SidecarError
 ///
 /// # Errors
 ///
-/// [`SidecarError::BadId`] when the id cannot name a file;
+/// [`SidecarError::InvalidModId`] when the id cannot name a file;
 /// [`SidecarError::Io`] when the temp file cannot be written or renamed —
 /// the temp file is removed then.
 pub fn write(addons: &Path, sidecar: &Sidecar) -> Result<(), SidecarError> {
@@ -326,12 +326,7 @@ pub fn write(addons: &Path, sidecar: &Sidecar) -> Result<(), SidecarError> {
         source,
     })?;
     let final_path = path_for(addons, &sidecar.mod_id);
-    let tmp = dir.join(format!(".{}.json.tmp", sidecar.mod_id));
-    fs::write(&tmp, json).map_err(|e| io_err(&tmp, e))?;
-    fs::rename(&tmp, &final_path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        io_err(&final_path, e)
-    })
+    crate::fs_util::write_atomic(&final_path, &json).map_err(|e| io_err(&final_path, e))
 }
 
 /// Delete the sidecar file. Missing is success.
@@ -471,9 +466,10 @@ pub fn group(addons: &Path) -> Vec<InstalledMod> {
         .collect();
     let mut out = Vec::new();
     for s in read_all(addons) {
+        let wanted: HashSet<&str> = s.vpks.iter().map(String::as_str).collect();
         let mut mine = Vec::new();
         remaining.retain(|(name, v)| {
-            if s.vpks.contains(name) {
+            if wanted.contains(name.as_str()) {
                 mine.push(v.clone());
                 false
             } else {
@@ -662,12 +658,16 @@ pub fn set_pak(
 
 /// Give single VPKs new pak numbers, leaving every other file where it is:
 /// each `(vpk, number)` renames that VPK with its chunks to `pakNN`, and the
-/// sidecars in `mods` (a [`group`] result) follow. The numbers must be free.
-/// Same rollback as [`move_mod`].
+/// sidecars in `mods` (a [`group`] result) follow. The numbers must be within
+/// `01..=99`, unique, and free (or held by a VPK in `moves`). Same rollback as
+/// [`move_mod`].
 ///
 /// # Errors
 ///
-/// As [`move_mod`].
+/// [`SidecarError::BadPak`] for a number outside `01..=99`;
+/// [`SidecarError::DuplicatePak`] when two moves target the same number;
+/// [`SidecarError::StalePak`] when a target number is occupied by another file
+/// or sidecar not in `moves`; otherwise as [`move_mod`].
 pub fn renumber(
     addons: &Path,
     mods: &[InstalledMod],
@@ -678,6 +678,23 @@ pub fn renumber(
         return Ok(());
     }
     let (vpks, numbers): (Vec<&InstalledVpk>, Vec<u32>) = moves.iter().copied().unzip();
+    let mut seen = BTreeSet::new();
+    for &n in &numbers {
+        if n == 0 || n > addons::PAK_CAPACITY {
+            return Err(SidecarError::BadPak(n));
+        }
+        if !seen.insert(n) {
+            return Err(SidecarError::DuplicatePak(n));
+        }
+    }
+    let occupied = crate::pak_slot::occupied(addons)?;
+    let held: BTreeSet<u32> = vpks.iter().filter_map(|v| v.pak).collect();
+    if let Some(&n) = numbers
+        .iter()
+        .find(|n| occupied.contains(n) && !held.contains(n))
+    {
+        return Err(SidecarError::StalePak(n));
+    }
     let plan = addons::plan_renumber(&vpks, &numbers)?;
     let order: Vec<&InstalledMod> = mods.iter().collect();
     apply_plan(addons, &order, &plan)
@@ -704,16 +721,25 @@ fn apply_plan(
 ) -> Result<(), SidecarError> {
     addons::apply_moves(&plan.moves)?;
 
+    let renames: HashMap<&str, &str> = plan
+        .names
+        .iter()
+        .map(|(old, new)| (old.as_str(), new.as_str()))
+        .collect();
     let mut written: Vec<&Sidecar> = Vec::new();
     for s in order.iter().filter_map(|m| m.sidecar.as_ref()) {
+        if !s
+            .vpks
+            .iter()
+            .any(|name| renames.get(name.as_str()).is_some_and(|&new| new != name))
+        {
+            continue;
+        }
         let mut updated = s.clone();
         for name in &mut updated.vpks {
-            if let Some((_, new)) = plan.names.iter().find(|(old, _)| old == name) {
-                name.clone_from(new);
+            if let Some(&new) = renames.get(name.as_str()) {
+                new.clone_into(name);
             }
-        }
-        if updated == *s {
-            continue;
         }
         if let Err(e) = write(addons, &updated) {
             for old in written {

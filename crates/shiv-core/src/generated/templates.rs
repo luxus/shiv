@@ -133,10 +133,7 @@ fn blank_once(script: &str, needle: &str) -> Option<String> {
 }
 
 fn is_b64(s: &str) -> bool {
-    !s.is_empty()
-        && s.len().is_multiple_of(4)
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+    !s.is_empty() && decode_b64(s).is_some()
 }
 
 pub(crate) fn decode_b64(s: &str) -> Option<Vec<u8>> {
@@ -154,11 +151,18 @@ pub(crate) fn decode_b64(s: &str) -> Option<Vec<u8>> {
         return None;
     }
     let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
-    for chunk in bytes.chunks(4) {
-        let (a, b, c, d) = (chunk[0], chunk[1], chunk[2], chunk[3]);
+    let total_chunks = bytes.len() / 4;
+    let mut out = Vec::with_capacity(total_chunks * 3);
+    for (idx, &[a, b, c, d]) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        let is_last = idx + 1 == total_chunks;
         let av = val(a)?;
         let bv = val(b)?;
+        if (c == b'=' || d == b'=') && !is_last {
+            return None;
+        }
+        if c == b'=' && d != b'=' {
+            return None;
+        }
         let cv = if c == b'=' { 0 } else { val(c)? };
         let dv = if d == b'=' { 0 } else { val(d)? };
         let n =

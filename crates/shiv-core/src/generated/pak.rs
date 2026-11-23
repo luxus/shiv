@@ -63,7 +63,7 @@ fn vpk_files(bytes: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
         return None;
     }
     let version = u32_at(bytes, 4)?;
-    let header = if version == 1 {
+    let header: usize = if version == 1 {
         12
     } else if version == 2 {
         28
@@ -72,7 +72,7 @@ fn vpk_files(bytes: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
     };
     let tree_len = usize::try_from(u32_at(bytes, 8)?).ok()?;
     let tree_start = header;
-    let data_start = tree_start + tree_len;
+    let data_start = tree_start.checked_add(tree_len)?;
     if data_start > bytes.len() {
         return None;
     }
@@ -93,19 +93,26 @@ fn vpk_files(bytes: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
                 if name.is_empty() {
                     break;
                 }
-                let entry = bytes.get(p..p + 18)?;
-                let preload = u16::from_le_bytes([entry[4], entry[5]]) as usize;
+                let entry_end = p.checked_add(18)?;
+                let entry = bytes.get(p..entry_end)?;
+                let preload = usize::from(u16::from_le_bytes([entry[4], entry[5]]));
                 let archive = u16::from_le_bytes([entry[6], entry[7]]);
-                let off = u32::from_le_bytes(entry[8..12].try_into().ok()?) as usize;
-                let len = u32::from_le_bytes(entry[12..16].try_into().ok()?) as usize;
-                p += 18;
+                let off =
+                    usize::try_from(u32::from_le_bytes(entry[8..12].try_into().ok()?)).ok()?;
+                let len =
+                    usize::try_from(u32::from_le_bytes(entry[12..16].try_into().ok()?)).ok()?;
+                p = entry_end;
                 if archive != 0x7FFF {
                     return None;
                 }
-                let pre = bytes.get(p..p + preload)?;
-                p += preload;
-                let body = bytes.get(data_start + off..data_start + off + len)?;
-                let mut data = Vec::with_capacity(pre.len() + body.len());
+                let pre_end = p.checked_add(preload)?;
+                let pre = bytes.get(p..pre_end)?;
+                p = pre_end;
+                let body_start = data_start.checked_add(off)?;
+                let body_end = body_start.checked_add(len)?;
+                let body = bytes.get(body_start..body_end)?;
+                let total = pre.len().checked_add(body.len())?;
+                let mut data = Vec::with_capacity(total);
                 data.extend_from_slice(pre);
                 data.extend_from_slice(body);
                 let path = if dir == " " {

@@ -292,6 +292,16 @@ fn replace_keeps_slot_name_notes_and_state_and_backs_up_the_old_file() {
     assert!(newer.exists(), "source file untouched");
     let after = sidecar::read(&e.paths.addons, &sc.mod_id).unwrap().unwrap();
     assert_eq!(after, r.sidecar);
+    assert!(after.stamps.is_some(), "stamps refreshed after replacement");
+    let installed = sidecar::group(&e.paths.addons)
+        .into_iter()
+        .find(|m| m.sidecar.as_ref().is_some_and(|s| s.mod_id == sc.mod_id))
+        .unwrap();
+    assert_eq!(
+        shiv_core::drift::drift(&installed, &shiv_core::drift::Published::Unknown),
+        shiv_core::drift::Drift::Pristine,
+        "updated local mod stays pristine"
+    );
     assert!(!e.paths.addons.join(".shiv/tmp").exists());
 }
 
