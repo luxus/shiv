@@ -152,6 +152,9 @@ pub(crate) fn installing(id: &str) {
 pub(crate) fn finished(id: &str, outcome: Outcome) {
     with_downloads(|d| match outcome {
         Outcome::Done => d.set_phase(id, DownloadPhase::Done, "Installed".into()),
+        Outcome::DoneUnverified => {
+            d.set_phase(id, DownloadPhase::Done, "Installed, not verified".into());
+        }
         Outcome::Cancelled => d.set_phase(id, DownloadPhase::Cancelled, "Cancelled".into()),
         Outcome::Failed(text) => d.set_phase(id, DownloadPhase::Failed, text),
     });
@@ -178,6 +181,8 @@ pub(crate) fn transfer(id: &str) -> Option<(f32, bool)> {
 
 pub(crate) enum Outcome {
     Done,
+    /// Installed, and the download published no checksum.
+    DoneUnverified,
     Cancelled,
     Failed(String),
 }

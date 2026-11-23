@@ -1075,6 +1075,7 @@ pub fn adopt_reused(
             notes: None,
             source: None,
             stamps: None,
+            unverified: None,
         },
     )
 }

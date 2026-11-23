@@ -79,6 +79,11 @@ pub struct Sidecar {
     /// place their files); not written when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stamps: Option<Vec<Stamp>>,
+    /// `Some(true)` when the download that placed these files published no
+    /// checksum. Absent for a checked download, a local file, and sidecars
+    /// written before the flag existed. Not written when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unverified: Option<bool>,
 }
 
 /// One installed VPK as it lay on disk: the bytes of the dir VPK and its
@@ -373,9 +378,26 @@ pub fn adopt(
         notes: notes.filter(|n| !n.trim().is_empty()),
         source: None,
         stamps: None,
+        unverified: None,
     };
     write(addons, &sidecar)?;
     Ok(sidecar)
+}
+
+/// Record that `mod_id`'s download had no checksum to check.
+///
+/// # Errors
+///
+/// The read and write errors of [`read`] and [`write`].
+pub fn mark_unverified(addons: &Path, mod_id: &str) -> Result<(), SidecarError> {
+    let Some(mut sidecar) = read(addons, mod_id)? else {
+        return Ok(());
+    };
+    if sidecar.unverified == Some(true) {
+        return Ok(());
+    }
+    sidecar.unverified = Some(true);
+    write(addons, &sidecar)
 }
 
 /// Change the display name and notes of the mod `mod_id`. Only its sidecar
