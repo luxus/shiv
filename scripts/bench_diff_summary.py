@@ -6,11 +6,13 @@ the comparison-base commit with `--save-baseline push`, the candidate
 arm measured the pushed commit with `--baseline-lenient push`. Writes a
 markdown table of every bench's base and pushed point estimates and
 criterion's change verdict to stdout and $GITHUB_STEP_SUMMARY. Exits
-nonzero when a bench criterion flags as "Performance has regressed."
-moved beyond REGRESSION_THRESHOLD_PCT.
+nonzero when base or candidate records are missing or when a bench
+criterion flags as "Performance has regressed." moved beyond
+REGRESSION_THRESHOLD_PCT.
 """
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -31,7 +33,8 @@ REGRESSED_VERDICT = "Performance has regressed."
 
 
 def visible(line):
-    return ANSI_ESCAPE.sub("", line.split("\r")[-1]).rstrip()
+    stripped = line.rstrip("\r\n")
+    return ANSI_ESCAPE.sub("", stripped.split("\r")[-1]).rstrip()
 
 
 def midpoint(bracket):
@@ -43,6 +46,21 @@ def midpoint(bracket):
     if len(fields) != 6:
         return None
     return " ".join(fields[2:4])
+
+
+def parse_change_pct(point):
+    raw = point.rstrip("%").replace("−", "-")
+    if raw in ("+∞", "∞"):
+        return math.inf
+    if raw == "-∞":
+        return -math.inf
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if math.isnan(value):
+        return None
+    return value
 
 
 def parse_bench_log(paths):
@@ -68,7 +86,7 @@ def parse_bench_log(paths):
                 if change and current:
                     point = midpoint(change.group(1))
                     if point:
-                        benches[current]["change"] = float(point.rstrip("%").replace("−", "-"))
+                        benches[current]["change"] = parse_change_pct(point)
                     continue
                 throughput = THROUGHPUT_LINE.match(line)
                 if throughput and current and "%" not in throughput.group(1):
@@ -120,24 +138,26 @@ def regressed_benches(candidate):
         name
         for name, record in candidate.items()
         if record["verdict"] == REGRESSED_VERDICT
-        and record["change"] is not None
-        and record["change"] > REGRESSION_THRESHOLD_PCT
+        and (record["change"] is None or record["change"] > REGRESSION_THRESHOLD_PCT)
     )
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", nargs="+", required=True)
     parser.add_argument("--candidate", nargs="+", required=True)
     parser.add_argument("--base-ref", default="base")
     parser.add_argument("--head-ref", default="head")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
     base = parse_bench_log(args.base)
     candidate = parse_bench_log(args.candidate)
+    if not base:
+        print("bench_diff_summary: no bench records in the base logs", file=sys.stderr)
+        return 2
     if not candidate:
         print("bench_diff_summary: no bench records in the candidate logs", file=sys.stderr)
         return 2
@@ -149,10 +169,16 @@ def main():
             summary.write(report + "\n")
     failures = regressed_benches(candidate)
     if failures:
-        listing = ", ".join(f"{name} ({candidate[name]['change']:+.2f}%)" for name in failures)
+        listing = ", ".join(
+            f"{name} ({format_change(candidate[name]['change'])})" for name in failures
+        )
         print(f"bench gate failed: {listing}", file=sys.stderr)
         return 1
     return 0
+
+
+def format_change(value):
+    return "unknown" if value is None else f"{value:+.2f}%"
 
 
 if __name__ == "__main__":

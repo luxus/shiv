@@ -80,6 +80,7 @@ jobs:
 
           failed = []
           seen = set()
+          seen_names = set()
           for pak in options.get("files", {}).values():
               for part in pak.get("parts", []):
                   urls = part.get("url") or []
@@ -87,7 +88,15 @@ jobs:
                       if url in seen:
                           continue
                       seen.add(url)
-                      dest = out / "parts" / url.rsplit("/", 1)[-1]
+                      if not isinstance(url, str) or not url.startswith("/") or url.startswith("//"):
+                          failed.append(f"- `{url}`: refused non-relative part URL")
+                          continue
+                      name = url.rsplit("/", 1)[-1]
+                      if not name or name in (".", "..") or "\\" in name or name in seen_names:
+                          failed.append(f"- `{url}`: refused unsafe or duplicate part filename")
+                          continue
+                      seen_names.add(name)
+                      dest = out / "parts" / name
                       try:
                           req = urllib.request.Request("https://deadlockconfig.com" + url, headers=agent)
                           dest.write_bytes(urllib.request.urlopen(req, timeout=120).read())
@@ -102,7 +111,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libfontconfig1-dev libxkbcommon-dev libwayland-dev pkg-config
       - name: Rust toolchain
-        run: rustup toolchain install stable --profile minimal && rustup default stable
+        run: rustup show active-toolchain
       - name: Check with Shiv's own model
         id: check
         run: |
@@ -201,8 +210,13 @@ jobs:
           fi
           if [ "$pack_changed" = true ]; then
             subject="chore(complock): gameinfo build ${game} (deadlockconfig.com)"
+            release_summary="CompLock pack data from deadlockconfig.com, gameinfo build ${game}."
+          elif [ "$decision" = "review" ]; then
+            subject="chore(complock): flag builder scripts for review (deadlockconfig.com)"
+            release_summary="CompLock builder scripts flagged for review from deadlockconfig.com."
           else
             subject="chore(complock): builder templates (deadlockconfig.com)"
+            release_summary="CompLock builder templates from deadlockconfig.com."
           fi
           if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
             if [ "$assets_changed" = false ]; then
@@ -266,7 +280,7 @@ jobs:
                 --from "$version" \
                 --to "$release_version" \
                 --date "$(date -u +%F)" \
-                --summary "CompLock pack data from deadlockconfig.com, gameinfo build ${game}." \
+                --summary "$release_summary" \
                 --cargo crates/shiv-ui/Cargo.toml \
                 --lock Cargo.lock \
                 --metainfo packaging/flatpak/io.github.Siebe_Uy.shiv.metainfo.xml
@@ -343,7 +357,12 @@ jobs:
               gh label create "$ISSUE_LABEL" --color d93f0b --description "The CompLock watch could not apply an upstream update" 2>/dev/null || true
               gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body "$body"
             else
-              gh issue comment "$open" --body "$body"
+              seen=$(gh issue view "$open" --json body,comments --jq '[.body] + [.comments[].body] | map(select(contains("complock-watch:"))) | last')
+              if printf '%s' "$seen" | grep -q "complock-watch:$digest"; then
+                echo "Issue #$open already reports this builder failure."
+              else
+                gh issue comment "$open" --body "$body"
+              fi
             fi
             exit 0
           fi
