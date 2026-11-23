@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::addons::{self, AddonsError, PakKind, parse_pak};
 use crate::game::{self, GamePaths};
+use crate::reset;
 use crate::sidecar::{self, InstalledMod, Sidecar, SidecarError};
 
 const DISABLED_EXT: &str = ".disabled";
@@ -822,7 +823,7 @@ fn place_and_record(
 }
 
 /// Move `staged` in on `numbers` (one per VPK), record the sidecar, then
-/// drop the replaced files of `old`.
+/// stash the replaced files of `old` for Restore previous.
 fn place_numbered(
     addons_dir: &Path,
     staged: &[StagedVpk],
@@ -889,9 +890,9 @@ fn place_numbered(
         return Err(e.into());
     }
 
-    // The new mod is complete and recorded; only now drop the files of the old one.
-    // Best effort: the new mod is fully installed, so leftovers must not fail the call.
-    if let Some(old) = old {
+    if let Some(old) = old
+        && !replaced_files_kept(addons_dir, &old, &new_sidecar.vpks)
+    {
         for name in &old.vpks {
             if !new_sidecar.vpks.contains(name) {
                 let _ = remove_pak_files(addons_dir, name);
@@ -899,6 +900,53 @@ fn place_numbered(
         }
     }
     Ok(new_sidecar)
+}
+
+fn replaced_files_kept(addons_dir: &Path, old: &Sidecar, kept: &[String]) -> bool {
+    let mut files = Vec::new();
+    for name in &old.vpks {
+        if kept.contains(name) {
+            continue;
+        }
+        let Ok(found) = existing_pak_family(addons_dir, name) else {
+            return false;
+        };
+        files.extend(found);
+    }
+    reset::stash_files(addons_dir, old, &files).is_ok()
+}
+
+fn existing_pak_family(dir: &Path, name: &str) -> Result<Vec<PathBuf>, InstallError> {
+    if !is_plain_vpk_name(name) {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for candidate in [dir.join(name), dir.join(format!("{name}{DISABLED_EXT}"))] {
+        if candidate.is_file() {
+            out.push(candidate);
+        }
+    }
+    if let Some((number, PakKind::Dir)) = parse_pak(name) {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(io_err(dir)(e)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(io_err(dir))?;
+            let file_name = entry.file_name();
+            let Some(n) = file_name.to_str() else {
+                continue;
+            };
+            let enabled = n.strip_suffix(DISABLED_EXT).unwrap_or(n);
+            if matches!(parse_pak(enabled), Some((c, PakKind::Chunk(_))) if c == number)
+                && entry.path().is_file()
+            {
+                out.push(entry.path());
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Install a local `.vpk` file, or a zip, rar or 7z archive holding VPKs, as
@@ -1056,28 +1104,8 @@ fn remove_if_exists(path: &Path) -> Result<(), InstallError> {
 /// Remove `name` (enabled form), its `.disabled` form and, for `pakNN_dir.vpk`, the
 /// `pakNN_<digits>.vpk[.disabled]` chunk files next to it.
 fn remove_pak_files(dir: &Path, name: &str) -> Result<(), InstallError> {
-    if !is_plain_vpk_name(name) {
-        return Ok(());
-    }
-    remove_if_exists(&dir.join(name))?;
-    remove_if_exists(&dir.join(format!("{name}{DISABLED_EXT}")))?;
-    if let Some((number, PakKind::Dir)) = parse_pak(name) {
-        let entries = match fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(io_err(dir)(e)),
-        };
-        for entry in entries {
-            let entry = entry.map_err(io_err(dir))?;
-            let file_name = entry.file_name();
-            let Some(n) = file_name.to_str() else {
-                continue;
-            };
-            let enabled = n.strip_suffix(DISABLED_EXT).unwrap_or(n);
-            if matches!(parse_pak(enabled), Some((c, PakKind::Chunk(_))) if c == number) {
-                remove_if_exists(&entry.path())?;
-            }
-        }
+    for path in existing_pak_family(dir, name)? {
+        remove_if_exists(&path)?;
     }
     Ok(())
 }
