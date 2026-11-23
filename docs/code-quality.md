@@ -49,10 +49,12 @@ reads them (e.g., `/// Worker body` in `shiv-ui/tests/guards.rs`).
 
 `SidecarError::PakPush` exists because `BadPak(99)` once reported "99 is
 outside 01..=99" for a number that was in range — the real cause was another
-VPK being pushed past 99. Before reusing an error variant, ask whether its
-message could be literally false in the user's eyes; if it could, add or pick
-the honest variant. Pinned by
-`set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing`.
+VPK being pushed past 99. Similarly, `ureq::Error::Io` (network socket errors)
+maps to `ApiError::Network`, never `ApiError::Io` ("file error"). Before
+reusing an error variant, ask whether its message could be literally false in
+the user's eyes; if it could, add or pick the honest variant. Pinned by
+`set_pak_refuses_numbers_that_do_not_fit_and_changes_nothing` and
+`transport_errors_are_reported_as_network_not_file_io`.
 
 ## Validate before you compute, refuse before you touch
 

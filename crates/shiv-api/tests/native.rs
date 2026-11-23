@@ -453,3 +453,160 @@ fn one_failing_entry_is_listed_with_its_error_and_the_rest_still_load() {
     assert!(broken.problem.as_deref().is_some_and(|p| !p.is_empty()));
     assert!(listings[2].removed, "a removed entry stays removed");
 }
+
+#[test]
+fn redirect_to_disallowed_origin_is_refused_with_exact_request_count() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tiny_http::Header;
+
+    let evil_hits = Arc::new(AtomicUsize::new(0));
+    let evil_hits_srv = evil_hits.clone();
+    let evil = stub(move |_| {
+        evil_hits_srv.fetch_add(1, Ordering::SeqCst);
+        json(r#"{"snapshotId":"evil","items":[]}"#)
+    });
+    let evil_target = format!("{evil}/catalog.json");
+    let origin = origin_stub(move |origin, req| match req.url() {
+        url if url.ends_with("/d.json") => json(descriptor(origin, "static", "indexUrl")),
+        url if url.ends_with("/catalog.json") => Response::from_string("")
+            .with_status_code(302)
+            .with_header(Header::from_bytes("Location", evil_target.as_bytes()).unwrap()),
+        other => panic!("unexpected {other}"),
+    });
+    let client = NativeSourceClient::new();
+    let source = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let err = client
+        .fetch_catalog(&source)
+        .expect_err("cross-origin redirect must be refused");
+    assert!(err.to_string().contains("allowed origins"), "{err}");
+    assert_eq!(
+        evil_hits.load(Ordering::SeqCst),
+        0,
+        "evil origin must never be contacted"
+    );
+}
+
+#[test]
+fn url_and_origin_security_invariants_hold() {
+    use shiv_api::{is_https_or_loopback, origin_of};
+
+    assert!(is_https_or_loopback("https://mods.example.org/d.json"));
+    assert!(is_https_or_loopback("http://localhost:8080/d.json"));
+    assert!(is_https_or_loopback("http://127.0.0.1:8080/d.json"));
+    assert!(is_https_or_loopback("http://[::1]:8080/d.json"));
+    assert!(is_https_or_loopback("http://[::1]/d.json"));
+
+    assert!(!is_https_or_loopback("http://127.0.0.1:80@evil.com/d.json"));
+    assert!(!is_https_or_loopback("http://localhost:x@evil.com/d.json"));
+    assert!(!is_https_or_loopback("http://evil.com/d.json"));
+    assert_eq!(origin_of("http://127.0.0.1:80@evil.com/d.json"), None);
+    assert_eq!(
+        origin_of("http://[::1]:8080/d.json").as_deref(),
+        Some("http://[::1]:8080")
+    );
+
+    assert_eq!(
+        resolve_url("https://a.test/v1/mods.json", "./item?x=https://b/c&p=../y"),
+        "https://a.test/v1/item?x=https://b/c&p=../y"
+    );
+    assert_eq!(
+        resolve_url("https://a.test/v1/mods", "?cursor=1"),
+        "https://a.test/v1/mods?cursor=1"
+    );
+    assert_eq!(resolve_url("https://a.test/x", "/"), "https://a.test/");
+}
+
+#[test]
+fn api_catalog_paginates_three_pages_without_duplicating_cursors_and_encodes_cursor() {
+    let origin = origin_stub(move |origin, req| match req.url() {
+        url if url.ends_with("/d.json") => json(descriptor(origin, "api", "listUrl")),
+        "/catalog.json" => {
+            json(r#"{"items":[{"id":"a","availability":"removed"}],"nextCursor":"p+2&x=1"}"#)
+        }
+        "/catalog.json?cursor=p%2B2%26x%3D1&limit=100" => {
+            json(r#"{"items":[{"id":"b","availability":"removed"}],"nextCursor":"page-3"}"#)
+        }
+        "/catalog.json?cursor=page-3&limit=100" => {
+            json(r#"{"items":[{"id":"c","availability":"removed"}],"nextCursor":null}"#)
+        }
+        other => panic!("unexpected request {other}"),
+    });
+    let client = NativeSourceClient::new();
+    let source = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let ids: Vec<String> = client
+        .fetch_catalog(&source)
+        .unwrap()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(ids, ["a", "b", "c"]);
+}
+
+#[test]
+fn static_catalog_resolves_relative_next_url_and_subdirectory_resolver_url() {
+    let origin = origin_stub(move |origin, req| match req.url() {
+        "/d.json" => json(descriptor(origin, "static", "indexUrl")),
+        "/catalog.json" => json(
+            r#"{"snapshotId":"s1","items":[{"id":"m1","availability":"available","detailUrl":"/sub/m1.json"}],"nextUrl":"./page-2.json"}"#,
+        ),
+        "/page-2.json" => json(
+            r#"{"snapshotId":"s1","items":[{"id":"m2","availability":"removed"}],"nextUrl":null}"#,
+        ),
+        "/sub/m1.json" => json(
+            r#"{"id":"m1","title":"Mod 1","availability":"available",
+            "release":{"id":"r1","contentRevision":"rev-1",
+            "artifacts":[{"id":"a1","filename":"m1.vpk","format":"vpk",
+            "download":{"resolverUrl":"./resolve"}}]}}"#,
+        ),
+        "/sub/resolve" => json(r#"{"url":"../files/m1.vpk"}"#),
+        other => panic!("unexpected {other}"),
+    });
+    let client = NativeSourceClient::new();
+    let source = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let listings = client.fetch_catalog(&source).unwrap();
+    assert_eq!(listings.len(), 2);
+    let artifact = &listings[0].release.as_ref().unwrap().artifacts[0];
+    assert_eq!(
+        artifact.resolver_url.as_deref(),
+        Some(format!("{origin}/sub/resolve").as_str())
+    );
+    let resolved = client.resolve_artifact_url(&source, artifact).unwrap();
+    assert_eq!(resolved, format!("{origin}/files/m1.vpk"));
+}
+
+#[test]
+fn release_history_follows_multiple_cursor_pages() {
+    let origin = origin_stub(move |origin, req| match req.url() {
+        "/d.json" => json(descriptor(origin, "static", "indexUrl")),
+        "/catalog.json" => json(
+            r#"{"snapshotId":"s1","items":[{"id":"m1","availability":"available","detailUrl":"./m1.json"}]}"#,
+        ),
+        "/m1.json" => json(
+            r#"{"id":"m1","title":"Mod 1","availability":"available",
+            "releaseHistoryUrl":"./history.json",
+            "release":{"id":"r2","contentRevision":"rev-2","artifacts":[]}}"#,
+        ),
+        "/history.json" => json(
+            r#"{"items":[{"id":"r2","contentRevision":"rev-2","version":"2.0","artifacts":[]}],"nextCursor":"p2"}"#,
+        ),
+        "/history.json?cursor=p2&limit=100" => json(
+            r#"{"items":[{"id":"r1","contentRevision":"rev-1","version":"1.0","artifacts":[]}],"nextCursor":null}"#,
+        ),
+        other => panic!("unexpected {other}"),
+    });
+    let client = NativeSourceClient::new();
+    let source = client
+        .fetch_descriptor(&format!("{origin}/d.json"))
+        .unwrap();
+    let listings = client.fetch_catalog(&source).unwrap();
+    let history = client.fetch_release_history(&source, &listings[0]).unwrap();
+    let versions: Vec<Option<&str>> = history.iter().map(|r| r.version.as_deref()).collect();
+    assert_eq!(versions, [Some("2.0"), Some("1.0")]);
+}

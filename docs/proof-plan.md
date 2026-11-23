@@ -94,12 +94,14 @@ in `docs/perf-results.md` before a release tag.
 ### Network
 
 - **The catalog is parsed in one pass.** Proof: `crates/shiv-api/benches/catalog.rs`
-  feeds a 10k-row catalog through `list_mods` and reports throughput, gated by
-  `perf.yml`.
+  feeds a 10k-row catalog through `list_mods` using a streaming `SeqAccess`
+  deserializer (`CatalogRows`, no intermediate `serde_json::Value` or
+  `untagged` DOM buffering) and reports throughput, gated by `perf.yml`.
 - **Thumbnails are decoded once, at display size.** Proof:
   `a_large_source_lands_in_the_cache_at_display_bytes` (`shiv-ui/src/thumbs.rs`)
   asserts cached RGBA bytes equal `width * height * 4` at display dimensions.
-- **Redirects are followed once and checked per hop.** Proof: stub tests pin
+- **Redirects are followed once and checked per hop.** Proof: stub tests in
+  `crates/shiv-api/tests/{client,native}.rs` and `shiv-ui/src/thumbs.rs` pin
   exact request counts and refuse cross-origin redirects and HTTPS->HTTP
   downgrades.
 

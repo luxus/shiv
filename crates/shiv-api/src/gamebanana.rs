@@ -5,17 +5,22 @@
 //! `GameBanana`'s side degrades one tab instead of breaking the page. Text
 //! (`text`) is the HTML `GameBanana` sends; the UI converts it to plain text.
 
+use std::fmt;
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde::de::{self, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use ureq::Agent;
 
 use crate::error::ApiError;
+use crate::http::{READ_TIMEOUT, build_agent, deserialize_null_default, get_with_redirects};
 
 const DEFAULT_BASE: &str = "https://gamebanana.com/apiv11";
 const PER_PAGE: u32 = 15;
 const BODY_LIMIT: u64 = 8 * 1024 * 1024;
+const GLOBAL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Client for GameBanana's public API v11 endpoints.
 pub struct GameBananaClient {
     base: String,
     agent: Agent,
@@ -75,13 +80,20 @@ pub enum Comments {
     Page(Page<Comment>),
 }
 
-// ---- wire types ----
-
 #[derive(Deserialize)]
 struct Envelope<T> {
-    #[serde(rename = "_aMetadata", default)]
+    #[serde(
+        rename = "_aMetadata",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     meta: Meta,
-    #[serde(rename = "_aRecords", default = "Vec::new")]
+    #[serde(
+        rename = "_aRecords",
+        default = "Vec::new",
+        deserialize_with = "deserialize_null_default",
+        bound(deserialize = "T: serde::Deserialize<'de>")
+    )]
     records: Vec<T>,
     #[serde(rename = "_sErrorCode", default)]
     error: Option<String>,
@@ -89,9 +101,17 @@ struct Envelope<T> {
 
 #[derive(Deserialize, Default)]
 struct Meta {
-    #[serde(rename = "_nRecordCount", default)]
+    #[serde(
+        rename = "_nRecordCount",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     count: u64,
-    #[serde(rename = "_bIsComplete", default)]
+    #[serde(
+        rename = "_bIsComplete",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     complete: bool,
 }
 
@@ -111,7 +131,11 @@ struct FileWire {
     added: Option<i64>,
     #[serde(rename = "_nDownloadCount", default)]
     downloads: Option<u64>,
-    #[serde(rename = "_bIsArchived", default)]
+    #[serde(
+        rename = "_bIsArchived",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     archived: bool,
 }
 
@@ -127,9 +151,17 @@ struct UpdateWire {
     text: Option<String>,
     #[serde(rename = "_aChangeLog", default)]
     changes: Option<Vec<ChangeWire>>,
-    #[serde(rename = "_bIsTrashed", default)]
+    #[serde(
+        rename = "_bIsTrashed",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     trashed: bool,
-    #[serde(rename = "_bIsPrivate", default)]
+    #[serde(
+        rename = "_bIsPrivate",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     private: bool,
 }
 
@@ -141,10 +173,57 @@ struct ChangeWire {
     text: Option<String>,
 }
 
+struct CommentStatus(bool);
+
+impl Default for CommentStatus {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+impl<'de> Deserialize<'de> for CommentStatus {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StatusVisitor;
+        impl<'de> Visitor<'de> for StatusVisitor {
+            type Value = CommentStatus;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("comment status code")
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(CommentStatus(true))
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(CommentStatus(v == "0"))
+            }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(CommentStatus(v == 0))
+            }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(CommentStatus(v == 0))
+            }
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(CommentStatus(false))
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(CommentStatus(false))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(CommentStatus(false))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(CommentStatus(false))
+            }
+        }
+        deserializer.deserialize_any(StatusVisitor)
+    }
+}
+
 #[derive(Deserialize)]
 struct CommentWire {
     #[serde(rename = "_nStatus", default)]
-    status: Option<serde_json::Value>,
+    status: CommentStatus,
     #[serde(rename = "_tsDateAdded", default)]
     added: Option<i64>,
     #[serde(rename = "_nReplyCount", default)]
@@ -163,32 +242,16 @@ struct PosterWire {
     name: Option<String>,
 }
 
-/// `GameBanana` status 0 is a visible post; anything else is trashed or hidden.
-fn visible(status: Option<&serde_json::Value>) -> bool {
-    match status {
-        None => true,
-        Some(serde_json::Value::String(s)) => s == "0",
-        Some(serde_json::Value::Number(n)) => n.as_i64() == Some(0),
-        Some(_) => false,
-    }
-}
-
 impl GameBananaClient {
+    /// Construct a client targeting `base_url`.
     #[must_use]
     pub fn new(base_url: &str) -> Self {
-        let agent: Agent = Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_global(Some(Duration::from_secs(30)))
-            .build()
-            .into();
         Self {
             base: base_url.trim_end_matches('/').to_owned(),
-            agent,
+            agent: build_agent(READ_TIMEOUT, Some(GLOBAL_TIMEOUT)),
         }
     }
 
-    /// `Mod` or `Sound`, and a validated numeric id: the id goes into a URL
-    /// path, so anything but digits is refused.
     fn item(&self, remote_id: &str, audio: bool) -> Result<String, ApiError> {
         if remote_id.is_empty() || !remote_id.bytes().all(|b| b.is_ascii_digit()) {
             return Err(ApiError::Parse(format!("invalid mod id {remote_id:?}")));
@@ -198,13 +261,7 @@ impl GameBananaClient {
     }
 
     fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, ApiError> {
-        let mut resp = self.agent.get(url).call().map_err(|e| match e {
-            ureq::Error::StatusCode(status) => ApiError::Http {
-                status,
-                url: url.to_owned(),
-            },
-            other => ApiError::Network(other.to_string()),
-        })?;
+        let mut resp = get_with_redirects(&self.agent, url, &[], None)?;
         let bytes = resp
             .body_mut()
             .with_config()
@@ -260,6 +317,9 @@ impl GameBananaClient {
             page.max(1)
         );
         let env: Envelope<UpdateWire> = self.get(&url)?;
+        if let Some(code) = env.error.filter(|c| !c.trim().is_empty()) {
+            return Err(ApiError::Parse(format!("GameBanana error: {code}")));
+        }
         let items = env
             .records
             .into_iter()
@@ -300,13 +360,21 @@ impl GameBananaClient {
             page.max(1)
         );
         let env: Envelope<CommentWire> = self.get(&url)?;
-        if env.error.as_deref() == Some("COMMENT_MODE_HIDDEN") {
-            return Ok(Comments::Hidden);
+        if let Some(code) = env
+            .error
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
+            if code == "COMMENT_MODE_HIDDEN" {
+                return Ok(Comments::Hidden);
+            }
+            return Err(ApiError::Parse(format!("GameBanana error: {code}")));
         }
         let items = env
             .records
             .into_iter()
-            .filter(|c| visible(c.status.as_ref()))
+            .filter(|c| c.status.0)
             .filter_map(|c| {
                 Some(Comment {
                     author: c.poster.and_then(|p| p.name).unwrap_or_default(),
