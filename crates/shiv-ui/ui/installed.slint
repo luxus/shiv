@@ -166,8 +166,8 @@ component Pill inherits Rectangle {
     }
 }
 
-// One installed mod as its own card: load order, switch, thumbnail when
-// there is one, name with author and status, one line about it, actions.
+// One installed mod as its own card: load order, switch, thumbnail slot,
+// name with author and status, one line about it, actions.
 // Secondary actions show while the card is hovered.
 component InstalledRowView inherits Rectangle {
     in property <InstalledRow> item;
@@ -269,18 +269,30 @@ component InstalledRowView inherits Rectangle {
                     }
                 }
 
-                if root.item.has-thumb: VerticalLayout {
+                // The thumbnail slot is kept on every card, so names line up;
+                // without an image it holds only a faint package mark.
+                VerticalLayout {
                     alignment: center;
                     Rectangle {
                         width: 96px;
                         height: 54px;
                         border-radius: Theme.radius;
                         clip: true;
-                        Image {
+                        if root.item.has-thumb: Image {
                             width: parent.width;
                             height: parent.height;
                             source: root.item.thumb;
                             image-fit: cover;
+                        }
+                        if !root.item.has-thumb: Path {
+                            width: 18px;
+                            height: 18px;
+                            viewbox-width: 18;
+                            viewbox-height: 18;
+                            commands: "M 9 1.5 L 16 5 L 16 13 L 9 16.5 L 2 13 L 2 5 Z M 2 5 L 9 8.5 L 16 5 M 9 8.5 L 9 16.5";
+                            stroke: Theme.text-faint;
+                            stroke-width: 1.2px;
+                            fill: transparent;
                         }
                     }
                 }
