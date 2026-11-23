@@ -1591,7 +1591,14 @@ pub fn check_pack(fresh: &str, gameinfo: &str, last_good: &str) -> Vec<PackProbl
         }
     }
     if let Ok(last_value) = serde_json::from_str::<serde_json::Value>(last_good) {
-        let (fresh_keys, last_keys) = (key_sets(&fresh_value), key_sets(&last_value));
+        let (mut fresh_keys, mut last_keys) = (key_sets(&fresh_value), key_sets(&last_value));
+        for (section, key) in OPTIONAL_KEYS {
+            for keys in [&mut fresh_keys, &mut last_keys] {
+                if let Some(set) = keys.get_mut(section) {
+                    set.remove(key);
+                }
+            }
+        }
         for (section, keys) in &fresh_keys {
             let before = last_keys.get(section);
             for key in keys
@@ -1721,6 +1728,14 @@ fn named_paks(raw: &RawDoc) -> Vec<(String, String)> {
     }
     out
 }
+
+/// Keys the typed model reads where absence is a legal state, as CompLock's
+/// own client tests them with `Has`: no `gameinfo_else` is an option that
+/// turns off by leaving its line out, no `gameinfo_off` a choice that
+/// comments nothing out. The site adds and drops them per card (build 6860
+/// dropped ragdolls' last `gameinfo_else`, #37), so their coming and going
+/// is not a schema change the watch should stop on.
+const OPTIONAL_KEYS: [(&str, &str); 2] = [("option", "gameinfo_else"), ("choice", "gameinfo_off")];
 
 /// The keys each section of a pack-data carries, unioned over its entries:
 /// the shape the watch compares against the last good data.
