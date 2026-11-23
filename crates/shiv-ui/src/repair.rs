@@ -356,6 +356,15 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
     state.on_dismiss_result(|| with_repair(|r| r.show_result(None)));
 }
 
+/// Re-read the Repair screen after the active profile changes (only when it has already loaded).
+pub(crate) fn reload() {
+    with_repair(|r| {
+        if r.generation.get() > 0 {
+            r.rescan();
+        }
+    });
+}
+
 impl Repair {
     fn with_state(&self, f: impl FnOnce(&RepairState<'_>)) {
         if let Some(app) = self.weak.upgrade() {

@@ -112,51 +112,43 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
     with_profiles(|p| p.refresh());
 }
 
-fn read(deps: &Deps, paths: &GamePaths) -> Snapshot {
+fn read(deps: &Deps, paths: &GamePaths) -> Result<Snapshot, String> {
     let running = (deps.running)();
     if !profiles::supported() {
-        return Snapshot {
+        return Ok(Snapshot {
             supported: false,
             set_up: false,
             active: String::new(),
             rows: Vec::new(),
             running,
-        };
+        });
     }
     if !profiles::is_set_up(paths) {
-        return Snapshot {
+        return Ok(Snapshot {
             supported: true,
             set_up: false,
             active: String::new(),
             rows: Vec::new(),
             running,
-        };
+        });
     }
     // Set up already, so loading only reads (and tidies the index).
-    match profiles::load(paths) {
-        Ok(p) => Snapshot {
-            supported: true,
-            set_up: true,
-            rows: p
-                .profiles
-                .iter()
-                .map(|x| {
-                    let n = profiles::mod_count(paths, &x.id);
-                    let detail = format!("{n} {}", if n == 1 { "mod" } else { "mods" });
-                    (x.id.clone(), x.name.clone(), detail)
-                })
-                .collect(),
-            active: p.active,
-            running,
-        },
-        Err(_) => Snapshot {
-            supported: true,
-            set_up: false,
-            active: String::new(),
-            rows: Vec::new(),
-            running,
-        },
-    }
+    let p = profiles::load(paths).map_err(|e| error_text(&e))?;
+    Ok(Snapshot {
+        supported: true,
+        set_up: true,
+        rows: p
+            .profiles
+            .iter()
+            .map(|x| {
+                let n = profiles::mod_count(paths, &x.id);
+                let detail = format!("{n} {}", if n == 1 { "mod" } else { "mods" });
+                (x.id.clone(), x.name.clone(), detail)
+            })
+            .collect(),
+        active: p.active,
+        running,
+    })
 }
 
 fn error_text(e: &ProfileError) -> String {
@@ -182,9 +174,8 @@ impl Profiles {
         let started = crate::spawn_worker(
             "shiv-profiles-read",
             move || {
-                (deps.locate)()
-                    .map(|paths| read(&deps, &paths))
-                    .map_err(|e| game_error_text(&e))
+                let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+                read(&deps, &paths)
             },
             move |result| {
                 let result = result.and_then(|r| r);
@@ -234,12 +225,13 @@ impl Profiles {
                         })
                         .collect::<Vec<_>>(),
                 );
+                let busy = self.busy.get();
                 self.with_state(|s| {
                     s.set_supported(snap.supported);
                     s.set_set_up(snap.set_up);
                     s.set_game_running(snap.running);
                     s.set_active_index(active_index.map_or(0, |i| i as i32));
-                    s.set_busy(false);
+                    s.set_busy(busy);
                     s.set_load_state(LoadState::Ready);
                 });
             }
@@ -307,6 +299,10 @@ impl Profiles {
             self.set_banner(&text);
         } else {
             // The mod list changed under every screen that shows it.
+            crate::installed::reload();
+            crate::browse::refresh_installed();
+            crate::repair::reload();
+            crate::performance::reload();
             crate::launch::refresh();
             self.with_state(|s| s.set_confirm_id("".into()));
         }
@@ -314,23 +310,25 @@ impl Profiles {
     }
 }
 
-/// "Name copy", "Name copy 2", ... the first one no profile uses.
+/// "Name copy", "Name copy 2", ... the first one no profile uses, within 40 chars.
 fn copy_name(paths: &GamePaths, name: &str) -> Result<String, ProfileError> {
+    const MAX_LEN: usize = 40;
     let existing = profiles::load(paths)?;
-    let base = if name.is_empty() {
-        "Profile".to_owned()
-    } else {
-        name.to_owned()
+    let base = if name.is_empty() { "Profile" } else { name };
+    let fit = |suffix: &str| -> String {
+        let keep = MAX_LEN.saturating_sub(suffix.chars().count());
+        let prefix: String = base.chars().take(keep).collect();
+        format!("{}{suffix}", prefix.trim_end())
     };
-    let mut candidate = format!("{base} copy");
-    let mut n = 2;
+    let mut candidate = fit(" copy");
+    let mut n = 2usize;
     while existing
         .profiles
         .iter()
         .any(|p| p.name.eq_ignore_ascii_case(&candidate))
     {
-        candidate = format!("{base} copy {n}");
+        candidate = fit(&format!(" copy {n}"));
         n += 1;
     }
-    Ok(candidate.chars().take(40).collect())
+    Ok(candidate)
 }

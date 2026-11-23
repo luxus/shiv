@@ -205,7 +205,11 @@ impl Tabs {
                             .map(|date| format!(" {date}"))
                             .unwrap_or_default();
                         if body.len() > MAX_BODY {
-                            body.truncate(MAX_BODY);
+                            let mut cut = MAX_BODY;
+                            while cut > 0 && !body.is_char_boundary(cut) {
+                                cut -= 1;
+                            }
+                            body.truncate(cut);
                         }
                         TextRow {
                             title: format!("{heading}{published}").into(),
@@ -309,7 +313,9 @@ impl Tabs {
             return;
         };
         if matches!(target, Target::Registry { .. }) {
-            self.fetch_registry_changelog(&target);
+            if tab == Tab::Changelog {
+                self.fetch_registry_changelog(&target);
+            }
             return;
         }
         let Target::GameBanana { remote_id, audio } = target else {

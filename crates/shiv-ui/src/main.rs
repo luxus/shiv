@@ -111,9 +111,21 @@ pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     )
 }
 
+/// Screen indices matching `App.screens` in `ui/app.slint`.
+pub(crate) mod screen {
+    pub(crate) const BROWSE: i32 = 0;
+    pub(crate) const INSTALLED: i32 = 1;
+    pub(crate) const SOURCES: i32 = 2;
+    pub(crate) const CROSSHAIR: i32 = 3;
+    pub(crate) const PERFORMANCE: i32 = 4;
+    pub(crate) const REPAIR: i32 = 5;
+    pub(crate) const PROFILES: i32 = 6;
+    pub(crate) const DOWNLOADS: i32 = 7;
+}
+
 /// Show the Repair screen (from a stale-package notice elsewhere).
 pub(crate) fn open_repair(app: &App) {
-    app.set_screen(5);
+    app.set_screen(screen::REPAIR);
     // `changed screen` also asks for a check; a second request while the
     // first runs is dropped, so this costs nothing when both fire.
     app.global::<RepairState>().invoke_shown();
@@ -187,13 +199,15 @@ fn run() -> Result<(), slint::PlatformError> {
         .ok()
         .and_then(|v| v.parse::<i32>().ok())
     {
-        app.set_screen(n.clamp(0, 7));
+        app.set_screen(n.clamp(screen::BROWSE, screen::DOWNLOADS));
         // Setting the screen from Rust does not run `changed screen`.
         match app.get_screen() {
-            3 => app.global::<CrosshairState>().invoke_shown(),
-            4 => app.global::<PerfState>().invoke_shown(),
-            5 => app.global::<RepairState>().invoke_shown(),
-            6 => app.global::<ProfilesState>().invoke_shown(),
+            screen::INSTALLED => app.global::<InstalledState>().invoke_refresh(),
+            screen::SOURCES => app.global::<SourcesState>().invoke_refresh(),
+            screen::CROSSHAIR => app.global::<CrosshairState>().invoke_shown(),
+            screen::PERFORMANCE => app.global::<PerfState>().invoke_shown(),
+            screen::REPAIR => app.global::<RepairState>().invoke_shown(),
+            screen::PROFILES => app.global::<ProfilesState>().invoke_shown(),
             _ => {}
         }
     }

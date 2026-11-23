@@ -922,6 +922,8 @@ struct Installed {
     pending: RefCell<VecDeque<PathBuf>>,
     /// A dropped file is being inspected on a worker.
     stepping: Cell<bool>,
+    /// An OS file/folder dialog is currently open.
+    picking: Cell<bool>,
 }
 
 /// A link install, addressable from the Downloads screen. `generation`
@@ -980,6 +982,7 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         client: Arc::new(Client::new(crate::DEFAULT_API_URL)),
         pending: RefCell::new(VecDeque::new()),
         stepping: Cell::new(false),
+        picking: Cell::new(false),
     });
     INSTALLED.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<InstalledState>();
@@ -1202,11 +1205,12 @@ pub(crate) fn queue_step() {
 /// bundle in it (the Installed screen's Export button).
 pub(crate) fn pick_export_folder() {
     with_installed(|i| {
-        if !i.idle() {
+        if !i.idle() || i.picking.get() {
             return;
         }
+        i.picking.set(true);
         let weak = i.weak.clone();
-        crate::spawn_worker(
+        let started = crate::spawn_worker(
             "shiv-pick-export",
             || {
                 rfd::FileDialog::new()
@@ -1214,14 +1218,20 @@ pub(crate) fn pick_export_folder() {
                     .pick_folder()
             },
             move |picked| {
-                let Some(folder) = picked.ok().flatten() else {
-                    return;
-                };
+                let folder = picked.ok().flatten();
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.export_bundle(folder));
+                    with_installed(|i| {
+                        i.picking.set(false);
+                        if let Some(folder) = folder {
+                            i.export_bundle(folder);
+                        }
+                    });
                 });
             },
         );
+        if !started {
+            i.picking.set(false);
+        }
     });
 }
 
@@ -1229,11 +1239,12 @@ pub(crate) fn pick_export_folder() {
 /// it holds (the Installed screen's Import button).
 pub(crate) fn pick_import_folder() {
     with_installed(|i| {
-        if !i.idle() {
+        if !i.idle() || i.picking.get() {
             return;
         }
+        i.picking.set(true);
         let weak = i.weak.clone();
-        crate::spawn_worker(
+        let started = crate::spawn_worker(
             "shiv-pick-import",
             || {
                 rfd::FileDialog::new()
@@ -1241,14 +1252,20 @@ pub(crate) fn pick_import_folder() {
                     .pick_folder()
             },
             move |picked| {
-                let Some(folder) = picked.ok().flatten() else {
-                    return;
-                };
+                let folder = picked.ok().flatten();
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.import_bundle(folder));
+                    with_installed(|i| {
+                        i.picking.set(false);
+                        if let Some(folder) = folder {
+                            i.import_bundle(folder);
+                        }
+                    });
                 });
             },
         );
+        if !started {
+            i.picking.set(false);
+        }
     });
 }
 
@@ -1267,10 +1284,14 @@ pub(crate) fn import_bundle_from(folder: PathBuf) {
 impl Installed {
     /// Write the installed library into a new bundle inside `folder`.
     fn export_bundle(&self, folder: PathBuf) {
+        if !self.idle() {
+            return;
+        }
         self.with_state(|s| {
             s.set_banner_text("Exporting mods\u{2026}".into());
         });
         self.set_flags(None, Some(true));
+        let remotes = crate::browse::catalog_remote_map();
         let deps = self.deps.clone();
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
@@ -1278,12 +1299,12 @@ impl Installed {
             move || -> Result<String, String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let report = interchange::export(&paths.addons, &folder, &|id| {
-                    crate::browse::catalog_remote(id).map(|(submission_id, is_audio)| {
-                        interchange::RemoteRef {
-                            submission_id,
-                            is_audio,
-                        }
-                    })
+                    remotes
+                        .get(id)
+                        .map(|(submission_id, is_audio)| interchange::RemoteRef {
+                            submission_id: submission_id.clone(),
+                            is_audio: *is_audio,
+                        })
                 })
                 .map_err(|e| e.to_string())?;
                 let mut text = format!(
@@ -1310,10 +1331,14 @@ impl Installed {
 
     /// Import the bundle `folder` points at into the active profile.
     fn import_bundle(&self, folder: PathBuf) {
+        if !self.idle() {
+            return;
+        }
         self.with_state(|s| {
             s.set_banner_text("Importing mods\u{2026}".into());
         });
         self.set_flags(None, Some(true));
+        let submissions = crate::browse::catalog_submission_map();
         let deps = self.deps.clone();
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
@@ -1322,17 +1347,10 @@ impl Installed {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
                 let report = interchange::import(&folder, &paths, move || running(), &|key| {
-                    key.strip_prefix("gamebanana:")
-                        .and_then(|rest| {
-                            let (kind, id) = rest.split_once(':')?;
-                            Some((id.to_owned(), kind == "sound"))
-                        })
-                        .and_then(|(id, _)| {
-                            // The catalog lists Shiv ids, not GameBanana
-                            // submissions; find the mod whose remote id this
-                            // key names.
-                            crate::browse::catalog_remote_of_submission(&id)
-                        })
+                    key.strip_prefix("gamebanana:").and_then(|rest| {
+                        let (_kind, id) = rest.split_once(':')?;
+                        submissions.get(id).cloned()
+                    })
                 })
                 .map_err(|e| e.to_string())?;
                 let mut text = format!(
@@ -1732,7 +1750,7 @@ impl Installed {
         let Some((id, adopt)) = self.editing.borrow().clone() else {
             return;
         };
-        if self.acting.get() {
+        if self.acting.get() || self.refreshing.get() {
             return;
         }
         let Some(app) = self.weak.upgrade() else {
@@ -2399,8 +2417,8 @@ impl Installed {
             return;
         };
         app.global::<DropState>().set_hover(false);
-        if app.get_screen() != 1 {
-            app.set_screen(1);
+        if app.get_screen() != crate::screen::INSTALLED {
+            app.set_screen(crate::screen::INSTALLED);
         }
         let (files, skipped): (Vec<PathBuf>, Vec<PathBuf>) =
             paths.into_iter().partition(|p| p.is_file());
@@ -2409,6 +2427,9 @@ impl Installed {
             pending.extend(files);
             pending.len()
         };
+        if self.generation.get() == 0 && !self.refreshing.get() {
+            self.refresh(false);
+        }
         let held = Self::dialog_open(&app) || !self.idle() || self.stepping.get();
         let mut parts: Vec<String> = Vec::new();
         if !skipped.is_empty() {

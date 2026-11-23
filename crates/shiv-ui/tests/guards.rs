@@ -162,6 +162,7 @@ struct Group {
     loop_body: bool,
     spawn_region: bool,
     worker_body: bool,
+    event_loop_region: bool,
 }
 
 struct Scan {
@@ -184,7 +185,9 @@ struct DocBlock {
 
 /// One pass over the source, string-, char-, raw-string- and comment-aware,
 /// tracking group nesting so the detector knows at every token whether it
-/// sits inside a `spawn_worker(...)` extent, a declared worker body, or a
+/// sits on the event loop (outside worker regions, or inside an
+/// `upgrade_in_event_loop` / `invoke_from_event_loop` callback), inside a
+/// `spawn_worker(...)` extent or a declared worker body, or inside a
 /// `#[cfg(test)]` item (which is skipped whole: attributes on fields and
 /// statements resolve to their `{...}` extent, or dissolve at the next
 /// `;`, `,`, `=`).
@@ -198,10 +201,9 @@ struct Walker<'s> {
     pending_fn_is_worker_body: bool,
     pending_loop_depth: Option<usize>,
     pending_spawn: bool,
+    pending_event_loop: bool,
     pending_test_item_depth: Option<usize>,
     test_item_groups: Vec<usize>,
-    spawn_depth: usize,
-    worker_depth: usize,
     doc: Option<DocBlock>,
 }
 
@@ -224,10 +226,9 @@ impl<'s> Walker<'s> {
             pending_fn_is_worker_body: false,
             pending_loop_depth: None,
             pending_spawn: false,
+            pending_event_loop: false,
             pending_test_item_depth: None,
             test_item_groups: Vec::new(),
-            spawn_depth: 0,
-            worker_depth: 0,
             doc: None,
         }
     }
@@ -425,6 +426,22 @@ impl<'s> Walker<'s> {
         let after_dot = start > 0 && self.bytes[start - 1] == b'.';
         match word {
             "fs" if colons => self.file_call(start, end + 2),
+            "File" if colons => {
+                let rest = &self.source[end + 2..];
+                if rest.starts_with("open(") || rest.starts_with("create(") {
+                    self.blocker(start, FILE_RULE);
+                }
+            }
+            "Command" if colons => {
+                if self.source[end + 2..].starts_with("new(") {
+                    self.blocker(start, FILE_RULE);
+                }
+            }
+            "Registry" if colons => {
+                if self.source[end + 2..].starts_with("load(") {
+                    self.blocker(start, FILE_RULE);
+                }
+            }
             "rfd" if colons => self.blocker(start, DIALOG_RULE),
             "ureq" if colons => {
                 if !self.source[end + 2..].starts_with(AGENT_PREFIX) {
@@ -436,6 +453,9 @@ impl<'s> Walker<'s> {
                 self.blocker(start, SLEEP_RULE);
             }
             "spawn_worker" if call => self.pending_spawn = true,
+            "upgrade_in_event_loop" | "invoke_from_event_loop" if call => {
+                self.pending_event_loop = true;
+            }
             "loop" | "while" | "for" => self.pending_loop_depth = Some(self.stack.len()),
             "fn" => self.declare_fn(),
             "mod" => self.record_module(end),
@@ -456,8 +476,21 @@ impl<'s> Walker<'s> {
         }
     }
 
+    fn on_event_loop(&self) -> bool {
+        for &index in self.stack.iter().rev() {
+            let group = &self.scan.groups[index];
+            if group.event_loop_region {
+                return true;
+            }
+            if group.spawn_region || group.worker_body {
+                return false;
+            }
+        }
+        true
+    }
+
     fn blocker(&mut self, at: usize, rule: &'static str) {
-        if self.spawn_depth == 0 && self.worker_depth == 0 {
+        if self.on_event_loop() {
             self.scan.blockers.push(finding_at(self.source, at, rule));
         }
     }
@@ -544,13 +577,11 @@ impl<'s> Walker<'s> {
         let worker_body = fn_body && self.pending_fn_is_worker_body;
         if worker_body {
             self.pending_fn_is_worker_body = false;
-            self.worker_depth += 1;
         }
         let spawn_region = kind == b'(' && self.pending_spawn;
         self.pending_spawn = false;
-        if spawn_region {
-            self.spawn_depth += 1;
-        }
+        let event_loop_region = kind == b'(' && self.pending_event_loop;
+        self.pending_event_loop = false;
         if kind == b'{' && self.pending_test_item_depth == Some(depth) {
             self.pending_test_item_depth = None;
             self.test_item_groups.push(self.scan.groups.len());
@@ -564,6 +595,7 @@ impl<'s> Walker<'s> {
             loop_body,
             spawn_region,
             worker_body,
+            event_loop_region,
         });
         self.stack.push(index);
         self.pos += 1;
@@ -573,12 +605,6 @@ impl<'s> Walker<'s> {
         if let Some(index) = self.stack.pop() {
             let group = &mut self.scan.groups[index];
             group.close = self.pos;
-            if group.spawn_region {
-                self.spawn_depth -= 1;
-            }
-            if group.worker_body {
-                self.worker_depth -= 1;
-            }
             if self.test_item_groups.contains(&index) {
                 self.test_item_groups.retain(|&at| at != index);
                 self.doc = None;
@@ -941,4 +967,39 @@ fn controller_workers_never_poll_locked_state() {
         "workers polling locked state on a timer:\n{}",
         polls.join("\n")
     );
+}
+
+#[test]
+fn guards_catch_blockers_inside_event_loop_callbacks_and_registry_io() {
+    let bad = r#"
+        fn handler(weak: Weak<App>) {
+            spawn_worker("w", || {
+                let _ = fs::read("ok_in_worker");
+            }, move |_| {
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    let _ = fs::read("bad_in_event_loop");
+                    let _ = Registry::load(&paths);
+                    let _ = File::open("bad");
+                    let _ = Command::new("bad");
+                    spawn_worker("nested", || {
+                        let _ = fs::read("ok_in_nested_worker");
+                    }, |_| {});
+                });
+            });
+        }
+    "#;
+    let blockers = event_loop_blockers(bad);
+    assert_eq!(blockers.len(), 4, "{blockers:?}");
+    assert!(
+        blockers
+            .iter()
+            .any(|f| f.excerpt.contains("bad_in_event_loop"))
+    );
+    assert!(
+        blockers
+            .iter()
+            .any(|f| f.excerpt.contains("Registry::load"))
+    );
+    assert!(blockers.iter().any(|f| f.excerpt.contains("File::open")));
+    assert!(blockers.iter().any(|f| f.excerpt.contains("Command::new")));
 }

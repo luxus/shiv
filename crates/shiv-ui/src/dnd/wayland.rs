@@ -96,12 +96,16 @@ impl State {
     /// Read the offer's uri-list. The source writes into the pipe from its
     /// own process, so reading here after a flush does not deadlock.
     fn read_uris(&self, offer: &WlDataOffer) -> Option<String> {
-        let (mut reader, writer) = std::io::pipe().ok()?;
+        const MAX_URI_LIST_BYTES: u64 = 1024 * 1024;
+        let (reader, writer) = std::io::pipe().ok()?;
         offer.receive(URI_LIST.into(), writer.as_fd());
         drop(writer);
         self.conn.flush().ok()?;
         let mut text = String::new();
-        reader.read_to_string(&mut text).ok()?;
+        reader
+            .take(MAX_URI_LIST_BYTES)
+            .read_to_string(&mut text)
+            .ok()?;
         Some(text)
     }
 }
@@ -177,6 +181,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                 let Some(offer) = id else { return };
                 if !state.has_files(&offer) {
                     offer.accept(serial, None);
+                    state.forget(&offer);
                     return;
                 }
                 offer.accept(serial, Some(URI_LIST.into()));

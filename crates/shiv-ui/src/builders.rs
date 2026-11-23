@@ -77,11 +77,11 @@ pub(crate) fn refresh(weak: Weak<App>, locate: Locate) {
             Ok::<_, String>((presets, hit, hp))
         },
         move |result| {
-            let Ok(Ok((presets, hit, hp))) = result else {
-                LOADED.with(|c| c.set(false));
-                return;
-            };
             let _ = weak.upgrade_in_event_loop(move |app| {
+                let Ok(Ok((presets, hit, hp))) = result else {
+                    LOADED.with(|c| c.set(false));
+                    return;
+                };
                 PRESETS.with(|p| *p.borrow_mut() = presets.clone());
                 let labels: Vec<slint::SharedString> =
                     presets.iter().map(|p| p.title.as_str().into()).collect();
@@ -407,14 +407,18 @@ fn apply_preset(weak: &Weak<App>, index: i32) {
 }
 
 fn finish(weak: &Weak<App>, result: Result<Result<String, String>, String>) {
-    let text = match result {
-        Ok(Ok(text)) => text,
-        Ok(Err(text)) | Err(text) => text,
+    let (ok, text) = match result {
+        Ok(Ok(text)) => (true, text),
+        Ok(Err(text)) | Err(text) => (false, text),
     };
     let _ = weak.upgrade_in_event_loop(move |app| {
         let state = app.global::<PerfState>();
         state.set_builder_busy(false);
         state.set_builder_status(text.into());
+        if ok {
+            crate::installed::reload();
+            crate::launch::refresh();
+        }
     });
 }
 
