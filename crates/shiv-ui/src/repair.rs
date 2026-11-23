@@ -122,7 +122,12 @@ pub(crate) fn row(m: &ModHealth) -> RepairRow {
         files: files.into(),
         tone: tone(m.status),
         status: status_label(m.status).into(),
-        summary: m.summary.as_str().into(),
+        // A mod that works says nothing; only a line worth reading shows.
+        summary: if m.status == RepairStatus::Works {
+            SharedString::new()
+        } else {
+            m.summary.as_str().into()
+        },
         changes: strings(capped(&m.changes)),
         remaining: strings(remaining),
         enabled: m.enabled,
@@ -594,6 +599,9 @@ mod tests {
         f.name = "pak01_dir.vpk".into();
         assert_eq!(row(&f).files.as_str(), "");
         // Disabled fixable mods say why Apply leaves them out.
+        // A mod that works carries no summary line; one with repairs does.
+        assert_eq!(row(&health("w", RepairStatus::Works, true)).summary, "");
+        assert_eq!(row(&health("x", RepairStatus::Fixable, true)).summary, "s");
         let d = row(&health("c", RepairStatus::Fixable, false));
         assert!(d.remaining.row_data(0).unwrap().contains("Disabled"));
         assert_eq!(capped(&["x".into()]), vec!["x".to_string()]);

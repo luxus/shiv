@@ -112,7 +112,7 @@ component RepairRowView inherits Rectangle {
                     font-weight: 600;
                     overflow: elide;
                 }
-                Text {
+                if root.item.summary != "": Text {
                     text: root.item.summary;
                     color: Theme.text-muted;
                     font-size: Theme.text-md;
