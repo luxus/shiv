@@ -112,6 +112,7 @@ fn system_pack_cache() -> Option<PathBuf> {
     }
 }
 
+/// Worker body: fetch the CompLock pack page over HTTPS with bounded timeouts and size.
 #[cfg(not(test))]
 fn fetch_pack_page(url: &str) -> Result<String, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -272,7 +273,7 @@ fn run_pack_install(
             {
                 let mut tick = |bytes: u64, _piece_total: Option<u64>| {
                     done = base + bytes;
-                    let step = done.saturating_mul(100) / total;
+                    let step = done.saturating_mul(100).checked_div(total).unwrap_or(0);
                     if step != last_step {
                         last_step = step;
                         report(PackUpdate::Progress {
@@ -436,6 +437,15 @@ pub(crate) fn cancel_pack(id: &str) {
 /// Start a cancelled or failed pack install again (Downloads screen).
 pub(crate) fn retry_pack(id: &str) {
     with_perf(|p| p.retry_pack(id));
+}
+
+/// Re-read gameinfo.gi and installed CompLock paks after a profile switch.
+pub(crate) fn reload() {
+    with_perf(|p| {
+        if p.on_screen.get() && p.catalog.borrow().is_some() {
+            p.reload_file();
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -693,12 +703,16 @@ fn load_catalog(deps: &Deps) -> CatalogLoad {
     }
 }
 
+fn convar_name(entry: &ConfigEntry) -> Option<&str> {
+    entry.path.get(1).map(String::as_str)
+}
+
 fn convars_of(entries: Vec<ConfigEntry>) -> HashMap<String, (String, String)> {
     entries
         .into_iter()
         .filter(|e| e.path.len() == 2 && e.path[0].eq_ignore_ascii_case(CONVARS))
         .filter_map(|e| {
-            let name = e.path[1].clone();
+            let name = convar_name(&e)?.to_owned();
             Some((name.to_ascii_lowercase(), (name, e.value?)))
         })
         .collect()
@@ -1084,9 +1098,12 @@ impl Perf {
         }
         *self.pack_installed.borrow_mut() = packs;
         self.prune_pending();
+        self.publish_changes();
+        if !self.on_screen.get() {
+            return;
+        }
         self.rebuild_items();
         self.refresh_list();
-        self.publish_changes();
         self.publish_editor();
         self.publish_status();
         self.publish_pack_rows();
@@ -1152,7 +1169,8 @@ impl Perf {
     /// writes, staged or already in the file.
     fn pack_option_is_on(&self, entries: &[ConfigEntry]) -> bool {
         entries.iter().all(|e| {
-            self.staged_or_current(&e.path[1].to_ascii_lowercase())
+            convar_name(e)
+                .and_then(|name| self.staged_or_current(&name.to_ascii_lowercase()))
                 .is_some_and(|v| perf::values_equal(&v, e.value.as_deref().unwrap_or_default()))
         }) && !entries.is_empty()
     }
@@ -1813,7 +1831,9 @@ impl Perf {
             .map(|(k, e)| (k.clone(), e.clone()))
             .collect();
         for (key, entry) in staged {
-            self.stage(&key, &entry.path[1], entry.value);
+            if let Some(name) = entry.path.get(1) {
+                self.stage(&key, name, entry.value);
+            }
         }
     }
 
@@ -1840,7 +1860,7 @@ impl Perf {
         let rows: Vec<PerfChange> = pending
             .iter()
             .map(|(key, e)| PerfChange {
-                name: e.path[1].as_str().into(),
+                name: convar_name(e).unwrap_or(key.as_str()).into(),
                 before: current
                     .get(key)
                     .map_or_else(|| "not set".to_string(), |(_, v)| v.clone())
@@ -1879,7 +1899,9 @@ impl Perf {
         }
         self.pending.borrow_mut().clear();
         for e in entries {
-            self.stage(&e.path[1].to_ascii_lowercase(), &e.path[1], e.value);
+            if let Some(name) = e.path.get(1) {
+                self.stage(&name.to_ascii_lowercase(), name, e.value);
+            }
         }
         self.note.borrow_mut().clear();
         let blurb = catalog
@@ -1918,7 +1940,9 @@ impl Perf {
         }
         self.pending.borrow_mut().clear();
         for e in admission.entries {
-            self.stage(&e.path[1].to_ascii_lowercase(), &e.path[1], e.value);
+            if let Some(name) = e.path.get(1) {
+                self.stage(&name.to_ascii_lowercase(), name, e.value);
+            }
         }
         self.note.borrow_mut().clear();
         let mut detail = format!(
@@ -1976,11 +2000,9 @@ impl Perf {
         };
         let admission = catalog.admitted(&staged);
         for entry in admission.entries {
-            self.stage(
-                &entry.path[1].to_ascii_lowercase(),
-                &entry.path[1],
-                entry.value,
-            );
+            if let Some(name) = entry.path.get(1) {
+                self.stage(&name.to_ascii_lowercase(), name, entry.value);
+            }
         }
         self.note.borrow_mut().clear();
         let mut detail = format!("{} {}.", option.title, if on { "off" } else { "on" });
@@ -2042,11 +2064,9 @@ impl Perf {
             }
             if let Some(catalog) = self.catalog() {
                 for entry in catalog.admitted(&staged).entries {
-                    self.stage(
-                        &entry.path[1].to_ascii_lowercase(),
-                        &entry.path[1],
-                        entry.value,
-                    );
+                    if let Some(name) = entry.path.get(1) {
+                        self.stage(&name.to_ascii_lowercase(), name, entry.value);
+                    }
                 }
             }
         }
@@ -2063,10 +2083,14 @@ impl Perf {
         let Some(fov) = pack.fov() else {
             return;
         };
+        let key = fov.cvar.to_ascii_lowercase();
         let value = Self::fov_text(fov, v.clamp(fov.from, fov.to));
-        self.stage(&fov.cvar.to_ascii_lowercase(), &fov.cvar, Some(value));
+        self.stage(&key, &fov.cvar, Some(value));
         self.note.borrow_mut().clear();
-        self.refresh_after_edit();
+        self.refresh_rows(&[key.as_str()]);
+        self.publish_changes();
+        self.publish_editor();
+        self.refresh_pack_row(PACK_FOV_ID);
     }
 
     /// Install (or update) a pak: the option's own pak, or the picked
@@ -2125,14 +2149,14 @@ impl Perf {
             .is_some_and(|j| j.generation == generation);
         match update {
             PackUpdate::Progress { done, total } => {
-                crate::downloads::progress(id, done, total);
                 if current {
+                    crate::downloads::progress(id, done, total);
                     self.refresh_pack_row(self.row_id_of_mod(id));
                 }
             }
             PackUpdate::Installing => {
-                crate::downloads::installing(id);
                 if current {
+                    crate::downloads::installing(id);
                     self.refresh_pack_row(self.row_id_of_mod(id));
                 }
             }
@@ -2142,11 +2166,23 @@ impl Perf {
                     |j| (j.task.name.clone(), Some(complock::revision(&j.task.pak))),
                 );
                 if current {
-                    self.pack_jobs.borrow_mut().remove(id);
+                    match &result {
+                        Ok(_) => {
+                            self.pack_jobs.borrow_mut().remove(id);
+                        }
+                        Err(_) => {
+                            if let Some(job) = self.pack_jobs.borrow_mut().get_mut(id) {
+                                job.active = false;
+                                job.stopping = false;
+                            }
+                        }
+                    }
                 }
                 match result {
                     Ok(note) => {
-                        crate::downloads::finished(id, crate::downloads::Outcome::Done);
+                        if current {
+                            crate::downloads::finished(id, crate::downloads::Outcome::Done);
+                        }
                         self.pack_installed
                             .borrow_mut()
                             .insert(id.to_owned(), revision);
@@ -2160,12 +2196,14 @@ impl Perf {
                         if text != CANCELLED_TEXT {
                             self.show_result(&format!("Couldn't install {name}"), &text, true);
                         }
-                        let outcome = if text == CANCELLED_TEXT {
-                            crate::downloads::Outcome::Cancelled
-                        } else {
-                            crate::downloads::Outcome::Failed(text)
-                        };
-                        crate::downloads::finished(id, outcome);
+                        if current {
+                            let outcome = if text == CANCELLED_TEXT {
+                                crate::downloads::Outcome::Cancelled
+                            } else {
+                                crate::downloads::Outcome::Failed(text)
+                            };
+                            crate::downloads::finished(id, outcome);
+                        }
                         if running {
                             self.with_state(|s| s.set_game_running(true));
                         }
@@ -2343,7 +2381,9 @@ impl Perf {
                     s.set_complock_staged(false);
                     s.set_game_running(false);
                 });
-                self.file_loaded((Ok(current), false, BTreeMap::new()));
+                let packs = self.pack_installed.borrow().clone();
+                self.file_loaded((Ok(current), false, packs));
+                crate::launch::refresh();
                 let what = if count == 1 {
                     "1 change".to_string()
                 } else {

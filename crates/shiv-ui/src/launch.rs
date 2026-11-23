@@ -28,7 +28,10 @@ use slint::{ComponentHandle, Model as _, ModelRc, VecModel, Weak};
 
 use crate::browse::game_error_text;
 use crate::installed::Locate;
-use crate::{App, CrosshairState, FindingRow, InstalledState, LaunchState, PerfState};
+use crate::{
+    App, CrosshairState, FindingRow, InstalledState, LaunchState, PerfState, ProfilesState,
+    RepairState, SourcesState,
+};
 
 pub(crate) type Check = Arc<dyn Fn(&GamePaths) -> Vec<Finding> + Send + Sync>;
 /// Opens the launch link; returns early with `Cancelled` once the flag is set.
@@ -491,9 +494,12 @@ impl Launch {
             return;
         };
         match app.get_screen() {
-            1 => app.global::<InstalledState>().invoke_refresh(),
-            2 => app.global::<CrosshairState>().invoke_shown(),
-            3 => app.global::<PerfState>().invoke_shown(),
+            crate::screen::INSTALLED => app.global::<InstalledState>().invoke_refresh(),
+            crate::screen::SOURCES => app.global::<SourcesState>().invoke_refresh(),
+            crate::screen::CROSSHAIR => app.global::<CrosshairState>().invoke_shown(),
+            crate::screen::PERFORMANCE => app.global::<PerfState>().invoke_shown(),
+            crate::screen::REPAIR => app.global::<RepairState>().invoke_shown(),
+            crate::screen::PROFILES => app.global::<ProfilesState>().invoke_shown(),
             _ => {}
         }
     }
@@ -626,6 +632,7 @@ impl Launch {
         let Some((paths, _, _)) = self.last.borrow().clone() else {
             return;
         };
+        self.next_generation();
         self.with_state(|s| {
             s.set_busy(true);
             s.set_busy_text("Fixing gameinfo.gi".into());

@@ -7,7 +7,7 @@
 //! installed content revision with the current one, exactly like a
 //! catalog date.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use shiv_api::{
 };
 use shiv_core::game::{GameError, GamePaths};
 use shiv_core::registry::{self, AddedSource, RegistryError};
-use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
+use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::browse;
 use crate::{App, SourceRow, SourcesState};
@@ -93,6 +93,7 @@ struct Sources {
     catalogs: RefCell<Vec<Catalog>>,
     /// A descriptor the user reviewed, waiting for the Add button.
     pending: RefCell<Option<SourceDescriptor>>,
+    generation: Cell<u64>,
 }
 
 pub fn attach(app: &App) {
@@ -107,6 +108,7 @@ pub(crate) fn attach_with(app: &App, locate: Locate) {
         rows: rows.clone(),
         catalogs: RefCell::new(Vec::new()),
         pending: RefCell::new(None),
+        generation: Cell::new(0),
     });
     SOURCES.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<SourcesState>();
@@ -139,28 +141,23 @@ impl Sources {
 
     /// Show the saved sources and load every registry's catalog.
     fn refresh(&self) {
-        let saved = self
-            .registry()
-            .map(|r| r.sources().to_vec())
-            .unwrap_or_default();
-        let rows: Vec<SourceRow> = saved
-            .iter()
-            .map(|s| SourceRow {
-                origin: s.origin.as_str().into(),
-                id: s.source_id.as_str().into(),
-                name: s.name.as_str().into(),
-                descriptor: s.descriptor_url.as_str().into(),
-                detail: source_detail(s, None).into(),
-            })
-            .collect();
-        self.rows.set_vec(rows);
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        let locate = self.locate.clone();
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
             "shiv-load-sources",
-            move || fetch_catalogs(&saved),
+            move || -> Result<(Vec<AddedSource>, Vec<CatalogOutcome>), String> {
+                let saved = load_registry(&locate)
+                    .map(|r| r.sources().to_vec())
+                    .unwrap_or_default();
+                let loaded = fetch_catalogs(&saved);
+                Ok((saved, loaded))
+            },
             move |result| {
+                let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_sources(|s| s.catalogs_loaded(result));
+                    with_sources(|s| s.catalogs_loaded(generation, result));
                 });
             },
         );
@@ -171,11 +168,20 @@ impl Sources {
         }
     }
 
-    fn catalogs_loaded(&self, result: Result<Vec<CatalogOutcome>, String>) {
+    fn catalogs_loaded(
+        &self,
+        generation: u64,
+        result: Result<(Vec<AddedSource>, Vec<CatalogOutcome>), String>,
+    ) {
+        if generation != self.generation.get() {
+            return;
+        }
         let mut banners = Vec::new();
         let mut catalogs = Vec::new();
+        let mut saved = Vec::new();
         match result {
-            Ok(loaded) => {
+            Ok((sources, loaded)) => {
+                saved = sources;
                 for (source, outcome) in loaded {
                     match outcome {
                         Ok(listings) => catalogs.push(Catalog { source, listings }),
@@ -192,21 +198,23 @@ impl Sources {
         for catalog in &catalogs {
             banners.extend(refused_text(&catalog.source, &catalog.listings));
         }
-        if !banners.is_empty() {
-            self.with_state(|s| s.set_banner_text(banners.join("\n").into()));
-        }
-        for row in 0..self.rows.row_count() {
-            let Some(mut item) = self.rows.row_data(row) else {
-                continue;
-            };
-            let loaded = catalogs.iter().find(|c| {
-                c.source.origin == item.origin.as_str() && c.source.source_id == item.id.as_str()
-            });
-            if let Some(c) = loaded {
-                item.detail = source_detail(&c.source, Some(&c.listings)).into();
-                self.rows.set_row_data(row, item);
-            }
-        }
+        self.with_state(|s| s.set_banner_text(banners.join("\n").into()));
+        let rows: Vec<SourceRow> = saved
+            .iter()
+            .map(|s| {
+                let loaded = catalogs
+                    .iter()
+                    .find(|c| c.source.origin == s.origin && c.source.source_id == s.source_id);
+                SourceRow {
+                    origin: s.origin.as_str().into(),
+                    id: s.source_id.as_str().into(),
+                    name: s.name.as_str().into(),
+                    descriptor: s.descriptor_url.as_str().into(),
+                    detail: source_detail(s, loaded.map(|c| c.listings.as_slice())).into(),
+                }
+            })
+            .collect();
+        self.rows.set_vec(rows);
         *self.catalogs.borrow_mut() = catalogs;
         browse::refresh_sources();
         crate::installed::catalogs_ready();
@@ -217,6 +225,9 @@ impl Sources {
             return;
         };
         let state = app.global::<SourcesState>();
+        if state.get_add_busy() {
+            return;
+        }
         let url = state.get_add_url().to_string();
         if url.trim().is_empty() {
             state.set_add_error("Paste the URL of a dmm-source.json descriptor.".into());
@@ -230,13 +241,28 @@ impl Sources {
         }
         state.set_add_busy(true);
         state.set_add_error("".into());
+        let locate = self.locate.clone();
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
             "shiv-review-source",
-            move || {
-                NativeSourceClient::new()
+            move || -> Result<(SourceDescriptor, String), String> {
+                let descriptor = NativeSourceClient::new()
                     .fetch_descriptor(url.trim())
-                    .map_err(|e| browse::catalog_error_text(&e))
+                    .map_err(|e| browse::catalog_error_text(&e))?;
+                let Some(origin) = origin_of(&descriptor.descriptor_url) else {
+                    return Err("The descriptor URL has no usable origin.".into());
+                };
+                if let Some(existing) = load_registry(&locate)
+                    .ok()
+                    .and_then(|r| r.find(&origin, &descriptor.source_id).cloned())
+                    .filter(|existing| !existing.predates_origins())
+                {
+                    return Err(format!(
+                        "{} is already added from {}",
+                        existing.name, existing.descriptor_url
+                    ));
+                }
+                Ok((descriptor, origin))
             },
             move |result| {
                 let result = result.and_then(|r| r);
@@ -253,7 +279,7 @@ impl Sources {
 
     /// A fetched descriptor is offered for review: the name and the one
     /// origin its downloads may come from, before anything is saved.
-    fn reviewed(&self, result: Result<SourceDescriptor, String>) {
+    fn reviewed(&self, result: Result<(SourceDescriptor, String), String>) {
         self.with_state(|s| s.set_add_busy(false));
         let Some(app) = self.weak.upgrade() else {
             return;
@@ -261,26 +287,7 @@ impl Sources {
         let state = app.global::<SourcesState>();
         match result {
             Err(text) => state.set_add_error(text.into()),
-            Ok(descriptor) => {
-                let Some(origin) = origin_of(&descriptor.descriptor_url) else {
-                    state.set_add_error("The descriptor URL has no usable origin.".into());
-                    return;
-                };
-                if let Some(existing) = self
-                    .registry()
-                    .ok()
-                    .and_then(|r| r.find(&origin, &descriptor.source_id).cloned())
-                    .filter(|existing| !existing.predates_origins())
-                {
-                    state.set_add_error(
-                        format!(
-                            "{} is already added from {}",
-                            existing.name, existing.descriptor_url
-                        )
-                        .into(),
-                    );
-                    return;
-                }
+            Ok((descriptor, origin)) => {
                 state.set_review_name(descriptor.name.clone().into());
                 state.set_review_origin(origin.into());
                 state.set_review_id(descriptor.source_id.clone().into());
@@ -296,6 +303,9 @@ impl Sources {
             return;
         };
         let state = app.global::<SourcesState>();
+        if state.get_add_busy() {
+            return;
+        }
         let Some(descriptor) = self.pending.borrow().clone() else {
             state.set_review_open(false);
             return;
@@ -309,7 +319,34 @@ impl Sources {
             api_origins: descriptor.api_origins,
             download_origins: descriptor.download_origins,
         };
-        let outcome = self.registry().and_then(|mut r| r.add(source));
+        state.set_add_busy(true);
+        let locate = self.locate.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-add-source",
+            move || {
+                load_registry(&locate)
+                    .and_then(|mut r| r.add(source))
+                    .map_err(|e| e.to_string())
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_sources(|s| s.added(result));
+                });
+            },
+        );
+        if !started {
+            self.added(Err("Could not start a background thread.".into()));
+        }
+    }
+
+    fn added(&self, outcome: Result<(), String>) {
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let state = app.global::<SourcesState>();
+        state.set_add_busy(false);
         match outcome {
             Ok(()) => {
                 state.set_review_open(false);
@@ -318,7 +355,7 @@ impl Sources {
                 *self.pending.borrow_mut() = None;
                 self.refresh();
             }
-            Err(e) => state.set_add_error(e.to_string().into()),
+            Err(e) => state.set_add_error(e.into()),
         }
     }
 
@@ -328,23 +365,39 @@ impl Sources {
     }
 
     fn remove(&self, origin: &str, source_id: &str) {
-        let outcome = self
-            .registry()
-            .and_then(|mut r| r.remove(origin, source_id));
-        match outcome {
-            Ok(()) => self.refresh(),
-            Err(e) => {
-                self.with_state(|s| s.set_banner_text(e.to_string().into()));
-            }
+        let origin = origin.to_owned();
+        let source_id = source_id.to_owned();
+        let locate = self.locate.clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-remove-source",
+            move || {
+                load_registry(&locate)
+                    .and_then(|mut r| r.remove(&origin, &source_id))
+                    .map_err(|e| e.to_string())
+            },
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_sources(|s| match result {
+                        Ok(()) => s.refresh(),
+                        Err(e) => s.with_state(|st| st.set_banner_text(e.into())),
+                    });
+                });
+            },
+        );
+        if !started {
+            self.with_state(|s| {
+                s.set_banner_text("Could not start a background thread.".into());
+            });
         }
     }
 }
 
-impl Sources {
-    fn registry(&self) -> Result<registry::Registry, RegistryError> {
-        let paths = (self.locate)().map_err(|e| RegistryError::Refused(e.to_string()))?;
-        registry::Registry::load(&paths)
-    }
+/// Worker body: load the saved sources registry for the located game.
+fn load_registry(locate: &Locate) -> Result<registry::Registry, RegistryError> {
+    let paths = locate().map_err(|e| RegistryError::Refused(e.to_string()))?;
+    registry::Registry::load(&paths)
 }
 
 /// One registry's catalog, as Browse shows it — or why it did not load.

@@ -410,6 +410,7 @@ struct ThumbQueue {
     pending: VecDeque<String>,
     /// Pending or in flight.
     known: HashSet<String>,
+    stopped: bool,
 }
 
 /// Called on the event loop when a request finished: the URL, and whether
@@ -459,7 +460,7 @@ impl ThumbLoader {
     fn request(&self, url: &str) {
         let (lock, cvar) = &*self.shared;
         let mut q = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        if q.known.contains(url) {
+        if q.stopped || q.known.contains(url) {
             return;
         }
         q.known.insert(url.to_owned());
@@ -476,10 +477,20 @@ impl ThumbLoader {
     fn clear_pending(&self) {
         let (lock, _) = &*self.shared;
         let mut q = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let ThumbQueue { pending, known } = &mut *q;
+        let ThumbQueue { pending, known, .. } = &mut *q;
         for url in pending.drain(..) {
             known.remove(&url);
         }
+    }
+
+    /// Wake parked workers and tell them to exit.
+    fn shutdown(&self) {
+        let (lock, cvar) = &*self.shared;
+        let mut q = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        q.stopped = true;
+        q.pending.clear();
+        q.known.clear();
+        cvar.notify_all();
     }
 }
 
@@ -494,6 +505,9 @@ fn thumb_worker(
         let url = {
             let mut q = lock.lock().unwrap_or_else(PoisonError::into_inner);
             loop {
+                if q.stopped {
+                    return;
+                }
                 if let Some(url) = q.pending.pop_back() {
                     break url;
                 }
@@ -628,6 +642,8 @@ struct ModList {
     show_nsfw: Cell<bool>,
     /// Blurred copies of NSFW thumbnails, by URL.
     obscured: RefCell<HashMap<String, slint::Image>>,
+    /// Converted `slint::Image` handles for normal thumbnails, by URL.
+    slint_thumbs: RefCell<HashMap<String, slint::Image>>,
     notify: ModelNotify,
     /// The mod whose detail page is open (it may be filtered out of the list).
     detail: RefCell<Option<Entry>>,
@@ -667,7 +683,16 @@ impl ModList {
     /// The thumbnail as shown: NSFW ones blurred unless the viewer opted in.
     fn display_thumb(&self, url: &str, img: &thumbs::Image, nsfw: bool) -> Option<slint::Image> {
         if !nsfw || self.show_nsfw.get() {
-            return Some(to_slint(img));
+            if let Some(done) = self.slint_thumbs.borrow().get(url) {
+                return Some(done.clone());
+            }
+            let image = to_slint(img);
+            let mut kept = self.slint_thumbs.borrow_mut();
+            if kept.len() >= OBSCURED_KEEP {
+                kept.clear();
+            }
+            kept.insert(url.to_owned(), image.clone());
+            return Some(image);
         }
         if let Some(done) = self.obscured.borrow().get(url) {
             return Some(done.clone());
@@ -1199,10 +1224,7 @@ pub(crate) fn catalog_version(id: &str) -> Option<String> {
     let mut out = None;
     with_browse(|b| {
         out = b
-            .catalog
-            .borrow()
-            .iter()
-            .find(|m| m.id == id)
+            .catalog_mod(id)
             .and_then(|m| m.version().map(str::to_owned));
     });
     out
@@ -1213,10 +1235,7 @@ pub(crate) fn catalog_about(id: &str) -> Option<(Option<String>, Option<String>)
     let mut out = None;
     with_browse(|b| {
         out = b
-            .catalog
-            .borrow()
-            .iter()
-            .find(|m| m.id == id)
+            .catalog_mod(id)
             .map(|m| (m.author.clone(), m.description.clone()));
     });
     out
@@ -1227,43 +1246,37 @@ pub(crate) fn catalog_kind(id: &str) -> Option<(Option<String>, Option<String>)>
     let mut out = None;
     with_browse(|b| {
         out = b
-            .catalog
-            .borrow()
-            .iter()
-            .find(|m| m.id == id)
+            .catalog_mod(id)
             .map(|m| (m.hero.clone(), m.category.clone()));
     });
     out
 }
 
-/// The catalog's `GameBanana` `(submission id, is a Sound)` of `id`, for the
-/// interchange keys of an export and a duplicate check of an import.
-pub(crate) fn catalog_remote(id: &str) -> Option<(String, bool)> {
-    let mut out = None;
+/// Snapshot of `mod_id -> (GameBanana submission id, is_audio)` for worker threads
+/// (which cannot read the UI thread's `BROWSE` `thread_local!`).
+pub(crate) fn catalog_remote_map() -> HashMap<String, (String, bool)> {
+    let mut out = HashMap::new();
     with_browse(|b| {
-        out = b
-            .catalog
-            .borrow()
+        let catalog = b.catalog.borrow();
+        out = catalog
             .iter()
-            .find(|m| m.id == id)
             .filter(|m| !m.remote_id.is_empty() && m.remote_id.bytes().all(|b| b.is_ascii_digit()))
-            .map(|m| (m.remote_id.clone(), m.is_audio));
+            .map(|m| (m.id.clone(), (m.remote_id.clone(), m.is_audio)))
+            .collect();
     });
     out
 }
 
-/// The Shiv mod id of the catalog mod whose `GameBanana` submission is
-/// `submission`, so an interchange key can be told apart from an installed
-/// mod (the inverse of `catalog_remote`).
-pub(crate) fn catalog_remote_of_submission(submission: &str) -> Option<String> {
-    let mut out = None;
+/// Snapshot of `GameBanana submission id -> Shiv mod_id` for import workers.
+pub(crate) fn catalog_submission_map() -> HashMap<String, String> {
+    let mut out = HashMap::new();
     with_browse(|b| {
-        out = b
-            .catalog
-            .borrow()
+        let catalog = b.catalog.borrow();
+        out = catalog
             .iter()
-            .find(|m| m.remote_id == submission)
-            .map(|m| m.id.clone());
+            .filter(|m| !m.remote_id.is_empty())
+            .map(|m| (m.remote_id.clone(), m.id.clone()))
+            .collect();
     });
     out
 }
@@ -1305,6 +1318,8 @@ pub struct Browse {
     client: Arc<Client>,
     list: Rc<ModList>,
     catalog: RefCell<Rc<Vec<ModDto>>>,
+    /// `mod_id -> index in catalog` for O(1) lookups.
+    catalog_index: RefCell<HashMap<String, usize>>,
     /// Ids the loaded catalog marks NSFW; `None` until it has loaded.
     nsfw_ids: RefCell<Option<HashSet<String>>>,
     categories: RefCell<Vec<String>>,
@@ -1332,6 +1347,13 @@ pub struct Browse {
     gallery: ThumbLoader,
     /// Opens a web link (blocking, on a worker); replaced in tests.
     opener: RefCell<Opener>,
+}
+
+impl Drop for Browse {
+    fn drop(&mut self) {
+        self.list.loader.shutdown();
+        self.gallery.shutdown();
+    }
 }
 
 type Opener = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
@@ -1387,6 +1409,7 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
         cache: cache.clone(),
         show_nsfw: Cell::new(false),
         obscured: RefCell::new(HashMap::new()),
+        slint_thumbs: RefCell::new(HashMap::new()),
         notify: ModelNotify::default(),
         detail: RefCell::new(None),
         detail_notify: ModelNotify::default(),
@@ -1402,6 +1425,7 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
         list: list.clone(),
         nsfw_ids: RefCell::new(None),
         catalog: RefCell::new(Rc::new(Vec::new())),
+        catalog_index: RefCell::new(HashMap::new()),
         categories: RefCell::new(Vec::new()),
         heroes: RefCell::new(Vec::new()),
         hero_model: Rc::new(VecModel::default()),
@@ -1643,8 +1667,16 @@ impl Browse {
                 .map(|m| m.id.clone())
                 .collect(),
         );
+        let index_map: HashMap<String, usize> = mods
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.id.clone(), i))
+            .collect();
+        *self.catalog_index.borrow_mut() = index_map;
         *self.catalog.borrow_mut() = Rc::new(mods);
-        *self.list.installed.borrow_mut() = installed;
+        let mut merged_installed = installed;
+        merged_installed.extend(self.list.installed_since.borrow().iter().cloned());
+        *self.list.installed.borrow_mut() = merged_installed;
         // Installed rows of mods installed before Shiv recorded the flag.
         crate::installed::nsfw_changed();
         self.with_state(|s| {
@@ -1655,6 +1687,11 @@ impl Browse {
         self.refresh();
         #[cfg(any(debug_assertions, feature = "dev-probe"))]
         dev_probe::catalog_loaded();
+    }
+
+    fn catalog_mod(&self, id: &str) -> Option<ModDto> {
+        let idx = *self.catalog_index.borrow().get(id)?;
+        self.catalog.borrow().get(idx).cloned()
     }
 
     /// Re-run the query over the catalog and replace the list.
@@ -1671,9 +1708,13 @@ impl Browse {
                 .collect::<Vec<_>>(),
             &key,
         );
+        let now = now_epoch();
         let mut total = catalog.len();
         let mut entries: Vec<Entry> = if key.shows_catalog() {
-            page.items.into_iter().map(Entry::from_dto).collect()
+            page.items
+                .into_iter()
+                .map(|m| Entry::from_dto_at(m, now))
+                .collect()
         } else {
             Vec::new()
         };
@@ -1818,16 +1859,19 @@ impl Browse {
         self.refresh();
     }
 
-    /// The mod's entry from the list or detail page, else from the catalog:
-    /// the filtered list may not hold it (an update started from Installed).
+    /// The mod's entry from the list or detail page, else from the catalog or
+    /// loaded registries: the filtered list may not hold it (an update started
+    /// from Installed).
     fn entry_for(&self, id: &str) -> Option<Entry> {
-        self.list.find(id).or_else(|| {
-            let catalog = self.catalog.borrow().clone();
-            catalog
-                .iter()
-                .find(|m| m.id == id)
-                .map(|m| Entry::from_dto(m.clone()))
-        })
+        self.list
+            .find(id)
+            .or_else(|| self.catalog_mod(id).map(Entry::from_dto))
+            .or_else(|| {
+                registry_entries()
+                    .into_iter()
+                    .flat_map(|(_, entries)| entries)
+                    .find(|e| e.id == id)
+            })
     }
 
     fn busy(&self, id: &str) -> bool {
@@ -1896,7 +1940,7 @@ impl Browse {
             resolving.remove(id);
         }
         self.list.changed(id);
-        let name = self.list.find(id).map_or_else(|| id.to_owned(), |e| e.name);
+        let name = self.entry_for(id).map_or_else(|| id.to_owned(), |e| e.name);
         let mut files = match result {
             Ok(files) => files,
             Err(text) => {
@@ -2308,13 +2352,13 @@ impl Browse {
     /// Open a mod's page from another screen; Back returns to `from`.
     /// False when the catalog has no such mod (not loaded, or removed).
     fn show_detail_from(&self, id: &str, from: i32) -> bool {
-        if !self.catalog.borrow().iter().any(|m| m.id == id) {
+        if self.entry_for(id).is_none() {
             return false;
         }
         self.open_detail(id);
         if let Some(app) = self.weak.upgrade() {
             app.global::<BrowseState>().set_return_screen(from);
-            app.set_screen(0);
+            app.set_screen(crate::screen::BROWSE);
         }
         true
     }

@@ -278,7 +278,10 @@ fn run(
     name: &'static str,
     work: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) {
-    let Some(app) = weak.upgrade() else { return };
+    let Some(app) = weak.upgrade() else {
+        QUEUE.with(|q| q.borrow_mut().swapping = false);
+        return;
+    };
     let state = app.global::<ConflictState>();
     state.set_busy(true);
     state.set_error_text("".into());

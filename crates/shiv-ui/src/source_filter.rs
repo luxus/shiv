@@ -162,12 +162,14 @@ fn load_from(file: &Path) -> SourceKey {
 
 /// Worker body: [`save`] to `file`, atomically.
 fn save_to(file: &Path, key: &SourceKey) {
+    static NEXT_TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(dir) = file.parent()
         && fs::create_dir_all(dir).is_err()
     {
         return;
     }
-    let tmp = file.with_extension("tmp");
+    let seq = NEXT_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = file.with_extension(format!("tmp.{}.{seq}", std::process::id()));
     if fs::write(&tmp, key.encode() + "\n").is_ok() && fs::rename(&tmp, file).is_err() {
         let _ = fs::remove_file(&tmp);
     }
