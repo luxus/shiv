@@ -24,6 +24,7 @@
     <binary>shiv</binary>
   </provides>
   <releases>
+    <release version="0.5.0" date="2026-11-23"/>
     <release version="0.4.2" date="2026-11-23"/>
     <release version="0.4.1" date="2026-11-23"/>
     <release version="0.4.0" date="2026-11-23"/>
