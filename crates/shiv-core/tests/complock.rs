@@ -79,17 +79,15 @@ fn options_carry_ids_groups_and_unique_pak_urls() {
     }
 }
 
+/// Any option that carries off values addresses the lines its on values
+/// write. Build 6860 has none left (ragdolls went opt-in, #37); the site may
+/// bring them back on any card.
 #[test]
 fn convar_options_carry_matching_on_and_off_values() {
-    let with_off: Vec<_> = complock::options()
+    for option in complock::options()
         .iter()
         .filter(|o| !o.off_convars.is_empty())
-        .collect();
-    assert!(
-        !with_off.is_empty(),
-        "the ragdolls-style off values are there"
-    );
-    for option in with_off {
+    {
         assert!(
             !option.convars.is_empty(),
             "{} has off values but no on values",

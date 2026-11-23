@@ -70,7 +70,7 @@
 			Game				core
 		}
 
-		// "UserSettingsPathID"		"USRLOCAL"
+		"UserSettingsPathID"		"USRLOCAL"
 		"LegacyUserSettingsPathID"	"MOD"
 	}
 
@@ -503,9 +503,10 @@
 	ConVars
 	{
 		// ---- Ragdolls, physics and cloth ---------------------------------------------------------------------
-		// Bodies don't ragdoll when they die and breakable props break without spawning pieces. Cloth simulation
-		// stays on (the Pack Builder's cloth option changes it).
-		"cl_disable_ragdolls" "true"
+		// Ragdolls stay on, the game's default: the line that turns them off is commented out (the Pack Builder's
+		// ragdolls option uncomments it). Breakable props break without spawning pieces. Cloth simulation stays on
+		// (the Pack Builder's cloth option changes it).
+		// "cl_disable_ragdolls" "true"
 		"cloth_update" "true"
 		"props_break_max_pieces_perframe" "0"
 

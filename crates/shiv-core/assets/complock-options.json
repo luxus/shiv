@@ -147,11 +147,11 @@
     }
    ],
    "updated": {
-    "date": "2026-11-21",
-    "text": "21 Nov",
-    "long": "21 Nov 2026",
+    "date": "2026-11-22",
+    "text": "22 Nov",
+    "long": "22 Nov 2026",
     "new": true,
-    "href": "/docs/changelog/#cl-2026-11-21-hud"
+    "href": "/docs/changelog/#cl-2026-11-22-hud"
    }
   },
   {
@@ -302,7 +302,7 @@
    "est_low": "+1.2%",
    "by": "By BreadRollius",
    "pak": "brighterlighting.vpk",
-   "text": "A brighter, flatter image: no vignette or base bloom, and no lamp, storm or street light glow.",
+   "text": "A brighter, flatter image: no vignette or base bloom, and no lamp or storm glow.",
    "how": "Vignette, local exposure and bloom are full-screen passes over every pixel, every frame. A retuned tonemap keeps the image bright, and smaller funnel clouds mean less see-through drawing.",
    "before": "/docs/img/pack/street-stock.webp?v=606cdfdc9d",
    "after": "/docs/img/pack/lighting-after.webp?v=3c1ffa2880",
@@ -348,22 +348,18 @@
    "low": "\u00b10%",
    "est_avg": "\u00b10%",
    "est_low": "\u00b10%",
-   "on": true,
    "text": "Heroes and troopers don't ragdoll when they die.",
    "warn": "Players caught in Doorman's ultimate sometimes fade.",
-   "how": "A ragdoll is the limp body of a hero or trooper that just died, which your PC simulates as it falls and settles. Off, that simulation is skipped. Turn this off to get ragdolls back.",
+   "how": "A ragdoll is the limp body of a hero or trooper that just died, which your PC simulates as it falls and settles. With this on, that simulation is skipped.",
    "gameinfo": {
     "cl_disable_ragdolls": "true"
    },
-   "gameinfo_else": {
-    "cl_disable_ragdolls": "false"
-   },
    "updated": {
-    "date": "2026-11-20",
-    "text": "20 Nov",
-    "long": "20 Nov 2026",
-    "new": false,
-    "href": "/docs/changelog/#cl-2026-11-20-ragdolls"
+    "date": "2026-11-22",
+    "text": "22 Nov",
+    "long": "22 Nov 2026",
+    "new": true,
+    "href": "/docs/changelog/#cl-2026-11-22-ragdolls"
    }
   },
   {
@@ -421,10 +417,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5900280,
-     "crc": 1081155961,
-     "csize": 852713,
-     "url": "/dl/pack/hud.1e4e51c675.z"
+     "size": 5900594,
+     "crc": 1732980753,
+     "csize": 852803,
+     "url": "/dl/pack/hud.f4fe85eee1.z"
     }
    ]
   },
@@ -434,10 +430,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5901676,
-     "crc": 674578,
-     "csize": 853021,
-     "url": "/dl/pack/hud_nodamage.afed4e5839.z"
+     "size": 5901990,
+     "crc": 4042324237,
+     "csize": 853109,
+     "url": "/dl/pack/hud_nodamage.9f680f4d35.z"
     }
    ]
   },
@@ -447,10 +443,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5900594,
-     "crc": 881804807,
-     "csize": 852842,
-     "url": "/dl/pack/hud_vanilla.1d6d7ec55a.z"
+     "size": 5900908,
+     "crc": 2617298382,
+     "csize": 852932,
+     "url": "/dl/pack/hud_vanilla.889c64f5ab.z"
     }
    ]
   },
@@ -512,10 +508,10 @@
    "parts": [
     {
      "name": "pak04_dir.vpk",
-     "size": 107862,
-     "crc": 1489255419,
-     "csize": 32938,
-     "url": "/dl/pack/brighterlighting.24063f386e.z"
+     "size": 105564,
+     "crc": 139927679,
+     "csize": 32867,
+     "url": "/dl/pack/brighterlighting.ce005dc32d.z"
     }
    ]
   },
@@ -541,10 +537,10 @@
    "parts": [
     {
      "name": "pak05_dir.vpk",
-     "size": 34921,
-     "crc": 790342424,
-     "csize": 6748,
-     "url": "/dl/pack/hpbars.d8d68acd52.z"
+     "size": 34923,
+     "crc": 668675470,
+     "csize": 6764,
+     "url": "/dl/pack/hpbars.3b37164858.z"
     }
    ]
   }

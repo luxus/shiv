@@ -2006,8 +2006,8 @@ mod tests {
             "the FOV row carries the slider"
         );
 
-        // A convar option stages on, then its off value: the site's
-        // gameinfo_else, not a removed line.
+        // A convar option with no gameinfo_else stages on, then turns off by
+        // leaving its line out: nothing stays staged.
         state.invoke_toggle_pack("ragdolls".into());
         let changes: Vec<_> = state.get_changes().iter().collect();
         let ragdoll_change = changes
@@ -2017,12 +2017,13 @@ mod tests {
         assert_eq!(ragdoll_change.after.as_str(), "true");
         assert!(pack_row(&app, "ragdolls").checked);
         state.invoke_toggle_pack("ragdolls".into());
-        let changes: Vec<_> = state.get_changes().iter().collect();
-        let ragdoll_change = changes
-            .iter()
-            .find(|c| c.name == "cl_disable_ragdolls")
-            .expect("the off value staged");
-        assert_eq!(ragdoll_change.after.as_str(), "false");
+        assert!(
+            !state
+                .get_changes()
+                .iter()
+                .any(|c| c.name == "cl_disable_ragdolls"),
+            "off leaves the line out"
+        );
         assert!(!pack_row(&app, "ragdolls").checked);
 
         // The FOV slider stages r_aspectratio at the site's step precision.
