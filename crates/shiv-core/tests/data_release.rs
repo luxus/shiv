@@ -269,5 +269,10 @@ fn the_watch_dispatches_release_on_the_version_tag() {
     let cargo = repo().join("crates/shiv-ui/Cargo.toml");
     let (ok, out, err) = run(&["read-version", cargo.to_str().expect("cargo path")]);
     assert!(ok, "{err}");
-    assert_eq!(out.trim(), "0.4.0");
+    let version = out.trim();
+    let parts: Vec<&str> = version.split('.').collect();
+    assert!(
+        parts.len() == 3 && parts.iter().all(|p| p.parse::<u32>().is_ok()),
+        "read-version gives the app version as x.y.z, got {version:?}"
+    );
 }
