@@ -20,6 +20,7 @@ use shiv_core::addons::{self, AddonsError};
 use shiv_core::complock;
 use shiv_core::drift::{self, Drift, Published};
 use shiv_core::game::{self, GameError, GamePaths};
+use shiv_core::generated;
 use shiv_core::install::{self, InstallError, MatchReason};
 use shiv_core::interchange;
 use shiv_core::registry::{self, AddedSource};
@@ -140,6 +141,8 @@ pub(crate) struct Entry {
     pub can_reset: bool,
     /// The download that placed this mod published no checksum.
     pub unverified: bool,
+    /// JSON of the builder spec, when this row is a CompLock-generated mod.
+    pub generated: Option<String>,
 }
 
 /// The disk side of a row's drift, read on the worker: whether the files
@@ -151,6 +154,9 @@ pub(crate) struct Facts {
     pub untouched: Option<bool>,
     pub complock_title: Option<String>,
     pub has_backup: bool,
+    /// The revision the stored inputs would build at with the pinned
+    /// template. `None` when the row is not a generated mod.
+    pub generated_revision: Option<String>,
 }
 
 fn facts(addons: &Path, m: &InstalledMod) -> Facts {
@@ -164,10 +170,17 @@ fn facts(addons: &Path, m: &InstalledMod) -> Facts {
             .find_map(|v| complock::identify(&v.file))
             .map(|i| i.title)
     };
+    let generated_revision = m.sidecar.as_ref().and_then(|s| {
+        s.generated
+            .as_ref()
+            .and_then(generated::spec_of)
+            .and_then(|spec| generated::revision(&spec).ok())
+    });
     Facts {
         untouched: drift::files_untouched(m),
         complock_title,
         has_backup: m.sidecar.is_some() && reset::latest_backup(addons, &id).is_some(),
+        generated_revision,
     }
 }
 
@@ -177,6 +190,7 @@ fn facts(addons: &Path, m: &InstalledMod) -> Facts {
 enum ResetPlan {
     CompLock { pak: &'static complock::Pak },
     Registry(Box<RegistryPlan>),
+    Generated(generated::Spec),
 }
 
 /// A registry release with a direct artifact, and what its sidecar records.
@@ -198,6 +212,12 @@ struct RegistryPlan {
 /// registry catalog for registry ids (a source not loaded is unknown, a
 /// listing it no longer carries or without a release is retired).
 fn published(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Published {
+    if generated::is_id(&e.id) {
+        return generated::publication(
+            generated::builder_review(),
+            e.facts.generated_revision.as_deref(),
+        );
+    }
     if e.id.starts_with(complock::MOD_PREFIX) {
         return complock::published(&e.id);
     }
@@ -224,6 +244,16 @@ fn published(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Publi
 fn reset_plan(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Option<ResetPlan> {
     if !e.managed {
         return None;
+    }
+    if generated::is_id(&e.id) {
+        if generated::builder_review() {
+            return None;
+        }
+        return e
+            .generated
+            .as_deref()
+            .and_then(generated::spec_from_json)
+            .map(ResetPlan::Generated);
     }
     if e.id.starts_with(complock::MOD_PREFIX) {
         return complock::release_for(&e.id, e.version.as_deref())
@@ -258,6 +288,7 @@ pub(crate) fn drift_text(d: Drift) -> &'static str {
         Drift::Modified => "Modified: the files differ from the release",
         Drift::UpdateAvailable => "A newer release is published",
         Drift::Retired => "Retired upstream: no longer published",
+        Drift::BuilderReview => "Builder changed, review",
         Drift::Pristine | Drift::Untracked => "",
     }
 }
@@ -292,6 +323,7 @@ pub(crate) fn drift_pill(d: Drift) -> &'static str {
         Drift::Modified => "Modified",
         Drift::UpdateAvailable => "Update available",
         Drift::Retired => "Retired",
+        Drift::BuilderReview => "Builder changed, review",
         Drift::Pristine | Drift::Untracked => "",
     }
 }
@@ -422,10 +454,15 @@ fn entry(m: &InstalledMod) -> Entry {
             drift: Drift::Untracked,
             can_reset: false,
             unverified: false,
+            generated: None,
         };
     };
     let mut parts: Vec<String> = Vec::new();
-    if let Some(v) = s.version.as_deref().filter(|v| !v.is_empty()) {
+    if let Some(v) = s
+        .version
+        .as_deref()
+        .filter(|v| !v.is_empty() && !v.starts_with("sha256:"))
+    {
         // Shiv records the mod's update timestamp as its version.
         let v = crate::browse::short_date(v).unwrap_or(v);
         parts.push(format!("Version {v}"));
@@ -469,6 +506,7 @@ fn entry(m: &InstalledMod) -> Entry {
         drift: Drift::Untracked,
         can_reset: false,
         unverified: s.unverified == Some(true),
+        generated: s.generated.as_ref().map(ToString::to_string),
     }
 }
 
@@ -557,6 +595,30 @@ fn run_reset(
     let (fetched, unverified) = fetch_release(deps, dir.path(), plan)?;
     let running = deps.running.clone();
     let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
+    if let ResetPlan::Generated(spec) = plan {
+        let version = generated::revision(spec).map_err(|e| e.to_string())?;
+        let mut side = install::install_files(
+            &fetched,
+            install::ModMeta {
+                mod_id: id.to_owned(),
+                name: name.to_owned(),
+                version: Some(version.clone()),
+                thumbnail_url: None,
+                nsfw: false,
+                hero: None,
+                category: None,
+            },
+            &paths,
+            || running(),
+            guard.permit(),
+        )
+        .map_err(|e| install_error_text(&e))?;
+        side.generated = generated::spec_value(spec);
+        side.version = Some(version);
+        side.unverified = None;
+        shiv_core::sidecar::write(&paths.addons, &side).map_err(|e| e.to_string())?;
+        return Ok(String::new());
+    }
     let note = RefCell::new(String::new());
     reset::reset_with(
         &paths,
@@ -619,6 +681,9 @@ fn run_reset(
             )
             .map(|_| ())
             .map_err(|e| e.to_string()),
+            ResetPlan::Generated(_) => {
+                Err("a generated update installs through the stash path, before this backup".into())
+            }
         },
         guard.permit(),
     )
@@ -668,6 +733,11 @@ fn fetch_release(
             let trust = registry::check_download(&dest, r.sha256.as_deref(), None)
                 .map_err(|e| e.to_string())?;
             Ok((vec![dest], trust == registry::DownloadTrust::Unverified))
+        }
+        ResetPlan::Generated(spec) => {
+            let dest = dir.join("complock_dir.vpk");
+            generated::write_rebuild(spec, &dest).map_err(|e| e.to_string())?;
+            Ok((vec![dest], false))
         }
     }
 }
@@ -2541,6 +2611,7 @@ mod tests {
             source: None,
             stamps: None,
             unverified: None,
+            generated: None,
         }
     }
 

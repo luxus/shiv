@@ -1,0 +1,127 @@
+{
+  "presets": [
+    {
+      "id": "flat",
+      "hash": "",
+      "options": {}
+    },
+    {
+      "id": "ticks",
+      "hash": "ticks=all",
+      "options": {
+        "ticks": "all"
+      }
+    },
+    {
+      "id": "slim",
+      "hash": "h=3.78&numSize=13.86&pip=3.78",
+      "options": {
+        "h": 3.78,
+        "numSize": 13.86,
+        "pip": 3.78
+      }
+    },
+    {
+      "id": "bold",
+      "hash": "w=66.15&h=9.45&numSize=20.16&ticks=large&stamina=squares",
+      "options": {
+        "w": 66.15,
+        "h": 9.45,
+        "numSize": 20.16,
+        "ticks": "large",
+        "stamina": "squares"
+      }
+    },
+    {
+      "id": "block",
+      "hash": "w=60.48&h=12.6&num=inside&numSize=13.86&ticks=large&stamina=bars",
+      "options": {
+        "w": 60.48,
+        "h": 12.6,
+        "num": "inside",
+        "numSize": 13.86,
+        "ticks": "large",
+        "stamina": "bars"
+      }
+    },
+    {
+      "id": "outline",
+      "hash": "h=7.56&outline=1.26&fill=shaded&ticks=large&stamina=squares",
+      "options": {
+        "h": 7.56,
+        "outline": 1.26,
+        "fill": "shaded",
+        "ticks": "large",
+        "stamina": "squares"
+      }
+    },
+    {
+      "id": "classic",
+      "hash": "w=60.48&h=8.19&enemy=%23FF4545&ally=%235BEF8F&fill=gloss&outline=1.26&ticks=all&low=true&lowColor=%23FF9A2E&hitNum=true",
+      "options": {
+        "w": 60.48,
+        "h": 8.19,
+        "enemy": "#FF4545",
+        "ally": "#5BEF8F",
+        "fill": "gloss",
+        "outline": 1.26,
+        "ticks": "all",
+        "low": true,
+        "lowColor": "#FF9A2E",
+        "hitNum": true
+      }
+    },
+    {
+      "id": "neon",
+      "hash": "h=5.04&enemy=%23FF3B6B&ally=%233BE8FF&glow=5&bgAlpha=55&numColor=%23FFFFFF&numOutline=3&numOutlineColor=%231B0B2E&font=numericBlock&numSize=17.64&stamina=bars",
+      "options": {
+        "h": 5.04,
+        "enemy": "#FF3B6B",
+        "ally": "#3BE8FF",
+        "glow": 5,
+        "bgAlpha": 55,
+        "numOutline": 3,
+        "numOutlineColor": "#1B0B2E",
+        "font": "numericBlock",
+        "numSize": 17.64,
+        "stamina": "bars"
+      }
+    },
+    {
+      "id": "minimal",
+      "hash": "w=47.88&h=3.78&num=right&numSize=11.34&numOutline=3&stamina=off&icon=false&bgAlpha=70",
+      "options": {
+        "w": 47.88,
+        "h": 3.78,
+        "num": "right",
+        "numSize": 11.34,
+        "numOutline": 3,
+        "stamina": "off",
+        "icon": false,
+        "bgAlpha": 70
+      }
+    }
+  ],
+  "custom": {
+    "hash": "w=60&h=8&enemy=%23FF4545&ticks=all&low=true&num=off&notAKey=1&w=nope",
+    "options": {
+      "w": 60,
+      "h": 8,
+      "enemy": "#FF4545",
+      "ticks": "all",
+      "low": true,
+      "num": "off"
+    }
+  },
+  "defaultDropped": {
+    "hash": "enemy=%23FFFF00",
+    "options": {}
+  },
+  "clamped": {
+    "hash": "w=1000&glow=-4&critX=100",
+    "options": {
+      "w": 84,
+      "critX": 60
+    }
+  }
+}

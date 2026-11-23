@@ -1076,6 +1076,7 @@ pub fn adopt_reused(
             source: None,
             stamps: None,
             unverified: None,
+            generated: None,
         },
     )
 }
@@ -1303,6 +1304,9 @@ pub fn revision(pak: &Pak) -> String {
 #[must_use]
 pub fn published(mod_id: &str) -> crate::drift::Published {
     use crate::drift::Published;
+    if crate::generated::is_id(mod_id) {
+        return Published::Unknown;
+    }
     if !mod_id.starts_with(MOD_PREFIX) {
         return Published::Unknown;
     }

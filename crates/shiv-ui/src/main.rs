@@ -21,6 +21,7 @@ pub use generated::*;
 use shiv_core::game::{self, GameError, GamePaths};
 
 mod browse;
+mod builders;
 mod cli;
 mod conflict;
 mod crosshair;
@@ -747,6 +748,59 @@ mod tests {
         app.hide().expect("hide");
     }
 
+    /// Renders the CompLock builders with the software renderer to
+    /// `SHIV_RENDER_OUT`. Initialises the Slint platform: run it alone.
+    #[test]
+    #[ignore = "renders a screenshot; run alone with SHIV_RENDER_OUT"]
+    fn render_complock_builders() {
+        use i_slint_backend_testing::{TestingBackend, TestingBackendOptions};
+        let Ok(out) = std::env::var("SHIV_RENDER_OUT") else {
+            return;
+        };
+        slint::platform::set_platform(Box::new(TestingBackend::new(TestingBackendOptions {
+            mock_time: false,
+            threading: true,
+            renderer_name: Some("software".into()),
+        })))
+        .expect("platform");
+        let app = App::new().expect("app");
+        app.window()
+            .set_size(slint::LogicalSize::new(1120.0, 1180.0));
+        app.show().expect("show");
+        app.set_screen(4);
+        let state = app.global::<PerfState>();
+        state.set_load_state(LoadState::Ready);
+        state.set_section(2);
+        state.set_status("CompLock builders".into());
+        state.set_builder_status(slint::SharedString::new());
+        state.set_hit_name("ploop".into());
+        state.set_body_path("/sounds/ploop.wav".into());
+        state.set_body_start("407".into());
+        state.set_body_end("3046".into());
+        state.set_body_db("-2".into());
+        state.set_body_pitch("1".into());
+        state.set_head_path("/sounds/quake3.wav".into());
+        state.set_head_start("0".into());
+        state.set_head_end("6108".into());
+        state.set_head_db("0".into());
+        state.set_head_pitch("1".into());
+        state.set_hp_name("Classic".into());
+        state.set_hp_preset(6);
+        state.set_hp_link(
+        "w=60.48&h=8.19&enemy=%23FF4545&ally=%235BEF8F&fill=gloss&outline=1.26&ticks=all&low=true"
+            .into(),
+    );
+        run_until(&app, Duration::from_millis(400), |_| false);
+        assert_eq!(state.get_hit_name().as_str(), "ploop");
+        let shot = app.window().take_snapshot().expect("snapshot");
+        image::RgbaImage::from_raw(shot.width(), shot.height(), shot.as_bytes().to_vec())
+            .expect("image")
+            .save(&out)
+            .expect("png");
+        eprintln!("rendered {}x{} to {out}", shot.width(), shot.height());
+        app.hide().expect("hide");
+    }
+
     /// End-to-end smoke of the release against live sources, in a temp
     /// game root seeded from copies (`SHIV_SMOKE_SEED`: a folder holding
     /// `addons/`, `gameinfo.gi` and optionally a saved `shiv-sources.json`).
@@ -1231,6 +1285,7 @@ mod tests {
                 source: None,
                 stamps: None,
                 unverified: None,
+                generated: None,
             },
         )
         .unwrap();
@@ -3322,6 +3377,7 @@ mod tests {
                 source: None,
                 stamps: None,
                 unverified: None,
+                generated: None,
             },
         )
         .expect("sidecar");
@@ -4584,6 +4640,7 @@ mod tests {
                     source: None,
                     stamps: None,
                     unverified: None,
+                    generated: None,
                 },
             )
             .expect("sidecar");
