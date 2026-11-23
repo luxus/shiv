@@ -168,6 +168,32 @@ export global PerfState {
     callback discard();
     callback apply();
     callback dismiss-result();
+
+    // CompLock builders. The form is edited here; the build runs on a worker.
+    in property <string> builder-note: "A hitsound or an HP bar built on this machine from the same templates as deadlockconfig.com. The sounds and the options stay here, so a template update can rebuild the pak.";
+    in property <string> builder-status;
+    in property <bool> builder-busy: false;
+    in property <[string]> hp-presets: ["Flat", "Ticks", "Slim", "Bold", "Block", "Outline", "Classic", "Neon", "Minimal"];
+    in-out property <int> hp-preset: 0;
+    in-out property <string> hit-name: "Hitsound";
+    in-out property <string> body-path;
+    in-out property <string> head-path;
+    in-out property <string> body-start: "0";
+    in-out property <string> body-end;
+    in-out property <string> body-db: "0";
+    in-out property <string> body-pitch: "1";
+    in-out property <string> head-start: "0";
+    in-out property <string> head-end;
+    in-out property <string> head-db: "0";
+    in-out property <string> head-pitch: "1";
+    in-out property <string> hp-name: "HP bar";
+    in-out property <string> hp-link;
+    callback build-hitsound();
+    callback build-hpbar();
+    callback browse-body();
+    callback browse-head();
+    callback import-hitsound();
+    callback pick-hp-preset(int);
 }
 
 
@@ -780,6 +806,75 @@ component ChangeRow inherits Rectangle {
 }
 
 
+component BuilderField inherits Rectangle {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> text;
+
+    height: Theme.control-h;
+    horizontal-stretch: 1;
+    HorizontalLayout {
+        spacing: Theme.s1;
+        alignment: center;
+        Text {
+            text: root.label;
+            color: Theme.text-muted;
+            font-size: Theme.text-sm;
+            vertical-alignment: center;
+            width: 48px;
+        }
+        SearchField {
+            horizontal-stretch: 1;
+            min-width: 80px;
+            placeholder: root.placeholder;
+            text <=> root.text;
+        }
+    }
+}
+
+component BuilderPath inherits Rectangle {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> text;
+    callback browse;
+
+    height: Theme.control-h;
+    HorizontalLayout {
+        spacing: Theme.s1;
+        alignment: center;
+        BuilderField {
+            horizontal-stretch: 1;
+            label: root.label;
+            placeholder: root.placeholder;
+            text <=> root.text;
+        }
+        Button {
+            text: "Choose";
+            clicked => { root.browse(); }
+        }
+    }
+}
+
+component BuilderCard inherits VerticalLayout {
+    in property <string> title;
+    in property <string> detail;
+
+    spacing: 6px;
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: Theme.text-lg;
+        font-weight: 600;
+    }
+    Text {
+        text: root.detail;
+        color: Theme.text-muted;
+        font-size: Theme.text-sm;
+        wrap: word-wrap;
+    }
+    @children
+}
+
 export component PerformancePage inherits Rectangle {
     background: Theme.bg;
 
@@ -869,6 +964,11 @@ export component PerformancePage inherits Rectangle {
                         active: PerfState.section == 1;
                         clicked => { PerfState.section = 1; }
                     }
+                    SectionTab {
+                        label: "Builders";
+                        active: PerfState.section == 2;
+                        clicked => { PerfState.section = 2; }
+                    }
                 }
             }
         }
@@ -919,6 +1019,102 @@ export component PerformancePage inherits Rectangle {
                         picked(c) => { PerfState.pick-pack-choice(pack.id, c); }
                         installed => { PerfState.install-pack(pack.id); }
                         fov-changed(v) => { PerfState.set-fov(v); }
+                    }
+                }
+            }
+        }
+
+        if PerfState.load-state == LoadState.ready && PerfState.section == 2: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: Theme.s3;
+                padding-top: Theme.s2;
+                spacing: Theme.s2;
+                alignment: start;
+                Text {
+                    text: PerfState.builder-note;
+                    color: Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    wrap: word-wrap;
+                }
+                if PerfState.builder-status != "": Text {
+                    text: PerfState.builder-status;
+                    color: Theme.text;
+                    font-size: Theme.text-sm;
+                    wrap: word-wrap;
+                }
+                BuilderCard {
+                    title: "Hitsound";
+                    detail: "Body and head clips, trim in samples, volume in dB, pitch. An empty end uses the whole file.";
+                    Rectangle {
+                        background: Theme.raised;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        VerticalLayout {
+                            padding: Theme.s2;
+                            spacing: Theme.s1;
+                            BuilderField { label: "Name"; placeholder: "Hitsound"; text <=> PerfState.hit-name; }
+                            BuilderPath { label: "Body"; placeholder: "WAV, MP3, OGG or FLAC"; text <=> PerfState.body-path; browse => { PerfState.browse-body(); } }
+                            HorizontalLayout {
+                                spacing: Theme.s1;
+                                BuilderField { label: "Start"; placeholder: "0"; text <=> PerfState.body-start; }
+                                BuilderField { label: "End"; placeholder: "end"; text <=> PerfState.body-end; }
+                                BuilderField { label: "dB"; placeholder: "0"; text <=> PerfState.body-db; }
+                                BuilderField { label: "Pitch"; placeholder: "1"; text <=> PerfState.body-pitch; }
+                            }
+                            BuilderPath { label: "Head"; placeholder: "WAV, MP3, OGG or FLAC"; text <=> PerfState.head-path; browse => { PerfState.browse-head(); } }
+                            HorizontalLayout {
+                                spacing: Theme.s1;
+                                BuilderField { label: "Start"; placeholder: "0"; text <=> PerfState.head-start; }
+                                BuilderField { label: "End"; placeholder: "end"; text <=> PerfState.head-end; }
+                                BuilderField { label: "dB"; placeholder: "0"; text <=> PerfState.head-db; }
+                                BuilderField { label: "Pitch"; placeholder: "1"; text <=> PerfState.head-pitch; }
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.s1;
+                                alignment: start;
+                                Button { text: "Import pak"; disabled: PerfState.builder-busy; clicked => { PerfState.import-hitsound(); } }
+                                Button { text: PerfState.builder-busy ? "Building…" : "Build hitsound"; primary: true; disabled: PerfState.builder-busy; clicked => { PerfState.build-hitsound(); } }
+                            }
+                        }
+                    }
+                }
+                BuilderCard {
+                    title: "HP bar";
+                    detail: "A preset, or a copy-link hash from the site. Defaults are left out of the hash.";
+                    Rectangle {
+                        background: Theme.raised;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        VerticalLayout {
+                            padding: Theme.s2;
+                            spacing: Theme.s1;
+                            BuilderField { label: "Name"; placeholder: "HP bar"; text <=> PerfState.hp-name; }
+                            HorizontalLayout {
+                                spacing: Theme.s2;
+                                alignment: center;
+                                Text {
+                                    text: "Preset";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.text-sm;
+                                    vertical-alignment: center;
+                                    width: 72px;
+                                }
+                                Dropdown {
+                                    label: "HP bar preset";
+                                    options: PerfState.hp-presets;
+                                    current-index: PerfState.hp-preset;
+                                    selected(i) => { PerfState.hp-preset = i; PerfState.pick-hp-preset(i); }
+                                }
+                            }
+                            BuilderField { label: "Link"; placeholder: "ticks=all or a full copy link"; text <=> PerfState.hp-link; }
+                            HorizontalLayout {
+                                alignment: start;
+                                Button { text: PerfState.builder-busy ? "Building…" : "Build HP bar"; primary: true; disabled: PerfState.builder-busy; clicked => { PerfState.build-hpbar(); } }
+                            }
+                        }
                     }
                 }
             }

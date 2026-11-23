@@ -61,6 +61,7 @@ const MAIN_FILE: &str = "src/main.rs";
 /// Every controller module the guards read.
 const MODULES_UNDER_GUARD: &[&str] = &[
     "browse",
+    "builders",
     "conflict",
     "crosshair",
     "detail_tabs",

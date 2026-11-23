@@ -153,7 +153,7 @@ fn pack_mod_id(option_id: &str) -> String {
 /// Whether a mod id names a CompLock pak (Downloads routing).
 #[must_use]
 pub fn is_pack_id(mod_id: &str) -> bool {
-    mod_id.starts_with(PACK_PREFIX)
+    mod_id.starts_with(PACK_PREFIX) && !shiv_core::generated::is_id(mod_id)
 }
 
 /// One pak install: what to download and how the result is recorded.
@@ -822,6 +822,7 @@ pub fn attach(app: &App, api_url: &str) {
 }
 
 pub(crate) fn attach_with(app: &App, deps: Deps) {
+    crate::builders::wire(app, &deps);
     let controller = Rc::new(Perf {
         weak: app.as_weak(),
         deps,
@@ -936,6 +937,7 @@ impl Perf {
 
     fn shown(&self) {
         self.on_screen.set(true);
+        crate::builders::refresh(self.weak.clone(), self.deps.locate.clone());
         self.arm_pack_timer();
         self.refresh_pack();
         if self.catalog.borrow().is_none() {

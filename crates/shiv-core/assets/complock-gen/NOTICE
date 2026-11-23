@@ -1,0 +1,11 @@
+lame.min.js is the unmodified lamejs 1.2.1 file from
+https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js
+(https://github.com/zhuker/lamejs). Its license is LGPL-3.0, in lame.LICENSE.
+It stays a separate file so it can be replaced. LAME: https://lame.sourceforge.net/
+
+hit_builder.js, hp_hpbars.js and hpbars_base.vpk are pinned copies of the
+Hitsound Builder and HP Bar Builder from deadlockconfig.com. The site owner
+confirmed that reusing jcStani and HoppCX's work is fine in this case.
+Shiv runs only these pinned files. A newer script fetched by complock-watch
+is never executed; the watch records that the builder changed and waits
+for a reviewed update of the pin.

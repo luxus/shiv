@@ -14,6 +14,7 @@ pub mod complock;
 pub mod crosshair;
 pub mod drift;
 pub mod game;
+pub mod generated;
 pub mod health;
 mod hero_settings;
 pub mod install;

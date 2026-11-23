@@ -84,6 +84,10 @@ pub struct Sidecar {
     /// written before the flag existed. Not written when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unverified: Option<bool>,
+    /// Inputs for a CompLock-generated mod (`complock-gen-*`): the builder
+    /// spec, absent on every other mod. Not written when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<serde_json::Value>,
 }
 
 /// One installed VPK as it lay on disk: the bytes of the dir VPK and its
@@ -379,6 +383,7 @@ pub fn adopt(
         source: None,
         stamps: None,
         unverified: None,
+        generated: None,
     };
     write(addons, &sidecar)?;
     Ok(sidecar)

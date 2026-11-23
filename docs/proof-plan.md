@@ -29,6 +29,15 @@ decision in the code will have a proof that it is the best available one.
 | Install | wall clock for a 100 MB archive | timer in the test | extraction at **> 60 %** of disk-read speed, cancel < 50 ms to respond |
 | Search | keystroke → list updated | in-test timer | **< 16 ms** per keystroke on 10k mods, no main-thread stall |
 | Binary | release size, link time | `ls`, CI log | the AppImage stays **< 25 MB**; every dependency added needs a line here saying why nothing leaner does the job |
+
+CompLock's Hitsound and HP Bar builders run as their own pinned scripts in
+QuickJS (`rquickjs`). Deno and Node are the runtimes that already execute
+those scripts, and neither fits this gate: a current Node binary is about
+50 MB and Deno is larger, against an AppImage measured at 19.7 MB. QuickJS
+adds about 1.5 MB, has no filesystem and no network unless the host binds
+them, and the host binds neither. `symphonia` decodes a hitsound the user
+uploads (WAV, MP3, OGG, FLAC) down to the mono 44.1 kHz samples the script
+encodes. The site does that step in the browser, which cannot ship here.
 | Battery | idle CPU over 10 min | `utime+stime` ticks | **0 ticks in 10 min** idle; a poll is a bug, timers are for user-scale waits |
 
 These numbers are not aspirations; they are gates. A CI job runs the ones
