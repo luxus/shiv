@@ -95,15 +95,22 @@ pub fn options_from_hash(hash: &str) -> BTreeMap<String, Value> {
     out
 }
 
-/// The copy-link hash for `options`, without a leading `#`.
+/// The copy-link hash for `options`, without a leading `#`. Options equal
+/// to Flat give `flat`, as the site writes them: its bare address opens
+/// its first preset instead.
 #[must_use]
 pub fn hash_from_options(options: &BTreeMap<String, Value>) -> String {
-    options
+    let hash = options
         .iter()
         .filter(|(key, value)| !equals_default(key, value))
         .map(|(key, value)| format!("{key}={}", encode_component(&value_text(value))))
         .collect::<Vec<_>>()
-        .join("&")
+        .join("&");
+    if hash.is_empty() {
+        "flat".to_owned()
+    } else {
+        hash
+    }
 }
 
 fn equals_default(key: &str, value: &Value) -> bool {
@@ -153,15 +160,17 @@ fn default_text(key: &str) -> Option<&'static str> {
         "w" => "54.18",
         "h" => "6.3",
         "enemy" => "#FFFF00",
-        "ally" | "numColor" | "critColor" => "#FFFFFF",
+        "ally" | "numColor" | "critColor" | "assaColor" => "#FFFFFF",
         "fill" => "flat",
         "bg" | "outlineColor" | "numOutlineColor" | "tickColor" => "#000000",
         "bgAlpha" => "100",
         "outline" | "glow" | "barX" | "barY" | "numX" | "numY" | "iconX" | "iconY" | "staX"
-        | "staY" | "critX" | "critY" => "0",
+        | "staY" | "critX" | "critY" | "assaX" | "assaY" => "0",
         "num" => "above",
         "numSize" => "16.38",
-        "numAlly" | "hitNum" | "low" | "deltaAll" => "false",
+        "numAlly" | "hitNum" | "low" | "deltaAll" | "assa" => "false",
+        "assaSize" => "8",
+        "assaGlow" => "#10130D",
         "numOutline" => "4",
         "font" => "numericOracle",
         "hitNumColor" => "#FFD23F",
@@ -171,7 +180,7 @@ fn default_text(key: &str) -> Option<&'static str> {
         "tickW" => "1",
         "stamina" => "dots",
         "pip" => "5.04",
-        "icon" | "crit" => "true",
+        "icon" | "crit" | "fire" => "true",
         "critSize" => "12",
         "critGlow" => "#FF410D",
         _ => return None,
@@ -346,6 +355,15 @@ const CONTROLS: &[Control] = &[
     },
     Control::Color { key: "critColor" },
     Control::Color { key: "critGlow" },
+    Control::Bool { key: "assa" },
+    Control::Number {
+        key: "assaSize",
+        min: 6.0,
+        max: 16.0,
+    },
+    Control::Color { key: "assaColor" },
+    Control::Color { key: "assaGlow" },
+    Control::Bool { key: "fire" },
     Control::Number {
         key: "barX",
         min: -40.0,
@@ -393,6 +411,16 @@ const CONTROLS: &[Control] = &[
     },
     Control::Number {
         key: "critY",
+        min: -45.0,
+        max: 45.0,
+    },
+    Control::Number {
+        key: "assaX",
+        min: -60.0,
+        max: 60.0,
+    },
+    Control::Number {
+        key: "assaY",
         min: -45.0,
         max: 45.0,
     },

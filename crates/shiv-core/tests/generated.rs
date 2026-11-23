@@ -73,13 +73,31 @@ fn a_hitsound_pak_roundtrips_the_levels_it_was_built_with() {
 
 #[test]
 fn hp_bar_presets_match_the_site_script() {
-    for id in [
-        "flat", "ticks", "slim", "bold", "block", "outline", "classic", "neon", "minimal",
-    ] {
+    let ids: Vec<String> = generated::hp_presets()
+        .expect("presets")
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "jcstani", "flat", "ticks", "slim", "bold", "block", "outline", "classic", "neon",
+            "minimal",
+        ]
+    );
+    for id in &ids {
         let pak = generated::build_hpbar_preset(id).expect(id);
         let site = std::fs::read(fixture(&format!("hp-{id}.vpk"))).expect(id);
         assert_eq!(pak, site, "{id}");
     }
+}
+
+#[test]
+fn flat_round_trips_as_its_own_link() {
+    let flat = BTreeMap::new();
+    assert_eq!(generated::hash_from_options(&flat), "flat");
+    assert_eq!(generated::options_from_hash("flat"), flat);
+    assert_eq!(generated::options_from_hash("#flat"), flat);
 }
 
 #[test]
@@ -98,7 +116,7 @@ fn hp_bar_copy_link_parses_like_the_site() {
         let site = std::fs::read(fixture(&format!("hp-{id}.vpk"))).expect(id);
         assert_eq!(rebuilt, site, "{id}");
     }
-    for key in ["custom", "defaultDropped", "clamped"] {
+    for key in ["custom", "defaultDropped", "clamped", "assassinate"] {
         let row = &golden[key];
         let options = generated::options_from_hash(row["hash"].as_str().expect("hash"));
         let expected: BTreeMap<String, Value> =
