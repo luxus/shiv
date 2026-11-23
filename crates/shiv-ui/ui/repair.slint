@@ -119,7 +119,8 @@ component RepairRowView inherits Rectangle {
                     overflow: elide;
                 }
             }
-            StatusTag {
+            // A mod that works needs no word: only a status worth reading shows.
+            if root.item.tone != RepairTone.works: StatusTag {
                 width: 140px;
                 tone: root.item.tone;
                 text: root.item.status;
