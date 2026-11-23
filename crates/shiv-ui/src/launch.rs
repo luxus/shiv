@@ -169,9 +169,6 @@ fn with_launch(f: impl FnOnce(&Rc<Launch>)) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// View-models (pure, unit-tested)
-
 pub(crate) fn title(kind: FindingKind) -> &'static str {
     match kind {
         FindingKind::UnreadableVpk => "Unreadable VPK",
@@ -223,9 +220,6 @@ pub(crate) fn problems_short(n: usize) -> String {
         n => format!("{n} problems"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Controller
 
 #[derive(Clone, PartialEq, Eq)]
 enum Purpose {
@@ -397,7 +391,6 @@ impl Launch {
                         with_launch(|l| l.game_started(generation));
                     });
                 });
-                // Back on once the game is gone (or the launch failed).
                 if let Some(paths) = mods_off {
                     let _ = (deps.vanilla)(paths, false);
                 }

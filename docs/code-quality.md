@@ -28,6 +28,15 @@ beats a panic on someone's mods folder. Likewise, never index external data
 unchecked (`slice[i]` on parsed configs or byte-index `String::truncate` on
 UTF-8 text) on the event loop or in workers.
 
+## Pedantic lints are denied at the crate root
+
+`shiv-core`, `shiv-api`, and `shiv-ui` also deny `clippy::pedantic` in
+production code (unit tests stay exempt via `#![cfg_attr(test, allow(...))]`,
+and Slint's generated bindings via `generated` in `main.rs`). `clippy.toml`
+records Shiv's proper domain nouns in `doc-valid-idents` so `clippy::doc_markdown`
+keeps flagging un-backticked code and paths without noise on prose. Any rare
+exception carries a tightly scoped `#[allow(..., reason = "…")]`.
+
 ## Every symbol earns its place
 
 Visibility defaults to the narrowest scope (`private` -> `pub(crate)` -> `pub`).

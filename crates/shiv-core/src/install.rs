@@ -32,8 +32,10 @@ static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// locking themselves. A cancel check belongs after [`acquire`](Self::acquire),
 /// before the permit is used.
 pub struct InstallGuard {
-    _file: FileLock,
-    _guard: std::sync::MutexGuard<'static, ()>,
+    #[allow(dead_code, reason = "held for RAII cross-process file lock lifetime")]
+    file: FileLock,
+    #[allow(dead_code, reason = "held for RAII in-process mutex lifetime")]
+    guard: std::sync::MutexGuard<'static, ()>,
 }
 
 impl InstallGuard {
@@ -44,18 +46,17 @@ impl InstallGuard {
     ///
     /// [`InstallError::Io`] when the lock file cannot be created or locked.
     pub fn acquire(addons: &Path) -> Result<Self, InstallError> {
-        let _guard = INSTALL_LOCK
+        let guard = INSTALL_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _file = FileLock::acquire(addons)?;
-        Ok(Self { _file, _guard })
+        let file = FileLock::acquire(addons)?;
+        Ok(Self { file, guard })
     }
 
     /// Mint the proof those functions require. It dies with this guard.
+    #[must_use]
     pub fn permit(&self) -> InstallPermit<'_> {
-        InstallPermit {
-            _guard: &self._guard,
-        }
+        InstallPermit { guard: &self.guard }
     }
 }
 
@@ -65,7 +66,11 @@ impl InstallGuard {
 /// constructor exists.
 #[derive(Clone, Copy)]
 pub struct InstallPermit<'a> {
-    _guard: &'a std::sync::MutexGuard<'static, ()>,
+    #[allow(
+        dead_code,
+        reason = "borrows InstallGuard mutex guard for lifetime check"
+    )]
+    guard: &'a std::sync::MutexGuard<'static, ()>,
 }
 
 /// Exclusive flock on `<addons>/.shiv/lock`, held until drop.
@@ -293,7 +298,7 @@ pub const MAX_ENTRIES: usize = 100_000;
 /// (the zip entry reader returns 8 KiB a call), and writing them as they
 /// come costs tens of thousands of small file writes on a large archive;
 /// staging them into writes of this size measured 2.2× faster end to end
-/// (tests/install_probe.rs, docs/perf-results.md).
+/// (`tests/install_probe.rs`, `docs/perf-results.md`).
 const ENTRY_COPY_BYTES: usize = 256 * 1024;
 
 /// What to do with a pak that already occupies a slot the pack names.
@@ -483,7 +488,6 @@ pub fn install_with_limits(
     limits: Limits,
     _permit: InstallPermit<'_>,
 ) -> Result<Sidecar, InstallError> {
-    // Checked first: nothing may be written while the game runs.
     if game_running() {
         return Err(InstallError::GameRunning);
     }
@@ -491,8 +495,7 @@ pub fn install_with_limits(
     clean_stale_staging(addons_dir);
     let format = detect_format(archive)?;
 
-    // Also validates the mod id before any file is written. A corrupt old sidecar
-    // is treated as absent so it cannot block reinstalling forever.
+    // Validate mod id before writing; ignore a corrupt old sidecar so reinstall stays unblocked.
     let old = match sidecar::read(addons_dir, &meta.mod_id) {
         Ok(s) => s,
         Err(SidecarError::Parse { .. }) => None,
@@ -558,7 +561,7 @@ pub fn install_files_in_slots(
         return Err(InstallError::GameRunning);
     }
     if choice.is_none() {
-        let occupants = foreign_occupants(&paths.addons, files, &meta.mod_id, reserved)?;
+        let occupants = foreign_occupants(&paths.addons, files, &meta.mod_id, reserved);
         if !occupants.is_empty() {
             return Err(InstallError::NeedsChoice(occupants));
         }
@@ -583,7 +586,6 @@ fn install_files_to(
     choice: Option<SlotChoice>,
     permit: InstallPermit<'_>,
 ) -> Result<SlotPlaced, InstallError> {
-    // Checked first: nothing may be written while the game runs.
     if game_running() {
         return Err(InstallError::GameRunning);
     }
@@ -702,14 +704,14 @@ fn place_in_slots(
     let foreign_slots: BTreeSet<u32> = occupants.iter().map(|o| o.slot).collect();
     let mut above = above_slots.into_iter();
     let mut moves: Vec<(&addons::InstalledVpk, u32)> = Vec::new();
-    let mut moved = Vec::new();
+    let mut relocated = Vec::new();
     for vpk in mods.iter().flat_map(|m| &m.vpks) {
         if vpk.pak.is_some_and(|n| claimed.contains(&n)) {
             let to = above.next().ok_or(InstallError::AddonsFull)?;
             if vpk.pak.is_some_and(|n| foreign_slots.contains(&n))
                 && let Some(name) = vpk.file.file_name().and_then(|n| n.to_str())
             {
-                moved.push(format!("{name} to pak{to:02}_dir.vpk"));
+                relocated.push(format!("{name} to pak{to:02}_dir.vpk"));
             }
             moves.push((vpk, to));
         }
@@ -731,7 +733,7 @@ fn place_in_slots(
     let sidecar = place_numbered(addons_dir, staged, &numbers, meta, old)?;
     Ok(SlotPlaced {
         sidecar,
-        moved,
+        moved: relocated,
         replaced,
     })
 }
@@ -752,7 +754,7 @@ fn foreign_occupants(
     files: &[PathBuf],
     mod_id: &str,
     reserved: u32,
-) -> Result<Vec<SlotOccupant>, InstallError> {
+) -> Vec<SlotOccupant> {
     let incoming: BTreeMap<u32, &Path> = files
         .iter()
         .filter_map(|file| {
@@ -765,12 +767,7 @@ fn foreign_occupants(
         })
         .collect();
     let claimed: BTreeSet<u32> = incoming.keys().copied().collect();
-    Ok(occupants_in(
-        &sidecar::group(addons_dir),
-        &incoming,
-        mod_id,
-        &claimed,
-    ))
+    occupants_in(&sidecar::group(addons_dir), &incoming, mod_id, &claimed)
 }
 
 fn occupants_in(
@@ -1099,8 +1096,7 @@ fn install_root(addons: &Path) -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| addons.to_path_buf())
+        .map_or_else(|| addons.to_path_buf(), Path::to_path_buf)
 }
 
 /// [`uninstall`] with an injectable running-game check; refuses before touching anything.
@@ -1216,8 +1212,6 @@ fn clean_stale_staging(addons_dir: &Path) {
     let _ = fs::remove_dir(addons_dir.join(SHIV_DIR));
 }
 
-// ---- pak names ----
-
 fn allocate_paks(addons_dir: &Path, count: usize) -> Result<Vec<u32>, InstallError> {
     match crate::pak_slot::free_slots(addons_dir, count) {
         Ok(numbers) => Ok(numbers),
@@ -1242,8 +1236,6 @@ fn move_into_place(from: &Path, to: &Path) -> Result<(), InstallError> {
     }
     fs::rename(from, to).map_err(io_err(to))
 }
-
-// ---- staging ----
 
 /// A unique directory under `<addons>/.shiv/tmp`, removed (with now-empty parents) on drop.
 struct Staging {
@@ -1284,13 +1276,10 @@ impl Staging {
 impl Drop for Staging {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
-        // Fail harmlessly when other staging dirs or sidecars are still there.
         let _ = fs::remove_dir(&self.tmp_root);
         let _ = fs::remove_dir(&self.shiv_dir);
     }
 }
-
-// ---- archive detection and extraction ----
 
 #[derive(Debug, Clone, Copy)]
 enum Format {
@@ -1522,7 +1511,6 @@ fn extract_zip(
     let file = File::open(archive).map_err(io_err(archive))?;
     let mut zip = zip::ZipArchive::new(BufReader::with_capacity(scratch.len(), file))?;
 
-    // Pass 1: validate every entry and the declared sizes before writing anything.
     let mut seen = 0;
     let mut declared: u64 = 0;
     for i in 0..zip.len() {
@@ -1543,7 +1531,6 @@ fn extract_zip(
         return Err(InstallError::TooLarge);
     }
 
-    // Pass 2: extract `.vpk` entries.
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
         if entry.is_dir() || !is_vpk_name(entry.name()) {
@@ -1614,7 +1601,6 @@ fn extract_rar(
     limits: Limits,
     budget: &mut Budget,
 ) -> Result<(), InstallError> {
-    // Pass 1: list and validate.
     let mut seen = 0;
     let mut declared: u64 = 0;
     for header in unrar::Archive::new(archive).open_for_listing()? {
@@ -1635,7 +1621,6 @@ fn extract_rar(
         return Err(InstallError::TooLarge);
     }
 
-    // Pass 2: extract `.vpk` files to the paths validated above.
     let mut open = unrar::Archive::new(archive).open_for_processing()?;
     while let Some(header) = open.read_header()? {
         let name = header.entry().filename.to_string_lossy().into_owned();
@@ -1668,8 +1653,6 @@ fn extract_rar(
     Ok(())
 }
 
-// ---- staged VPK discovery ----
-
 struct StagedVpk {
     file: PathBuf,
     /// `pakNN` number it had in the archive, if it followed the naming.
@@ -1694,7 +1677,6 @@ fn collect_vpks(root: &Path) -> Result<Vec<StagedVpk>, InstallError> {
         }
     }
 
-    // Chunks by (directory, pak number).
     let mut chunks: BTreeMap<(PathBuf, u32), Vec<(String, PathBuf)>> = BTreeMap::new();
     let mut dirs: Vec<StagedVpk> = Vec::new();
     for file in files {
@@ -1762,8 +1744,6 @@ fn ensure_no_symlink_chain(root: &Path, dir: &Path) -> Result<(), InstallError> 
     }
     Ok(())
 }
-
-// ---- updating a local mod from a file ----
 
 /// What a local file would install, read before anything in `addons` changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1939,7 +1919,6 @@ pub fn name_key(name: &str) -> String {
         .find_map(|ext| lower.strip_suffix(ext))
         .unwrap_or(&lower);
     let mut key: String = stem.chars().filter(char::is_ascii_alphanumeric).collect();
-    // Trailing version: digits, optionally preceded by a `v`.
     let digits = key.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     if digits < key.len() {
         key.truncate(digits);
@@ -2028,18 +2007,50 @@ pub fn replace_local_with(
         None => file_stem(&old[0].file),
     };
     let backup = backup_dir(addons_dir, &id)?;
+    let swap = apply_replacement_swap(&plan, &backup)?;
 
-    // Old files out, then new files in; any failure puts the old ones back.
-    let mut retired: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut placed: Vec<PathBuf> = Vec::new();
-    let undo = |retired: &[(PathBuf, PathBuf)], placed: &[PathBuf]| {
-        for p in placed {
+    let source = source_name(file);
+    let sc = match build_replacement_sidecar(addons_dir, file, target, &plan, source) {
+        Ok(sc) => sc,
+        Err(e) => {
+            swap.undo(&backup);
+            return Err(e);
+        }
+    };
+    if let Err(e) = sidecar::write(addons_dir, &sc) {
+        swap.undo(&backup);
+        return Err(e.into());
+    }
+    Ok(Replaced {
+        sidecar: sc,
+        backup,
+    })
+}
+
+struct ReplacementSwap {
+    retired: Vec<(PathBuf, PathBuf)>,
+    placed: Vec<PathBuf>,
+}
+
+impl ReplacementSwap {
+    fn undo(&self, backup: &Path) {
+        for p in &self.placed {
             let _ = fs::remove_file(p);
         }
-        for (from, to) in retired {
+        for (from, to) in &self.retired {
             let _ = fs::rename(to, from);
         }
-        let _ = fs::remove_dir(&backup);
+        let _ = fs::remove_dir(backup);
+    }
+}
+
+fn apply_replacement_swap(
+    plan: &ReplacementPlan,
+    backup: &Path,
+) -> Result<ReplacementSwap, InstallError> {
+    let mut swap = ReplacementSwap {
+        retired: Vec::new(),
+        placed: Vec::new(),
     };
     for from in &plan.retire {
         let Some(name) = from.file_name() else {
@@ -2047,20 +2058,28 @@ pub fn replace_local_with(
         };
         let to = backup.join(name);
         if let Err(e) = fs::rename(from, &to) {
-            undo(&retired, &placed);
+            swap.undo(backup);
             return Err(io_err(from)(e));
         }
-        retired.push((from.clone(), to));
+        swap.retired.push((from.clone(), to));
     }
     for (from, to) in &plan.place {
         if let Err(e) = move_into_place(from, to) {
-            undo(&retired, &placed);
+            swap.undo(backup);
             return Err(e);
         }
-        placed.push(to.clone());
+        swap.placed.push(to.clone());
     }
+    Ok(swap)
+}
 
-    let source = source_name(file);
+fn build_replacement_sidecar(
+    addons_dir: &Path,
+    file: &Path,
+    target: &InstalledMod,
+    plan: &ReplacementPlan,
+    source: Option<String>,
+) -> Result<Sidecar, InstallError> {
     let stamps_for = |vpks: &[String]| -> Result<Option<Vec<sidecar::Stamp>>, InstallError> {
         let mut out = Vec::with_capacity(vpks.len());
         for name in vpks {
@@ -2073,27 +2092,15 @@ pub fn replace_local_with(
         }
         Ok(Some(out))
     };
-    let sc = if let Some(mut sc) = target.sidecar.clone() {
+    if let Some(mut sc) = target.sidecar.clone() {
         sc.source = source;
-        sc.stamps = match stamps_for(&sc.vpks) {
-            Ok(s) => s,
-            Err(e) => {
-                undo(&retired, &placed);
-                return Err(e);
-            }
-        };
-        sc
+        sc.stamps = stamps_for(&sc.vpks)?;
+        Ok(sc)
     } else {
-        let mut vpks = plan.dir_names;
+        let mut vpks = plan.dir_names.clone();
         vpks.sort();
-        let stamps = match stamps_for(&vpks) {
-            Ok(s) => s,
-            Err(e) => {
-                undo(&retired, &placed);
-                return Err(e);
-            }
-        };
-        Sidecar {
+        let stamps = stamps_for(&vpks)?;
+        Ok(Sidecar {
             mod_id: sidecar::new_local_id(addons_dir),
             name: file_stem(file),
             version: None,
@@ -2107,16 +2114,8 @@ pub fn replace_local_with(
             stamps,
             unverified: None,
             generated: None,
-        }
-    };
-    if let Err(e) = sidecar::write(addons_dir, &sc) {
-        undo(&retired, &placed);
-        return Err(e.into());
+        })
     }
-    Ok(Replaced {
-        sidecar: sc,
-        backup,
-    })
 }
 
 /// The moves one replacement makes: the staged files into the slots the old
@@ -2164,7 +2163,6 @@ fn plan_replacement(
         let mut group = vec![dest_dir.clone()];
         plan.place.push((new.file.clone(), dest_dir));
         if !new.chunks.is_empty() {
-            // Chunk files are named after the pak number.
             let Some(number) = old.pak else {
                 return Err(InstallError::UnsafePath(format!(
                     "{enabled_name} has no pak number for the new chunk files"

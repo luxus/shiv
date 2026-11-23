@@ -18,9 +18,13 @@ use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use crate::{App, installed};
 
 /// Whether to ask winit for X11: only when requested with `SHIV_X11`.
-// Called from `select_backend`'s Linux-only block and the tests below; on
-// macOS the call site is compiled out and the lint would fire.
-#[cfg_attr(target_vendor = "apple", allow(dead_code))]
+#[cfg_attr(
+    target_vendor = "apple",
+    allow(
+        dead_code,
+        reason = "called only from Linux backend selection and tests"
+    )
+)]
 pub(crate) fn force_x11(shiv_x11: Option<&OsStr>) -> bool {
     shiv_x11.is_some_and(|v| !v.is_empty() && v != "0")
 }

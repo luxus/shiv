@@ -130,6 +130,10 @@ fn value_text(value: &Value) -> String {
 
 fn js_number(n: f64) -> String {
     if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "n is verified finite, integral, and < 1e15"
+        )]
         return format!("{}", n as i64);
     }
     let mut s = format!("{n:.12}");
@@ -149,38 +153,27 @@ fn default_text(key: &str) -> Option<&'static str> {
         "w" => "54.18",
         "h" => "6.3",
         "enemy" => "#FFFF00",
-        "ally" => "#FFFFFF",
+        "ally" | "numColor" | "critColor" => "#FFFFFF",
         "fill" => "flat",
-        "bg" => "#000000",
+        "bg" | "outlineColor" | "numOutlineColor" | "tickColor" => "#000000",
         "bgAlpha" => "100",
-        "outline" => "0",
-        "outlineColor" => "#000000",
-        "glow" => "0",
+        "outline" | "glow" | "barX" | "barY" | "numX" | "numY" | "iconX" | "iconY" | "staX"
+        | "staY" | "critX" | "critY" => "0",
         "num" => "above",
         "numSize" => "16.38",
-        "numAlly" => "false",
-        "numColor" => "#FFFFFF",
+        "numAlly" | "hitNum" | "low" | "deltaAll" => "false",
         "numOutline" => "4",
-        "numOutlineColor" => "#000000",
         "font" => "numericOracle",
-        "hitNum" => "false",
         "hitNumColor" => "#FFD23F",
-        "low" => "false",
         "lowColor" => "#FF3030",
         "deltaColor" => "#E62020",
-        "deltaAll" => "false",
         "ticks" => "off",
         "tickW" => "1",
-        "tickColor" => "#000000",
         "stamina" => "dots",
         "pip" => "5.04",
-        "icon" => "true",
-        "crit" => "true",
+        "icon" | "crit" => "true",
         "critSize" => "12",
-        "critColor" => "#FFFFFF",
         "critGlow" => "#FF410D",
-        "barX" | "barY" | "numX" | "numY" | "iconX" | "iconY" | "staX" | "staY" | "critX"
-        | "critY" => "0",
         _ => return None,
     })
 }
@@ -249,7 +242,11 @@ impl Control {
 }
 
 fn number(n: f64) -> Value {
-    if n.is_finite() && n.fract() == 0.0 && n.abs() < (i64::MAX as f64) {
+    if n.is_finite() && n.fract() == 0.0 && n.abs() < 9_223_372_036_854_775_808.0 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "n is verified finite, integral, and strictly below 2^63"
+        )]
         Value::from(n as i64)
     } else {
         serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)

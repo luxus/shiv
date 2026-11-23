@@ -54,9 +54,6 @@ fn with_repair(f: impl FnOnce(&Rc<Repair>)) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// View-models (pure, unit-tested)
-
 pub(crate) fn tone(status: RepairStatus) -> RepairTone {
     match status {
         RepairStatus::Works => RepairTone::Works,
@@ -265,9 +262,10 @@ pub(crate) fn remove_result(report: &shiv_repair::RemoveReport) -> (String, Vec<
     ("Removed the repair package".into(), lines)
 }
 
-// ---------------------------------------------------------------------------
-// Worker side
-
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "worker snapshot of independent UI state flags"
+)]
 struct Scan {
     mods: Vec<ModHealth>,
     stale: bool,
@@ -314,9 +312,6 @@ fn run_action(deps: &Deps, action: &Action, names: &[(ModId, String)]) -> Outcom
             .map_err(|e| error_text(&e)),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Controller
 
 struct Repair {
     weak: Weak<App>,

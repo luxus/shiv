@@ -73,9 +73,6 @@ fn with_browse(f: impl FnOnce(&Rc<Browse>)) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Formatting helpers (pure, unit-tested)
-
 /// `1234567` -> `1,234,567`.
 pub(crate) fn fmt_count(n: u64) -> String {
     let digits = n.to_string();
@@ -400,9 +397,6 @@ fn categories(mods: &[ModDto]) -> Vec<String> {
     list.into_iter().map(|(c, _)| c.to_owned()).collect()
 }
 
-// ---------------------------------------------------------------------------
-// Thumbnail loading
-
 #[derive(Default)]
 struct ThumbQueue {
     /// Newest request at the back; workers take from the back (LIFO) so the
@@ -519,12 +513,11 @@ fn thumb_worker(
             .unwrap_or_else(PoisonError::into_inner)
             .known
             .remove(&url);
-        // Failures are remembered by the cache.
         let posted = weak.upgrade_in_event_loop(move |_| {
             with_browse(|b| on_loaded(b, &url, ok));
         });
         if posted.is_err() {
-            return; // event loop is gone
+            return;
         }
     }
 }
@@ -534,9 +527,6 @@ pub(crate) fn to_slint(img: &thumbs::Image) -> slint::Image {
         SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(img.rgba(), img.width(), img.height());
     slint::Image::from_rgba8(buf)
 }
-
-// ---------------------------------------------------------------------------
-// The list model
 
 /// One row of the current result set (no description: it is only needed for search).
 #[derive(Clone)]
@@ -828,9 +818,6 @@ impl Model for DetailRow {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Install worker
-
 struct InstallTask {
     mod_id: String,
     file: DownloadFile,
@@ -1005,7 +992,6 @@ fn run_install(
     }
     let fetched = client.fetch_cancellable(&download_url, &dest, cancel, |done, total| {
         let total = total.or(size_hint).filter(|t| *t > 0);
-        // Percent steps when the size is known, otherwise one per MB.
         let step = match total {
             Some(t) => done.saturating_mul(100) / t,
             None => done / 1_000_000,
@@ -1309,9 +1295,6 @@ pub(crate) fn refresh_installed() {
     with_browse(|b| b.refresh_installed());
 }
 
-// ---------------------------------------------------------------------------
-// Controller
-
 pub struct Browse {
     weak: Weak<App>,
     locate: Locate,
@@ -1469,7 +1452,19 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
     state.set_heroes(ModelRc::from(browse.hero_model.clone()));
     crate::detail_tabs::attach(app);
     state.set_detail_row(ModelRc::new(DetailRow(list)));
+    wire_callbacks(&state);
 
+    browse.load();
+    let loaded = weak.clone();
+    crate::spawn_worker("shiv-load-source", source_filter::load, move |key| {
+        if let Ok(key) = key {
+            let _ = loaded.upgrade_in_event_loop(move |_| with_browse(|b| b.source_loaded(key)));
+        }
+    });
+    cache
+}
+
+fn wire_callbacks(state: &BrowseState<'_>) {
     let handle = |f: fn(&Rc<Browse>)| move || with_browse(f);
     state.on_search_edited(|text| with_browse(|b| b.search_edited(text.as_str())));
     state.on_sort_selected(|i| with_browse(|b| b.sort_selected(i)));
@@ -1509,15 +1504,6 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
     });
     state.on_gallery_step(|delta| with_browse(|b| b.gallery_step(delta)));
     state.on_open_link(handle(|b| b.open_link()));
-
-    browse.load();
-    let loaded = weak.clone();
-    crate::spawn_worker("shiv-load-source", source_filter::load, move |key| {
-        if let Ok(key) = key {
-            let _ = loaded.upgrade_in_event_loop(move |_| with_browse(|b| b.source_loaded(key)));
-        }
-    });
-    cache
 }
 
 impl Browse {
@@ -1635,8 +1621,6 @@ impl Browse {
             Ok(mods) => mods,
             Err(text) => return self.fail_load(text),
         };
-        // NSFW mods are listed with a tag and a blurred thumbnail (see
-        // `ModList::display_thumb`) until the viewer turns on Show NSFW.
         if mods.is_empty() {
             return self.fail_load(
                 "The mod service returned an empty catalog. Try again in a moment.".into(),
@@ -1677,7 +1661,7 @@ impl Browse {
         let mut merged_installed = installed;
         merged_installed.extend(self.list.installed_since.borrow().iter().cloned());
         *self.list.installed.borrow_mut() = merged_installed;
-        // Installed rows of mods installed before Shiv recorded the flag.
+        // Update Installed rows that predate per-sidecar NSFW flags.
         crate::installed::nsfw_changed();
         self.with_state(|s| {
             s.set_categories(ModelRc::new(VecModel::from(labels)));
@@ -1737,7 +1721,7 @@ impl Browse {
         *self.source_keys.borrow_mut() = options.keys;
         self.with_state(|s| {
             s.set_sources(ModelRc::new(VecModel::from(labels)));
-            s.set_source_index(index as i32);
+            s.set_source_index(i32::try_from(index).unwrap_or(0));
             s.set_catalog_shown(key.shows_catalog());
         });
         let summary = if shown == total {
@@ -1753,7 +1737,6 @@ impl Browse {
                 fmt_count(total as u64)
             )
         };
-        // New results start at the top.
         self.with_state(|s| {
             s.set_summary(summary.into());
             s.set_list_scroll(0.0);
@@ -2211,9 +2194,6 @@ impl Browse {
         self.list.changed(id);
     }
 
-    // -----------------------------------------------------------------------
-    // Detail page
-
     /// Open the detail page for `id` (from the loaded catalog; no network
     /// needed for the text). The list stays as it is underneath.
     #[allow(
@@ -2222,8 +2202,6 @@ impl Browse {
         reason = "Slint exposes i32 for the gallery's image count"
     )]
     fn open_detail(&self, id: &str) {
-        // A registry row has a page too: its listing, with the release
-        // history its registry publishes as the Changelog tab.
         let registry_row = self.list.find(id).and_then(|e| e.registry.clone());
         if let Some(install) = registry_row {
             self.open_registry_detail(&install);
@@ -2231,8 +2209,6 @@ impl Browse {
         }
         let catalog = self.catalog.borrow().clone();
         let Some(m) = catalog.iter().find(|m| m.id == id) else {
-            // A registry row has no catalog page; the Installed screen
-            // already says so for managed mods without one.
             return;
         };
         self.drop_gallery();

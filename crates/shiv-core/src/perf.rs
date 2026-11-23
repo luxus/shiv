@@ -81,9 +81,6 @@ fn io_err(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> PerfEr
     }
 }
 
-// ---------------------------------------------------------------------------
-// Catalog
-
 /// One setting: a path below the `GameInfo` root (`["ConVars", "r_ssao"]`)
 /// and its raw value without quotes. `None` comments the key out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,9 +520,6 @@ fn normalize(value: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Catalog cache
-
 /// The last good catalog from the API and its `ETag`, on disk.
 #[derive(Debug, Clone)]
 pub struct CatalogCache {
@@ -593,9 +587,6 @@ impl CatalogCache {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// gameinfo.gi
 
 fn parse_options() -> ParseOptions {
     // Source 2 reads backslashes literally in gameinfo.gi.
@@ -1169,7 +1160,6 @@ fn edit(path: &Path, text: &str, entries: &[ConfigEntry]) -> Result<String, Perf
     let lines = split_lines(text);
     let fallback_eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
 
-    // The last entry for a path wins.
     let mut planned: Vec<&ConfigEntry> = Vec::new();
     for entry in entries {
         check_entry(entry)?;
@@ -1188,112 +1178,10 @@ fn edit(path: &Path, text: &str, entries: &[ConfigEntry]) -> Result<String, Perf
         })
         .collect();
 
-    // Replacement content per line index, and new lines before a line.
     let mut replaced: HashMap<usize, String> = HashMap::new();
     let mut inserted: HashMap<usize, Vec<String>> = HashMap::new();
-
     for entry in &planned {
-        let scalars: Vec<(usize, &Range<usize>)> = doc
-            .sites
-            .iter()
-            .filter_map(|site| match &site.kind {
-                SourceKind::Scalar { value_range, .. }
-                    if rel(site).is_some_and(|r| path_eq(r, &entry.path)) =>
-                {
-                    Some((site.key_start, value_range))
-                }
-                _ => None,
-            })
-            .collect();
-
-        if !scalars.is_empty() {
-            for (key_start, range) in scalars {
-                let i = line_index(&lines, key_start);
-                let line = &lines[i];
-                let local = range.start - line.start..range.end - line.start;
-                if parse_entry_line(line.content).map(|(_, r)| r) != Some(local.clone()) {
-                    return Err(entry_err(entry, "it shares its line with other settings"));
-                }
-                let new = if let Some(value) = entry.value.as_deref() {
-                    with_value(line.content, local, value)
-                } else {
-                    let indent = indent_of(line.content);
-                    format!("{indent}{OFF_TAG}{}", &line.content[indent.len()..])
-                };
-                replaced.insert(i, new);
-            }
-            continue;
-        }
-
-        let Some(value) = entry.value.as_deref() else {
-            continue;
-        };
-        if objects.iter().any(|(r, ..)| path_eq(r, &entry.path)) {
-            return Err(entry_err(
-                entry,
-                "it is a block in gameinfo.gi, not a value",
-            ));
-        }
-        let (parent, key) = entry.path.split_at(entry.path.len() - 1);
-        let key = &key[0];
-        let Some(&(_, open, close)) = objects.iter().rev().find(|(r, ..)| path_eq(r, parent))
-        else {
-            return Err(entry_err(
-                entry,
-                format!("gameinfo.gi has no {} block", parent.join("/")),
-            ));
-        };
-        let (open_line, close_line) = (line_index(&lines, open), line_index(&lines, close));
-
-        // A line Shiv commented out earlier comes back.
-        let nested: Vec<(usize, usize)> = objects
-            .iter()
-            .filter(|(r, o, c)| r.len() == parent.len() + 1 && *o > open && *c < close)
-            .map(|&(_, o, c)| (o, c))
-            .collect();
-        let restored = (open_line + 1..close_line).find_map(|i| {
-            let line = &lines[i];
-            if nested
-                .iter()
-                .any(|&(o, c)| line.start > o && line.start < c)
-            {
-                return None;
-            }
-            let indent = indent_of(line.content);
-            let rest = line.content[indent.len()..].strip_prefix(OFF_TAG)?;
-            let (k, range) = parse_entry_line(rest)?;
-            k.eq_ignore_ascii_case(key)
-                .then(|| (i, format!("{indent}{}", with_value(rest, range, value))))
-        });
-        if let Some((i, new)) = restored {
-            replaced.insert(i, new);
-            continue;
-        }
-
-        let before_close = &lines[close_line].content[..close - lines[close_line].start];
-        if open_line == close_line || !before_close.trim().is_empty() {
-            return Err(entry_err(
-                entry,
-                format!("the {} block closes on a shared line", parent.join("/")),
-            ));
-        }
-        // Indent like the block's first entry, else one tab deeper than the brace.
-        let indent = doc
-            .sites
-            .iter()
-            .filter(|s| s.key_start > open && s.key_start < close)
-            .find(|s| rel(s).is_some_and(|r| r.len() == parent.len() + 1))
-            .map_or_else(
-                || format!("{}\t", indent_of(lines[close_line].content)),
-                |s| {
-                    let line = &lines[line_index(&lines, s.key_start)];
-                    indent_of(line.content).to_string()
-                },
-            );
-        inserted
-            .entry(close_line)
-            .or_default()
-            .push(format!("{indent}\"{key}\"\t\t\"{value}\""));
+        apply_entry_edit(entry, &doc, &lines, &objects, &mut replaced, &mut inserted)?;
     }
 
     let mut out = String::with_capacity(text.len() + 64 * inserted.len());
@@ -1312,6 +1200,127 @@ fn edit(path: &Path, text: &str, entries: &[ConfigEntry]) -> Result<String, Perf
     }
     verify(path, &doc, &out, &planned)?;
     Ok(out)
+}
+
+fn apply_entry_edit(
+    entry: &ConfigEntry,
+    doc: &SourceDocument,
+    lines: &[Line<'_>],
+    objects: &[(&[String], usize, usize)],
+    replaced: &mut HashMap<usize, String>,
+    inserted: &mut HashMap<usize, Vec<String>>,
+) -> Result<(), PerfError> {
+    let scalars: Vec<(usize, &Range<usize>)> = doc
+        .sites
+        .iter()
+        .filter_map(|site| match &site.kind {
+            SourceKind::Scalar { value_range, .. }
+                if rel(site).is_some_and(|r| path_eq(r, &entry.path)) =>
+            {
+                Some((site.key_start, value_range))
+            }
+            _ => None,
+        })
+        .collect();
+
+    if !scalars.is_empty() {
+        for (key_start, range) in scalars {
+            let i = line_index(lines, key_start);
+            let line = &lines[i];
+            let local = range.start - line.start..range.end - line.start;
+            if parse_entry_line(line.content).map(|(_, r)| r) != Some(local.clone()) {
+                return Err(entry_err(entry, "it shares its line with other settings"));
+            }
+            let new = if let Some(value) = entry.value.as_deref() {
+                with_value(line.content, local, value)
+            } else {
+                let indent = indent_of(line.content);
+                format!("{indent}{OFF_TAG}{}", &line.content[indent.len()..])
+            };
+            replaced.insert(i, new);
+        }
+        return Ok(());
+    }
+
+    let Some(value) = entry.value.as_deref() else {
+        return Ok(());
+    };
+    if objects.iter().any(|(r, ..)| path_eq(r, &entry.path)) {
+        return Err(entry_err(
+            entry,
+            "it is a block in gameinfo.gi, not a value",
+        ));
+    }
+    insert_into_block(entry, value, doc, lines, objects, replaced, inserted)
+}
+
+fn insert_into_block(
+    entry: &ConfigEntry,
+    value: &str,
+    doc: &SourceDocument,
+    lines: &[Line<'_>],
+    objects: &[(&[String], usize, usize)],
+    replaced: &mut HashMap<usize, String>,
+    inserted: &mut HashMap<usize, Vec<String>>,
+) -> Result<(), PerfError> {
+    let (parent, key) = entry.path.split_at(entry.path.len() - 1);
+    let key = &key[0];
+    let Some(&(_, open, close)) = objects.iter().rev().find(|(r, ..)| path_eq(r, parent)) else {
+        return Err(entry_err(
+            entry,
+            format!("gameinfo.gi has no {} block", parent.join("/")),
+        ));
+    };
+    let (open_line, close_line) = (line_index(lines, open), line_index(lines, close));
+
+    let nested: Vec<(usize, usize)> = objects
+        .iter()
+        .filter(|(r, o, c)| r.len() == parent.len() + 1 && *o > open && *c < close)
+        .map(|&(_, o, c)| (o, c))
+        .collect();
+    let restored = (open_line + 1..close_line).find_map(|i| {
+        let line = &lines[i];
+        if nested
+            .iter()
+            .any(|&(o, c)| line.start > o && line.start < c)
+        {
+            return None;
+        }
+        let indent = indent_of(line.content);
+        let rest = line.content[indent.len()..].strip_prefix(OFF_TAG)?;
+        let (k, range) = parse_entry_line(rest)?;
+        k.eq_ignore_ascii_case(key)
+            .then(|| (i, format!("{indent}{}", with_value(rest, range, value))))
+    });
+    if let Some((i, new)) = restored {
+        replaced.insert(i, new);
+        return Ok(());
+    }
+
+    let before_close = &lines[close_line].content[..close - lines[close_line].start];
+    if open_line == close_line || !before_close.trim().is_empty() {
+        return Err(entry_err(
+            entry,
+            format!("the {} block closes on a shared line", parent.join("/")),
+        ));
+    }
+    let indent = doc
+        .sites
+        .iter()
+        .filter(|s| s.key_start > open && s.key_start < close)
+        .find(|s| rel(s).is_some_and(|r| r.len() == parent.len() + 1))
+        .map_or_else(
+            || format!("{}\t", indent_of(lines[close_line].content)),
+            |s| {
+                let line = &lines[line_index(lines, s.key_start)];
+                indent_of(line.content).to_string()
+            },
+        );
+    inserted
+        .entry(close_line)
+        .or_default()
+        .push(format!("{indent}\"{key}\"\t\t\"{value}\""));
+    Ok(())
 }
 
 /// The edited text parses, keeps its blocks and every value not planned, and

@@ -165,7 +165,6 @@ impl Out {
             .nth(MAX_CHARS)
             .map_or(self.s.len(), |(i, _)| i);
         let head = &self.s[..cut];
-        // Prefer ending at a word boundary near the limit.
         let head = match head.rfind(char::is_whitespace) {
             Some(ws) if cut - ws < 200 => &head[..ws],
             _ => head,

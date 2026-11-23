@@ -85,7 +85,10 @@ fn complock_reserved_slots(addons_dir: &Path) -> u32 {
     };
     let installed = entries.flatten().any(|entry| {
         entry.file_name().to_str().is_some_and(|name| {
-            name.starts_with(crate::complock::MOD_PREFIX) && name.ends_with(".json")
+            name.starts_with(crate::complock::MOD_PREFIX)
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
         })
     });
     if installed {

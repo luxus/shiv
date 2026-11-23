@@ -101,7 +101,7 @@ pub struct Slot<'a> {
 
 /// Trim is applied by the site's `processSamples` from sample indexes, using
 /// the same millisecond conversion the page uses (`sample / 44100 * 1000`).
-pub fn build_hitsound(body: Slot<'_>, head: Slot<'_>) -> Result<Vec<u8>, JsError> {
+pub fn build_hitsound(body: &Slot<'_>, head: &Slot<'_>) -> Result<Vec<u8>, JsError> {
     with_runtime(|ctx| {
         eval(&ctx, HOST, "host")?;
         eval(&ctx, LAME_JS, "lame.min.js")?;
@@ -111,31 +111,31 @@ pub fn build_hitsound(body: Slot<'_>, head: Slot<'_>) -> Result<Vec<u8>, JsError
         let globals = ctx.globals();
         globals
             .set("HOST_BODY_START", body.start)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         globals
             .set("HOST_BODY_END", body.end)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         globals
             .set("HOST_HEAD_START", head.start)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         globals
             .set("HOST_HEAD_END", head.end)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         globals
             .set("HOST_BODY_DB", body.levels.db)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         globals
             .set("HOST_BODY_PITCH", body.levels.pitch)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         globals
             .set("HOST_HEAD_DB", head.levels.db)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         globals
             .set("HOST_HEAD_PITCH", head.levels.pitch)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         let built: TypedArray<u8> = ctx
             .eval(
-                r#"
+                r"
                 (() => {
                   const rate = 44100;
                   const body = HS.processSamples(new Float32Array(HOST_BODY), {
@@ -153,9 +153,9 @@ pub fn build_hitsound(body: Slot<'_>, head: Slot<'_>) -> Result<Vec<u8>, JsError
                     { db: HOST_HEAD_DB, pitch: HOST_HEAD_PITCH }
                   ).vpk;
                 })()
-                "#,
+                ",
             )
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         copy_bytes(&built)
     })
 }
@@ -165,23 +165,23 @@ pub fn build_hpbar(options: &BTreeMap<String, Value>) -> Result<Vec<u8>, JsError
     with_runtime(|ctx| {
         eval(&ctx, HOST, "host")?;
         eval(&ctx, HPBARS_JS, "hp_hpbars.js")?;
-        let base = ArrayBuffer::new_copy(ctx.clone(), BASE_PAK).map_err(|e| err(&ctx, e))?;
+        let base = ArrayBuffer::new_copy(ctx.clone(), BASE_PAK).map_err(|e| err(&ctx, &e))?;
         ctx.globals()
             .set("HOST_BASE", base)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         ctx.globals()
             .set("HOST_OPTIONS", json)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         let built: TypedArray<u8> = ctx
             .eval(
-                r#"
+                r"
                 (() => {
                   const H = module.exports;
                   return H.buildPak(new Uint8Array(HOST_BASE), JSON.parse(HOST_OPTIONS));
                 })()
-                "#,
+                ",
             )
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         copy_bytes(&built)
     })
 }
@@ -190,13 +190,13 @@ pub fn build_hpbar_preset(id: &str) -> Result<Vec<u8>, JsError> {
     with_runtime(|ctx| {
         eval(&ctx, HOST, "host")?;
         eval(&ctx, HPBARS_JS, "hp_hpbars.js")?;
-        let base = ArrayBuffer::new_copy(ctx.clone(), BASE_PAK).map_err(|e| err(&ctx, e))?;
+        let base = ArrayBuffer::new_copy(ctx.clone(), BASE_PAK).map_err(|e| err(&ctx, &e))?;
         ctx.globals()
             .set("HOST_BASE", base)
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         ctx.globals()
             .set("HOST_PRESET", id.to_owned())
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         let built: TypedArray<u8> = ctx
             .eval(
                 r#"
@@ -208,7 +208,7 @@ pub fn build_hpbar_preset(id: &str) -> Result<Vec<u8>, JsError> {
                 })()
                 "#,
             )
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         copy_bytes(&built)
     })
 }
@@ -223,7 +223,7 @@ pub fn hp_presets() -> Result<Vec<(String, String, String)>, JsError> {
                 module.exports.PRESETS.map(p => p.id + "\t" + p.title + "\t" + JSON.stringify(p.o))
                 "#,
             )
-            .map_err(|e| err(&ctx, e))?;
+            .map_err(|e| err(&ctx, &e))?;
         Ok(rows
             .into_iter()
             .filter_map(|row| {
@@ -240,8 +240,8 @@ fn set_samples(ctx: &Ctx<'_>, name: &str, samples: &[f32]) -> Result<(), JsError
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
-    let buffer = ArrayBuffer::new_copy(ctx.clone(), &bytes).map_err(|e| err(ctx, e))?;
-    ctx.globals().set(name, buffer).map_err(|e| err(ctx, e))
+    let buffer = ArrayBuffer::new_copy(ctx.clone(), &bytes).map_err(|e| err(ctx, &e))?;
+    ctx.globals().set(name, buffer).map_err(|e| err(ctx, &e))
 }
 
 fn copy_bytes(value: &TypedArray<'_, u8>) -> Result<Vec<u8>, JsError> {
@@ -254,12 +254,12 @@ fn copy_bytes(value: &TypedArray<'_, u8>) -> Result<Vec<u8>, JsError> {
 
 fn eval(ctx: &Ctx<'_>, source: &str, name: &str) -> Result<(), JsError> {
     ctx.eval(source.to_owned()).map_err(|e| {
-        let detail = err(ctx, e);
+        let detail = err(ctx, &e);
         JsError(format!("{name}: {detail}"))
     })
 }
 
-fn err(ctx: &Ctx<'_>, error: rquickjs::Error) -> JsError {
+fn err(ctx: &Ctx<'_>, error: &rquickjs::Error) -> JsError {
     let caught = format!("{:?}", ctx.catch());
     JsError(format!("{error}: {caught}"))
 }

@@ -70,8 +70,6 @@ pub enum InterchangeError {
     Sidecar(#[from] SidecarError),
 }
 
-// ---- wire types (the field names the format specifies, not Shiv's) ----
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Document {
@@ -206,8 +204,6 @@ pub struct InterchangeCrosshair {
     pub convars: BTreeMap<String, String>,
 }
 
-// ---- reading a bundle ----
-
 /// The folder holding the manifest of the bundle `path` points at (the
 /// folder itself, or the folder holding a `mod-interchange.json`).
 ///
@@ -295,8 +291,6 @@ pub fn bundle_file(dir: &Path, path: &str) -> Option<PathBuf> {
     Some(cur)
 }
 
-// ---- hashing ----
-
 /// The SHA-256 of a file's bytes, lowercase hex.
 fn sha256_of(path: &Path) -> Result<String, InterchangeError> {
     let mut file = File::open(path).map_err(|source| InterchangeError::Io {
@@ -304,7 +298,7 @@ fn sha256_of(path: &Path) -> Result<String, InterchangeError> {
         source,
     })?;
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = [0u8; 16 * 1024];
     loop {
         let n = file.read(&mut buf).map_err(|source| InterchangeError::Io {
             path: path.to_path_buf(),
@@ -317,8 +311,6 @@ fn sha256_of(path: &Path) -> Result<String, InterchangeError> {
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
-
-// ---- export ----
 
 /// A `GameBanana` reference the exporting side can supply for a mod Shiv
 /// installed from the catalog: the submission id and whether it is a Sound.
@@ -636,8 +628,6 @@ fn url_path_name(file: &Path, root: &Path) -> String {
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
-// ---- import ----
-
 /// What an import did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImportReport {
@@ -711,7 +701,6 @@ pub fn import(
     let mut report = ImportReport::default();
     let mut ledger = read_ledger(addons);
 
-    // Ascending `order`, ties broken by document position.
     let mut mods: Vec<&InterchangeMod> = doc.mods.iter().collect();
     mods.sort_by_key(|m| m.order);
 
@@ -731,123 +720,130 @@ pub fn import(
         by_size.entry(meta.len()).or_default().push(idx);
     }
 
+    let mut pool = UnmanagedPool {
+        vpks: &unmanaged,
+        by_size: &by_size,
+        used: &mut adopted_flags,
+    };
     for m in &mods {
-        let name = if m.name.trim().is_empty() {
-            "Unnamed mod".to_owned()
-        } else {
-            m.name.trim().to_owned()
-        };
-        let selected: Vec<&InterchangeFile> = m.files.iter().filter(|f| f.selected).collect();
-        if selected.is_empty() {
-            report
-                .skipped
-                .push((name, "no selected VPK files in the bundle".into()));
-            continue;
-        }
-        // Every file must stay inside the bundle, exist, and match any declared size/sha256.
-        let mut files: Vec<(PathBuf, Option<String>)> = Vec::with_capacity(selected.len());
-        let mut bad: Option<String> = None;
-        for f in &selected {
-            match bundle_file(&dir, &f.path) {
-                Some(p) if p.is_file() => {
-                    if let Some(expected_size) = f.size {
-                        match fs::metadata(&p) {
-                            Ok(meta) if meta.len() == expected_size => {}
-                            Ok(meta) => {
-                                bad = Some(format!(
-                                    "{} is {} bytes, manifest declares {expected_size}",
-                                    f.path,
-                                    meta.len()
-                                ));
-                                break;
-                            }
-                            Err(e) => {
-                                bad = Some(format!("{} cannot be read: {e}", f.path));
-                                break;
-                            }
-                        }
-                    }
-                    let checked_hash = if let Some(expected_sha) = f.sha256.as_deref() {
-                        match sha256_of(&p) {
-                            Ok(actual) if actual.eq_ignore_ascii_case(expected_sha.trim()) => {
-                                Some(actual)
-                            }
-                            Ok(_) => {
-                                bad = Some(format!("{} checksum mismatch", f.path));
-                                break;
-                            }
-                            Err(e) => {
-                                bad = Some(format!("{} cannot be hashed: {e}", f.path));
-                                break;
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    files.push((p, checked_hash));
-                }
-                Some(_) => {
-                    bad = Some(format!("{} is missing from the bundle", f.path));
-                    break;
-                }
-                None => {
-                    bad = Some(format!("{} does not stay inside the bundle", f.path));
-                    break;
-                }
-            }
-        }
-        if let Some(why) = bad {
-            report.skipped.push((name, why));
-            continue;
-        }
-        // Local ids are only unique per folder (`local-<seconds>-<n>`), so a
-        // re-imported Shiv extension matches only when the sidecar name also matches.
-        let mine = m
-            .extensions
-            .as_ref()
-            .and_then(|e| e.get("shiv"))
-            .and_then(|s| s.get("modId"))
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-            .filter(|id| {
-                !sidecar::is_local(id)
-                    || sidecar::read(addons, id).is_ok_and(|s| s.is_some_and(|s| s.name == name))
-            });
-        let existing = known(&m.key)
-            .or_else(|| ledger.get(&m.key).cloned())
-            .or(mine);
-        if existing.is_some_and(|id| sidecar::read(addons, &id).is_ok_and(|s| s.is_some())) {
-            report.skipped.push((name, "already installed".into()));
-            continue;
-        }
-        let guard = install::InstallGuard::acquire(addons)?;
-        let mut pool = UnmanagedPool {
-            vpks: &unmanaged,
-            by_size: &by_size,
-            used: &mut adopted_flags,
-        };
-        match adopt_or_install(
+        import_entry(
+            &dir,
             paths,
             m,
-            &name,
-            &files,
             &mut pool,
             &game_running,
-            guard.permit(),
-        ) {
-            Ok((true, id)) => {
-                report.adopted.push(name.clone());
-                ledger.insert(m.key.clone(), id);
-            }
-            Ok((false, id)) => {
-                report.installed.push(name.clone());
-                ledger.insert(m.key.clone(), id);
-            }
-            Err(text) => report.skipped.push((name, text)),
-        }
+            known,
+            &mut ledger,
+            &mut report,
+        )?;
     }
     write_ledger(addons, &ledger)?;
     Ok(report)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "coordinates bundle validation, pool adoption, ledger, and report per mod"
+)]
+fn import_entry(
+    dir: &Path,
+    paths: &GamePaths,
+    m: &InterchangeMod,
+    pool: &mut UnmanagedPool<'_>,
+    game_running: &impl Fn() -> bool,
+    known: &dyn Fn(&str) -> Option<String>,
+    ledger: &mut BTreeMap<String, String>,
+    report: &mut ImportReport,
+) -> Result<(), InterchangeError> {
+    let addons = paths.addons.as_path();
+    let name = if m.name.trim().is_empty() {
+        "Unnamed mod".to_owned()
+    } else {
+        m.name.trim().to_owned()
+    };
+    let selected: Vec<&InterchangeFile> = m.files.iter().filter(|f| f.selected).collect();
+    if selected.is_empty() {
+        report
+            .skipped
+            .push((name, "no selected VPK files in the bundle".into()));
+        return Ok(());
+    }
+    let files = match validate_bundle_files(dir, &selected) {
+        Ok(files) => files,
+        Err(why) => {
+            report.skipped.push((name, why));
+            return Ok(());
+        }
+    };
+    // Local ids are only unique per folder (`local-<seconds>-<n>`), so a
+    // re-imported Shiv extension matches only when the sidecar name also matches.
+    let mine = m
+        .extensions
+        .as_ref()
+        .and_then(|e| e.get("shiv"))
+        .and_then(|s| s.get("modId"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .filter(|id| {
+            !sidecar::is_local(id)
+                || sidecar::read(addons, id).is_ok_and(|s| s.is_some_and(|s| s.name == name))
+        });
+    let existing = known(&m.key)
+        .or_else(|| ledger.get(&m.key).cloned())
+        .or(mine);
+    if existing.is_some_and(|id| sidecar::read(addons, &id).is_ok_and(|s| s.is_some())) {
+        report.skipped.push((name, "already installed".into()));
+        return Ok(());
+    }
+    let guard = install::InstallGuard::acquire(addons)?;
+    match adopt_or_install(paths, m, &name, &files, pool, game_running, guard.permit()) {
+        Ok((true, id)) => {
+            report.adopted.push(name);
+            ledger.insert(m.key.clone(), id);
+        }
+        Ok((false, id)) => {
+            report.installed.push(name);
+            ledger.insert(m.key.clone(), id);
+        }
+        Err(text) => report.skipped.push((name, text)),
+    }
+    Ok(())
+}
+
+fn validate_bundle_files(
+    dir: &Path,
+    selected: &[&InterchangeFile],
+) -> Result<Vec<(PathBuf, Option<String>)>, String> {
+    let mut files = Vec::with_capacity(selected.len());
+    for f in selected {
+        let Some(p) = bundle_file(dir, &f.path) else {
+            return Err(format!("{} does not stay inside the bundle", f.path));
+        };
+        if !p.is_file() {
+            return Err(format!("{} is missing from the bundle", f.path));
+        }
+        if let Some(expected_size) = f.size {
+            let meta = fs::metadata(&p).map_err(|e| format!("{} cannot be read: {e}", f.path))?;
+            if meta.len() != expected_size {
+                return Err(format!(
+                    "{} is {} bytes, manifest declares {expected_size}",
+                    f.path,
+                    meta.len()
+                ));
+            }
+        }
+        let checked_hash = if let Some(expected_sha) = f.sha256.as_deref() {
+            let actual = sha256_of(&p).map_err(|e| format!("{} cannot be hashed: {e}", f.path))?;
+            if !actual.eq_ignore_ascii_case(expected_sha.trim()) {
+                return Err(format!("{} checksum mismatch", f.path));
+            }
+            Some(actual)
+        } else {
+            None
+        };
+        files.push((p, checked_hash));
+    }
+    Ok(files)
 }
 
 struct UnmanagedPool<'a> {

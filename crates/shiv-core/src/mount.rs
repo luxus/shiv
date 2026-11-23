@@ -8,6 +8,7 @@
 //! (the addons folder) as its `MOD` and write path, can no longer find
 //! `cfg/user_keys_default.vcfg`, and aborts at launch. Nothing else changes.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 
@@ -22,8 +23,11 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 /// `text` with `Game citadel/addons` mounted, or `None` when it already is.
-/// Fails when the file cannot be parsed or has no active `Game citadel` entry
-/// to anchor the line on.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidData`] when the file cannot be parsed or has no
+/// active `Game citadel` entry to anchor the line on.
 pub fn with_addons_mount(text: &str) -> io::Result<Option<String>> {
     let parse_error =
         |e: kv_parser::KvError| invalid(format!("gameinfo.gi could not be parsed: {e}"));
@@ -77,12 +81,11 @@ pub fn with_addons_mount(text: &str) -> io::Result<Option<String>> {
             ("Write", "citadel"),
         ] {
             out.push_str(indent);
-            out.push_str(&format!("{key:<20}{path}"));
+            let _ = write!(out, "{key:<20}{path}");
             out.push_str(newline);
         }
         out.push_str(&text[start..]);
     } else {
-        // The entry shares its line with other tokens.
         out.push_str(&text[..key_start]);
         out.push_str("Game ");
         out.push_str(ADDONS_SEARCH_PATH);
@@ -93,8 +96,13 @@ pub fn with_addons_mount(text: &str) -> io::Result<Option<String>> {
 }
 
 /// Mount `citadel/addons` in the game's `gameinfo.gi`. `Ok(false)` when it
-/// was already mounted. Refused while a vanilla launch session is active, which
-/// leaves the mount out on purpose.
+/// was already mounted.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidData`] when a vanilla launch session is active
+/// (which leaves the mount out on purpose) or the file cannot be parsed;
+/// [`io::Error`] when reading or rewriting `gameinfo.gi` fails.
 pub fn fix_addons_mount(paths: &GamePaths) -> io::Result<bool> {
     if vanilla::is_active(paths) {
         return Err(invalid(

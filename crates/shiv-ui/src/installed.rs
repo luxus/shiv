@@ -100,10 +100,11 @@ fn with_installed(f: impl FnOnce(&Rc<Installed>)) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Row view-models (pure, unit-tested)
-
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "view-model flags mapped directly to Slint row properties"
+)]
 pub(crate) struct Entry {
     /// The sidecar mod id, or the enabled-form file name for a hand-added VPK.
     pub id: String,
@@ -383,7 +384,7 @@ pub(crate) fn card_text(
         about.clone_from(&blurb);
     }
     CardText {
-        author: author.map(str::trim).unwrap_or("").to_string(),
+        author: author.map_or("", str::trim).to_string(),
         blurb,
         about,
     }
@@ -540,9 +541,6 @@ fn summary(n: usize) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Worker side
-
 struct Loaded {
     mods: Vec<InstalledMod>,
     running: bool,
@@ -596,28 +594,15 @@ fn run_reset(
     let running = deps.running.clone();
     let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     if let ResetPlan::Generated(spec) = plan {
-        let version = generated::revision(spec).map_err(|e| e.to_string())?;
-        let mut side = install::install_files(
-            &fetched,
-            install::ModMeta {
-                mod_id: id.to_owned(),
-                name: name.to_owned(),
-                version: Some(version.clone()),
-                thumbnail_url: None,
-                nsfw: false,
-                hero: None,
-                category: None,
-            },
+        return reset_generated(
             &paths,
-            || running(),
+            id,
+            name,
+            spec,
+            &fetched,
+            &|| running(),
             guard.permit(),
-        )
-        .map_err(|e| install_error_text(&e))?;
-        side.generated = generated::spec_value(spec);
-        side.version = Some(version);
-        side.unverified = None;
-        shiv_core::sidecar::write(&paths.addons, &side).map_err(|e| e.to_string())?;
-        return Ok(String::new());
+        );
     }
     let note = RefCell::new(String::new());
     reset::reset_with(
@@ -626,44 +611,16 @@ fn run_reset(
         || running(),
         || match plan {
             ResetPlan::CompLock { pak } => {
-                let meta = install::ModMeta {
-                    mod_id: id.to_owned(),
-                    name: name.to_owned(),
-                    version: Some(complock::revision(pak)),
-                    thumbnail_url: None,
-                    nsfw: false,
-                    hero: None,
-                    category: None,
-                };
-                let first = install::install_files_in_slots(
-                    &fetched,
-                    meta.clone(),
+                *note.borrow_mut() = reset_complock(
                     &paths,
-                    || running(),
-                    complock::last_slot(),
-                    None,
+                    id,
+                    name,
+                    pak,
+                    &fetched,
+                    &|| running(),
+                    &ask,
                     guard.permit(),
-                );
-                let placed = match first {
-                    Err(install::InstallError::NeedsChoice(occupants)) => {
-                        let Some(choice) = ask(&occupants) else {
-                            return Err("Cancelled".into());
-                        };
-                        install::install_files_in_slots(
-                            &fetched,
-                            meta,
-                            &paths,
-                            || running(),
-                            complock::last_slot(),
-                            Some(choice),
-                            guard.permit(),
-                        )
-                        .map_err(|e| install_error_text(&e))?
-                    }
-                    Err(e) => return Err(install_error_text(&e)),
-                    Ok(placed) => placed,
-                };
-                *note.borrow_mut() = install::slot_note(&placed);
+                )?;
                 Ok(())
             }
             ResetPlan::Registry(r) => registry::install_registry_mod(
@@ -694,6 +651,93 @@ fn run_reset(
     Ok(note.into_inner())
 }
 
+fn reset_generated(
+    paths: &GamePaths,
+    id: &str,
+    name: &str,
+    spec: &generated::Spec,
+    fetched: &[PathBuf],
+    running: &dyn Fn() -> bool,
+    permit: install::InstallPermit<'_>,
+) -> Result<String, String> {
+    let version = generated::revision(spec).map_err(|e| e.to_string())?;
+    let mut side = install::install_files(
+        fetched,
+        install::ModMeta {
+            mod_id: id.to_owned(),
+            name: name.to_owned(),
+            version: Some(version.clone()),
+            thumbnail_url: None,
+            nsfw: false,
+            hero: None,
+            category: None,
+        },
+        paths,
+        running,
+        permit,
+    )
+    .map_err(|e| install_error_text(&e))?;
+    side.generated = generated::spec_value(spec);
+    side.version = Some(version);
+    side.unverified = None;
+    shiv_core::sidecar::write(&paths.addons, &side).map_err(|e| e.to_string())?;
+    Ok(String::new())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "passes the reset context and conflict callback into slot installation"
+)]
+fn reset_complock(
+    paths: &GamePaths,
+    id: &str,
+    name: &str,
+    pak: &complock::Pak,
+    fetched: &[PathBuf],
+    running: &dyn Fn() -> bool,
+    ask: &dyn Fn(&[install::SlotOccupant]) -> Option<install::SlotChoice>,
+    permit: install::InstallPermit<'_>,
+) -> Result<String, String> {
+    let meta = install::ModMeta {
+        mod_id: id.to_owned(),
+        name: name.to_owned(),
+        version: Some(complock::revision(pak)),
+        thumbnail_url: None,
+        nsfw: false,
+        hero: None,
+        category: None,
+    };
+    let first = install::install_files_in_slots(
+        fetched,
+        meta.clone(),
+        paths,
+        running,
+        complock::last_slot(),
+        None,
+        permit,
+    );
+    let placed = match first {
+        Err(install::InstallError::NeedsChoice(occupants)) => {
+            let Some(choice) = ask(&occupants) else {
+                return Err("Cancelled".into());
+            };
+            install::install_files_in_slots(
+                fetched,
+                meta,
+                paths,
+                running,
+                complock::last_slot(),
+                Some(choice),
+                permit,
+            )
+            .map_err(|e| install_error_text(&e))?
+        }
+        Err(e) => return Err(install_error_text(&e)),
+        Ok(placed) => placed,
+    };
+    Ok(install::slot_note(&placed))
+}
+
 /// The plan's release on disk in `dir`: a CompLock pak's VPKs unpacked and
 /// CRC-checked, or a registry artifact checked against its sha256.
 fn fetch_release(
@@ -721,7 +765,7 @@ fn fetch_release(
                     part.crc,
                     part.size,
                     part.csize,
-                    part.urls.first().map(String::as_str).unwrap_or(""),
+                    part.urls.first().map_or("", String::as_str),
                 )?;
                 vpks.push(dest);
             }
@@ -826,9 +870,6 @@ fn run_action(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Link installs (custom sources)
-
 /// The link-install worker: download to a temporary folder, then install
 /// like a local file. Mirrors Browse's `run_install`: the game is checked
 /// before the download so it is not wasted, progress reports percent steps
@@ -888,9 +929,6 @@ fn run_link_install(
 fn link_fail(text: String) -> LinkFailure {
     LinkFailure::Failed(text)
 }
-
-// ---------------------------------------------------------------------------
-// Controller
 
 struct Installed {
     weak: Weak<App>,
@@ -987,6 +1025,10 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
     INSTALLED.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<InstalledState>();
     state.set_rows(ModelRc::from(rows));
+    wire_callbacks(app, &state);
+}
+
+fn wire_callbacks(app: &App, state: &InstalledState<'_>) {
     state.on_refresh(|| with_installed(|i| i.refresh(true)));
     state.on_toggle(|id| with_installed(|i| i.toggle(id.as_str())));
     state.on_uninstall(|id| with_installed(|i| i.act(id.as_str(), Action::Uninstall)));
@@ -1189,9 +1231,10 @@ pub(crate) fn file_dropped(path: PathBuf) {
 
 /// Several files were dropped on the window: they are queued and processed
 /// one by one, each opening the dialog it needs.
-// Only the Wayland drop path calls this; macOS builds without it, so the
-// lint fires there while Linux and the tests keep it alive.
-#[cfg_attr(target_vendor = "apple", allow(dead_code))]
+#[cfg_attr(
+    target_vendor = "apple",
+    allow(dead_code, reason = "called only from the Wayland drop path and tests")
+)]
 pub(crate) fn files_dropped(paths: Vec<PathBuf>) {
     with_installed(|i| i.dropped_batch(paths));
 }
@@ -1685,7 +1728,6 @@ impl Installed {
             None => return,
         };
         if enable {
-            // Switching on a mod another enabled mod already replaces: ask first.
             let with = shiv_core::sidecar::conflicts_with(
                 &self.mods.borrow(),
                 id,
@@ -1763,8 +1805,6 @@ impl Installed {
             s.set_error_text("Give the mod a name.".into());
             return;
         }
-        // A snapshot to work on: the mods list, where the mod sits in it,
-        // the mod itself, and the pak number to move it to (when asked).
         let job = {
             let mods = self.mods.borrow();
             let entries = self.entries.borrow();
@@ -1776,10 +1816,6 @@ impl Installed {
                 s.set_error_text("The mod is gone. Press Refresh.".into());
                 return;
             };
-            // A new pak number moves the mod in the load order; an empty or
-            // unchanged field leaves it alone. The range is checked here;
-            // deeper conflicts (a move that would push another VPK past 99)
-            // are refused by the worker without touching anything.
             let pak_to_set = if adopt {
                 None
             } else {
@@ -1834,20 +1870,20 @@ impl Installed {
             move |result| {
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.edited(result));
+                    with_installed(|i| i.edited(&result));
                 });
             },
         );
         if !started {
-            self.edited(Err("Could not start a background thread.".into()));
+            self.edited(&Err("Could not start a background thread.".into()));
         }
     }
 
-    fn edited(&self, result: Result<(), String>) {
+    fn edited(&self, result: &Result<(), String>) {
         self.with_app(|app| {
             let s = app.global::<ModEditState>();
             s.set_busy(false);
-            match &result {
+            match result {
                 Ok(()) => s.set_open(false),
                 Err(text) => s.set_error_text(text.as_str().into()),
             }
@@ -1917,7 +1953,6 @@ impl Installed {
             return;
         };
         let s = app.global::<LocalInstallState>();
-        // A link downloads first; everything else is a local path.
         let text = s.get_path().to_string();
         if is_link(&text) {
             self.install_link(&text, &s.get_name());
@@ -1995,7 +2030,6 @@ impl Installed {
         let s = app.global::<LocalInstallState>();
         let url = url.trim().to_owned();
         let file = link_file_name(&url);
-        // The mod name defaults to the link's file stem, like a local file.
         let stem = Path::new(&file)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -2326,7 +2360,6 @@ impl Installed {
         let Some(app) = self.weak.upgrade() else {
             return;
         };
-        // A dialog, a re-read or an action in flight holds the queue.
         if Self::dialog_open(&app) || !self.idle() {
             return;
         }
@@ -2532,7 +2565,7 @@ impl Installed {
             move |result| {
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.finish(result));
+                    with_installed(|i| i.finish(&result));
                 });
             },
         );
@@ -2544,16 +2577,16 @@ impl Installed {
     /// Success or failure, re-read the folder: that also refreshes the
     /// game-running state (a game-running refusal means it just started).
     fn acted(&self, result: Result<(), String>) {
-        self.finish(result.map(|()| String::new()));
+        self.finish(&result.map(|()| String::new()));
     }
 
-    fn finish(&self, result: Result<String, String>) {
+    fn finish(&self, result: &Result<String, String>) {
         // The disk changed: keep the Launch sidebar count and Browse's
         // Installed badges current.
         crate::launch::refresh();
         crate::browse::refresh_installed();
         self.with_state(|s| {
-            let text = match &result {
+            let text = match result {
                 Ok(note) if !note.is_empty() => Some(note.as_str()),
                 Err(text) => Some(text.as_str()),
                 Ok(_) => None,

@@ -147,9 +147,6 @@ fn io_err(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Crossh
     }
 }
 
-// ---------------------------------------------------------------------------
-// Values
-
 /// Format a number the way JavaScript's template literals do for the values
 /// the editor produces: shortest round-trip form, no trailing `.0`, `-0` as `0`.
 fn js_number(v: f32) -> String {
@@ -264,9 +261,6 @@ fn read_crosshair(s: &HeroSettings<'_>) -> Result<Option<CrosshairConfig>, ()> {
     }
     Ok(found.then_some(c))
 }
-
-// ---------------------------------------------------------------------------
-// Steam
 
 /// The Steam installation: steamlocate first, then the usual folders.
 ///
@@ -434,9 +428,6 @@ fn sibling_backup(path: &Path) -> PathBuf {
     name.push(BACKUP_SUFFIX);
     path.with_file_name(name)
 }
-
-// ---------------------------------------------------------------------------
-// Files
 
 /// A symlinked file is read and written through to its target.
 fn resolve(path: &Path) -> Result<PathBuf, CrosshairError> {

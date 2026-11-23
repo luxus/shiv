@@ -321,7 +321,7 @@ fn stream_digests(
     let mut file = fs::File::open(path).map_err(io_err)?;
     let mut sha = want_sha256.then(Sha256::new);
     let mut md5 = want_md5.then(Md5::new);
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = [0u8; 16 * 1024];
     loop {
         let n = file.read(&mut buf).map_err(io_err)?;
         if n == 0 {
@@ -379,7 +379,10 @@ pub fn verify_download(
 /// [`RegistryError::Install`] carrying the install failures (a running
 /// game, a full addons folder, an unreadable archive); [`RegistryError::Io`]
 /// when the sidecar cannot be recorded.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "bundles the registry install inputs into one explicit call"
+)]
 pub fn install_registry_mod(
     paths: &GamePaths,
     source: &AddedSource,
