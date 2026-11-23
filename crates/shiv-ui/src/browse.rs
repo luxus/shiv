@@ -1203,6 +1203,20 @@ pub(crate) fn catalog_version(id: &str) -> Option<String> {
     out
 }
 
+/// The catalog's `(author, description)` of `id`, for the Installed card.
+pub(crate) fn catalog_about(id: &str) -> Option<(Option<String>, Option<String>)> {
+    let mut out = None;
+    with_browse(|b| {
+        out = b
+            .catalog
+            .borrow()
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| (m.author.clone(), m.description.clone()));
+    });
+    out
+}
+
 /// The catalog's `(hero, category)` of `id`.
 pub(crate) fn catalog_kind(id: &str) -> Option<(Option<String>, Option<String>)> {
     let mut out = None;
