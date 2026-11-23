@@ -33,7 +33,7 @@ pub const UPDATE_NEEDED: &str = "shiv update needed";
 pub const PACK_APP_VERSION: u64 = 1;
 
 /// How long a successful look at the site stays current while the screen is open.
-pub const PACK_REFRESH: Duration = Duration::from_secs(5 * 60);
+pub const PACK_REFRESH: Duration = Duration::from_mins(5);
 
 /// The cached pack-data file inside the shiv cache directory.
 pub const PACK_CACHE_FILE: &str = "pack-data.json";
@@ -104,9 +104,6 @@ fn parse_options() -> ParseOptions {
         ..ParseOptions::default()
     }
 }
-
-// ---------------------------------------------------------------------------
-// The pack options
 
 /// The site's `gameinfo` maps (`{"cvar": "value"}`) as staged entries, in
 /// the order the JSON lists them.
@@ -755,6 +752,10 @@ fn script_pack_json(html: &str) -> Option<&str> {
 }
 
 fn app_min_is_newer(min: &serde_json::Value) -> bool {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "PACK_APP_VERSION is a small integer well within f64 exact range"
+    )]
     min.as_f64()
         .is_some_and(|version| version > PACK_APP_VERSION as f64)
 }
@@ -825,7 +826,7 @@ fn is_loopback_http(url: &str) -> bool {
         return false;
     }
     let host = if let Some(inner) = authority.strip_prefix('[') {
-        inner.split_once(']').map(|(h, _)| h).unwrap_or("")
+        inner.split_once(']').map_or("", |(h, _)| h)
     } else {
         authority.split(':').next().unwrap_or("")
     };
@@ -1044,7 +1045,7 @@ pub fn crc32_file(path: &Path) -> std::io::Result<u32> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
     let mut crc = 0xFFFF_FFFF;
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = [0u8; 16 * 1024];
     loop {
         let n = file.read(&mut buf)?;
         if n == 0 {
@@ -1312,9 +1313,9 @@ fn crc32_feed(state: u32, bytes: &[u8]) -> u32 {
 
 const fn crc32_table() -> [u32; 256] {
     let mut table = [0u32; 256];
-    let mut n = 0;
+    let mut n: u32 = 0;
     while n < 256 {
-        let mut crc = n as u32;
+        let mut crc = n;
         let mut bit = 0;
         while bit < 8 {
             crc = if crc & 1 != 0 {
@@ -1324,7 +1325,7 @@ const fn crc32_table() -> [u32; 256] {
             };
             bit += 1;
         }
-        table[n] = crc;
+        table[n as usize] = crc;
         n += 1;
     }
     table
@@ -1338,9 +1339,6 @@ static CRC32_TABLE: [u32; 256] = crc32_table();
 pub fn verify_decompressed(bytes: &[u8], crc: u32, size: u64) -> bool {
     u64::try_from(bytes.len()).is_ok_and(|len| len == size) && crc32(bytes) == crc
 }
-
-// ---------------------------------------------------------------------------
-// Drift: what the site publishes for an installed pak
 
 /// Prefix of the mod ids Shiv gives the CompLock paks it installs.
 pub const MOD_PREFIX: &str = "complock-";
@@ -1563,9 +1561,6 @@ fn addoninfo_text(vpk: &std::path::Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-// ---------------------------------------------------------------------------
-// The watch's checks
-
 /// What the daily watch found wrong with a fresh pack-data: each reason it
 /// refuses to embed the update and opens an issue instead (#20).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1771,7 +1766,7 @@ pub fn check_parts(fresh: &str, dir: &std::path::Path) -> Vec<PackProblem> {
                 part.crc,
                 part.size,
                 part.csize,
-                part.url.first().map(String::as_str).unwrap_or(""),
+                part.url.first().map_or("", String::as_str),
             ) {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&dest);

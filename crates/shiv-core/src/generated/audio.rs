@@ -8,7 +8,7 @@ use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
@@ -16,6 +16,10 @@ const RATE: u32 = 44_100;
 const MIN_RATE: u32 = 8_000;
 const MAX_RATE: u32 = 384_000;
 const MAX_SECONDS: u64 = 180;
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "44100 * 180 fits in usize on all supported targets"
+)]
 const MAX_OUT_SAMPLES: usize = (RATE as usize) * (MAX_SECONDS as usize);
 
 #[derive(Debug, thiserror::Error)]
@@ -38,7 +42,7 @@ pub fn decode_mono_44k(bytes: &[u8]) -> Result<Vec<f32>, AudioError> {
         return Err(AudioError::Empty);
     }
     let cursor = Cursor::new(bytes.to_vec());
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+    let mss = MediaSourceStream::new(Box::new(cursor), MediaSourceStreamOptions::default());
     let probed = symphonia::default::get_probe()
         .format(
             &Hint::new(),
@@ -77,15 +81,15 @@ pub fn decode_mono_44k(bytes: &[u8]) -> Result<Vec<f32>, AudioError> {
         if packet.track_id() != track_id {
             continue;
         }
-        let decoded = match decoder.decode(&packet) {
-            Ok(decoded) => decoded,
+        let audio_buf = match decoder.decode(&packet) {
+            Ok(buf) => buf,
             Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(SymError::DecodeError(_)) => continue,
             Err(e) => return Err(AudioError::Decode(e.to_string())),
         };
-        let spec = *decoded.spec();
+        let spec = *audio_buf.spec();
         let channels = spec.channels.count().max(1);
-        let capacity = decoded.capacity();
+        let capacity = audio_buf.capacity();
         let needs_new = scratch
             .as_ref()
             .is_none_or(|(cap, prev_spec, _)| *cap < capacity || *prev_spec != spec);
@@ -99,7 +103,7 @@ pub fn decode_mono_44k(bytes: &[u8]) -> Result<Vec<f32>, AudioError> {
         let Some((_, _, buf)) = scratch.as_mut() else {
             continue;
         };
-        buf.copy_interleaved_ref(decoded);
+        buf.copy_interleaved_ref(audio_buf);
         let samples = buf.samples();
         let frames = samples.len() / channels;
         if mono.len().saturating_add(frames) > max_input_frames {

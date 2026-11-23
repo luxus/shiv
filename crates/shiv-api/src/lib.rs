@@ -1,7 +1,10 @@
 //! HTTP client for the Deadlock Mods API (blocking, `ureq`).
 
-#![deny(clippy::unwrap_used, clippy::expect_used)]
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)
+)]
 
 mod client;
 mod dto;

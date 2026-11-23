@@ -272,7 +272,6 @@ impl Downloads {
         let elapsed = now.saturating_duration_since(item.sample.0);
         if elapsed >= SPEED_WINDOW {
             let instant = done.saturating_sub(item.sample.1) as f64 / elapsed.as_secs_f64();
-            // Smooth: half the previous value, half the new window.
             item.speed = if item.speed > 0.0 {
                 f64::midpoint(item.speed, instant)
             } else {
@@ -319,7 +318,6 @@ impl Downloads {
         if phase == DownloadPhase::Done {
             item.progress = 1.0;
         }
-        // Keep the history bounded: only finished rows count.
         let before = items.len();
         let mut finished = 0;
         items.retain(|i| {

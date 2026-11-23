@@ -82,9 +82,6 @@ fn with_crosshair(f: impl FnOnce(&Rc<Crosshair>)) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure edits and view-models (unit-tested)
-
 fn snap(v: f32, step: f32, (min, max): (f32, f32)) -> f32 {
     let snapped = ((v / step).round() * step).clamp(min, max);
     // Drop float noise (0.30000001) so the commands read cleanly.
@@ -98,7 +95,6 @@ fn snap(v: f32, step: f32, (min, max): (f32, f32)) -> f32 {
     reason = "clamped to 0..=255 first, so the cast cannot truncate or go negative"
 )]
 fn channel(v: f32) -> u8 {
-    // Clamped to 0..=255 first, so the cast cannot truncate.
     v.round().clamp(0.0, 255.0) as u8
 }
 
@@ -176,9 +172,6 @@ pub(crate) fn error_text(e: &CrosshairError) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Worker side
-
 type Loaded = Result<(Option<CrosshairConfig>, bool), String>;
 
 fn load(deps: &Deps) -> Loaded {
@@ -199,9 +192,6 @@ fn write(deps: &Deps, c: &CrosshairConfig) -> Result<(), (String, bool)> {
     let user_dir = (deps.user_dir)().map_err(|e| (error_text(&e), false))?;
     crosshair::apply(&paths, &user_dir, c).map_err(|e| (error_text(&e), false))
 }
-
-// ---------------------------------------------------------------------------
-// Controller
 
 struct Crosshair {
     weak: Weak<App>,

@@ -96,6 +96,10 @@ pub struct HpPreset {
 }
 
 /// The HP Bar presets from the pinned script.
+///
+/// # Errors
+///
+/// [`Error::Build`] when evaluating the pinned script or parsing presets fails.
 pub fn hp_presets() -> Result<Vec<HpPreset>, Error> {
     js::hp_presets()
         .map_err(|e| Error::Build(e.to_string()))?
@@ -127,11 +131,16 @@ pub fn spec_value(spec: &Spec) -> Option<Value> {
 }
 
 /// Build the hitsound pak the site's script builds from these clips.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] when clip trim/levels are invalid; [`Error::Build`]
+/// when the QuickJS builder fails.
 pub fn build_hitsound(body: &ClipIn, head: &ClipIn) -> Result<Vec<u8>, Error> {
     check_clip("Body", body)?;
     check_clip("Head", head)?;
     js::build_hitsound(
-        js::Slot {
+        &js::Slot {
             samples: &body.samples,
             start: body.start,
             end: body.end,
@@ -140,7 +149,7 @@ pub fn build_hitsound(body: &ClipIn, head: &ClipIn) -> Result<Vec<u8>, Error> {
                 pitch: body.pitch,
             },
         },
-        js::Slot {
+        &js::Slot {
             samples: &head.samples,
             start: head.start,
             end: head.end,
@@ -154,11 +163,19 @@ pub fn build_hitsound(body: &ClipIn, head: &ClipIn) -> Result<Vec<u8>, Error> {
 }
 
 /// Build the HP bar pak for `options` (the copy-link object, defaults omitted).
+///
+/// # Errors
+///
+/// [`Error::Build`] when the QuickJS builder fails.
 pub fn build_hpbar(options: &BTreeMap<String, Value>) -> Result<Vec<u8>, Error> {
     js::build_hpbar(options).map_err(|e| Error::Build(e.to_string()))
 }
 
 /// Build one pinned HP Bar preset by its id (`flat`, `ticks`, ...).
+///
+/// # Errors
+///
+/// [`Error::Build`] when `id` is unknown or the QuickJS builder fails.
 pub fn build_hpbar_preset(id: &str) -> Result<Vec<u8>, Error> {
     js::build_hpbar_preset(id).map_err(|e| Error::Build(e.to_string()))
 }
@@ -211,6 +228,10 @@ pub fn revision(spec: &Spec) -> Result<String, Error> {
 }
 
 /// [`revision`] with the sample files under `root/<mod id>/`.
+///
+/// # Errors
+///
+/// [`Error::Io`] or [`Error::Invalid`] when a clip path escapes or cannot be read.
 pub fn revision_in(spec: &Spec, root: &Path) -> Result<String, Error> {
     let dir = root.join(spec.mod_id());
     match spec {
@@ -301,11 +322,19 @@ pub fn install_hpbar(
 }
 
 /// Rebuild the pak an installed spec describes, from the samples in `root`.
+///
+/// # Errors
+///
+/// As [`revision`] and [`build_hitsound`] / [`build_hpbar`].
 pub fn rebuild(spec: &Spec) -> Result<Vec<u8>, Error> {
     rebuild_in(spec, &pcm_root()?)
 }
 
 /// [`rebuild`] written to `dest`.
+///
+/// # Errors
+///
+/// As [`rebuild`], plus [`Error::Io`] if writing `dest` fails.
 pub fn write_rebuild(spec: &Spec, dest: &Path) -> Result<(), Error> {
     let bytes = rebuild(spec)?;
     std::fs::write(dest, bytes).map_err(|source| Error::Io {
@@ -315,11 +344,19 @@ pub fn write_rebuild(spec: &Spec, dest: &Path) -> Result<(), Error> {
 }
 
 /// The stored samples of one clip under the settings folder.
+///
+/// # Errors
+///
+/// [`Error::NoSettings`], [`Error::Invalid`], or [`Error::Io`] when the sample file is missing or unsafe.
 pub fn stored_clip(mod_id: &str, clip: &spec::Clip) -> Result<ClipIn, Error> {
     load_clip(&pcm_root()?.join(mod_id), clip)
 }
 
 /// [`rebuild`] reading samples from `root/<mod id>/`.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] or [`Error::Io`] when stored samples cannot be read, or [`Error::Build`] on builder failure.
 pub fn rebuild_in(spec: &Spec, root: &Path) -> Result<Vec<u8>, Error> {
     match spec {
         Spec::Hitsound { body, head, .. } => {

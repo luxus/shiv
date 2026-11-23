@@ -125,7 +125,6 @@ pub fn list(addons: &Path) -> Result<Vec<InstalledVpk>, AddonsError> {
     }
     chunks.sort_by(|a, b| a.1.file.cmp(&b.1.file));
     for (n, chunk) in chunks {
-        // Prefer the enabled dir file when both forms exist.
         let owner = out
             .iter_mut()
             .filter(|v| v.pak == Some(n))
@@ -242,9 +241,9 @@ pub(crate) fn apply_moves(moves: &[(PathBuf, PathBuf)]) -> Result<(), AddonsErro
         if !targets.insert(to.as_path()) || (to.exists() && !sources.contains(to.as_path())) {
             return Err(AddonsError::TargetExists { target: to.clone() });
         }
-        let temp = tmp(from);
-        if temp.exists() {
-            return Err(AddonsError::TargetExists { target: temp });
+        let staging = tmp(from);
+        if staging.exists() {
+            return Err(AddonsError::TargetExists { target: staging });
         }
     }
     let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();

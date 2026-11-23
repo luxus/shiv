@@ -195,7 +195,7 @@ impl Client {
         }
         let mut reader = resp.body_mut().as_reader();
         let mut file = File::create(part)?;
-        let mut buf = [0u8; 64 * 1024];
+        let mut buf = [0u8; 16 * 1024];
         let mut done: u64 = 0;
         loop {
             if cancelled() {

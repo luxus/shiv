@@ -628,7 +628,6 @@ pub fn set_pak(
     if u64::from(pak) + u64::from(take) - 1 > u64::from(addons::PAK_CAPACITY) {
         return Err(SidecarError::PakPush { pak });
     }
-    // Every pak-numbered VPK in load order, marked when it belongs to the mod.
     let mut ranked: Vec<(&InstalledVpk, bool)> = Vec::new();
     for m in mods.iter().filter(|m| m.load_position() != u32::MAX) {
         let own = std::ptr::eq(m, target);
@@ -650,7 +649,6 @@ pub fn set_pak(
             old
         };
         if n > addons::PAK_CAPACITY {
-            // The asked number fits; this VPK's shift does not.
             return Err(SidecarError::PakPush { pak });
         }
         numbers.push(n);

@@ -15,6 +15,10 @@ use crate::http::deserialize_null_default;
 /// sends: they sort correctly as text and avoid a date dependency.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the Deadlock Mods API JSON schema"
+)]
 pub struct ModDto {
     /// Remote (`GameBanana`) id; this is what `/v2/mods/{id}/downloads` takes.
     pub remote_id: String,
@@ -253,114 +257,131 @@ impl<'de> Visitor<'de> for StreamingRowVisitor {
                 map.next_value::<IgnoredAny>()?;
                 continue;
             }
-            match key.0.as_ref() {
-                "id" => match map.next_value::<StrictString>()?.0 {
-                    Some(v) => {
-                        dto.id = v;
-                        has_id = true;
-                    }
-                    None => valid = false,
-                },
-                "remoteId" => match map.next_value::<StrictString>()?.0 {
-                    Some(v) => {
-                        dto.remote_id = v;
-                        has_remote_id = true;
-                    }
-                    None => valid = false,
-                },
-                "name" => match map.next_value::<StrictString>()?.0 {
-                    Some(v) => {
-                        dto.name = v;
-                        has_name = true;
-                    }
-                    None => valid = false,
-                },
-                "description" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.description = v,
-                    None => valid = false,
-                },
-                "remoteUrl" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.remote_url = v,
-                    None => valid = false,
-                },
-                "category" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.category = v,
-                    None => valid = false,
-                },
-                "author" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.author = v,
-                    None => valid = false,
-                },
-                "likes" => match map.next_value::<StrictU64>()?.0 {
-                    Some(v) => dto.likes = v,
-                    None => valid = false,
-                },
-                "downloadCount" => match map.next_value::<StrictU64>()?.0 {
-                    Some(v) => dto.download_count = v,
-                    None => valid = false,
-                },
-                "downloadable" => match map.next_value::<StrictBool>()?.0 {
-                    Some(v) => dto.downloadable = v,
-                    None => valid = false,
-                },
-                "tags" => match map.next_value::<StrictStringVec>()?.0 {
-                    Some(v) => dto.tags = v,
-                    None => valid = false,
-                },
-                "images" => match map.next_value::<StrictStringVec>()?.0 {
-                    Some(v) => dto.images = v,
-                    None => valid = false,
-                },
-                "thumbnailUrl" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.thumbnail_url = v,
-                    None => valid = false,
-                },
-                "hero" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.hero = v,
-                    None => valid = false,
-                },
-                "isAudio" => match map.next_value::<StrictBool>()?.0 {
-                    Some(v) => dto.is_audio = v,
-                    None => valid = false,
-                },
-                "isMap" => match map.next_value::<StrictBool>()?.0 {
-                    Some(v) => dto.is_map = v,
-                    None => valid = false,
-                },
-                "isNSFW" => match map.next_value::<StrictBool>()?.0 {
-                    Some(v) => dto.is_nsfw = v,
-                    None => valid = false,
-                },
-                "remoteAddedAt" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.remote_added_at = v,
-                    None => valid = false,
-                },
-                "remoteUpdatedAt" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.remote_updated_at = v,
-                    None => valid = false,
-                },
-                "filesUpdatedAt" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.files_updated_at = v,
-                    None => valid = false,
-                },
-                "modAuthorId" => match map.next_value::<OptString>()?.0 {
-                    Some(v) => dto.mod_author_id = v,
-                    None => valid = false,
-                },
-                "metadata" => match map.next_value::<OptMetadata>()?.0 {
-                    Some(v) => dto.metadata = v,
-                    None => valid = false,
-                },
-                _ => {
-                    map.next_value::<IgnoredAny>()?;
-                }
-            }
+            valid = apply_mod_field(
+                key.0.as_ref(),
+                &mut map,
+                &mut dto,
+                &mut has_id,
+                &mut has_remote_id,
+                &mut has_name,
+            )?;
         }
 
         if valid && has_id && has_remote_id && has_name {
             Ok(StreamingRow(Some(dto)))
         } else {
             Ok(StreamingRow(None))
+        }
+    }
+}
+
+#[inline]
+fn set_req_str<'de, A: MapAccess<'de>>(
+    map: &mut A,
+    target: &mut String,
+    seen: &mut bool,
+) -> Result<bool, A::Error> {
+    match map.next_value::<StrictString>()?.0 {
+        Some(v) => {
+            *target = v;
+            *seen = true;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+#[inline]
+fn set_opt_str<'de, A: MapAccess<'de>>(
+    map: &mut A,
+    target: &mut Option<String>,
+) -> Result<bool, A::Error> {
+    match map.next_value::<OptString>()?.0 {
+        FieldValue::Valid(v) => {
+            *target = v;
+            Ok(true)
+        }
+        FieldValue::Invalid => Ok(false),
+    }
+}
+
+#[inline]
+fn set_bool<'de, A: MapAccess<'de>>(map: &mut A, target: &mut bool) -> Result<bool, A::Error> {
+    match map.next_value::<StrictBool>()?.0 {
+        Some(v) => {
+            *target = v;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+#[inline]
+fn set_u64<'de, A: MapAccess<'de>>(map: &mut A, target: &mut u64) -> Result<bool, A::Error> {
+    match map.next_value::<StrictU64>()?.0 {
+        Some(v) => {
+            *target = v;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+#[inline]
+fn set_str_vec<'de, A: MapAccess<'de>>(
+    map: &mut A,
+    target: &mut Vec<String>,
+) -> Result<bool, A::Error> {
+    match map.next_value::<StrictStringVec>()?.0 {
+        Some(v) => {
+            *target = v;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+#[inline]
+fn apply_mod_field<'de, A: MapAccess<'de>>(
+    key: &str,
+    map: &mut A,
+    dto: &mut ModDto,
+    has_id: &mut bool,
+    has_remote_id: &mut bool,
+    has_name: &mut bool,
+) -> Result<bool, A::Error> {
+    match key {
+        "id" => set_req_str(map, &mut dto.id, has_id),
+        "remoteId" => set_req_str(map, &mut dto.remote_id, has_remote_id),
+        "name" => set_req_str(map, &mut dto.name, has_name),
+        "description" => set_opt_str(map, &mut dto.description),
+        "remoteUrl" => set_opt_str(map, &mut dto.remote_url),
+        "category" => set_opt_str(map, &mut dto.category),
+        "author" => set_opt_str(map, &mut dto.author),
+        "likes" => set_u64(map, &mut dto.likes),
+        "downloadCount" => set_u64(map, &mut dto.download_count),
+        "downloadable" => set_bool(map, &mut dto.downloadable),
+        "tags" => set_str_vec(map, &mut dto.tags),
+        "images" => set_str_vec(map, &mut dto.images),
+        "thumbnailUrl" => set_opt_str(map, &mut dto.thumbnail_url),
+        "hero" => set_opt_str(map, &mut dto.hero),
+        "isAudio" => set_bool(map, &mut dto.is_audio),
+        "isMap" => set_bool(map, &mut dto.is_map),
+        "isNSFW" => set_bool(map, &mut dto.is_nsfw),
+        "remoteAddedAt" => set_opt_str(map, &mut dto.remote_added_at),
+        "remoteUpdatedAt" => set_opt_str(map, &mut dto.remote_updated_at),
+        "filesUpdatedAt" => set_opt_str(map, &mut dto.files_updated_at),
+        "modAuthorId" => set_opt_str(map, &mut dto.mod_author_id),
+        "metadata" => match map.next_value::<OptMetadata>()?.0 {
+            FieldValue::Valid(v) => {
+                dto.metadata = v;
+                Ok(true)
+            }
+            FieldValue::Invalid => Ok(false),
+        },
+        _ => {
+            map.next_value::<IgnoredAny>()?;
+            Ok(true)
         }
     }
 }
@@ -442,7 +463,12 @@ impl<'de> Deserialize<'de> for StrictString {
     }
 }
 
-struct OptString(Option<Option<String>>);
+enum FieldValue<T> {
+    Invalid,
+    Valid(Option<T>),
+}
+
+struct OptString(FieldValue<String>);
 impl<'de> Deserialize<'de> for OptString {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct V;
@@ -452,33 +478,33 @@ impl<'de> Deserialize<'de> for OptString {
                 f.write_str("optional string")
             }
             fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-                Ok(OptString(Some(None)))
+                Ok(OptString(FieldValue::Valid(None)))
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(OptString(Some(Some(v.to_owned()))))
+                Ok(OptString(FieldValue::Valid(Some(v.to_owned()))))
             }
             fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
-                Ok(OptString(Some(Some(v))))
+                Ok(OptString(FieldValue::Valid(Some(v))))
             }
             fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
-                Ok(OptString(None))
+                Ok(OptString(FieldValue::Invalid))
             }
             fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
-                Ok(OptString(None))
+                Ok(OptString(FieldValue::Invalid))
             }
             fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
-                Ok(OptString(None))
+                Ok(OptString(FieldValue::Invalid))
             }
             fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
-                Ok(OptString(None))
+                Ok(OptString(FieldValue::Invalid))
             }
             fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
                 drain_seq(seq)?;
-                Ok(OptString(None))
+                Ok(OptString(FieldValue::Invalid))
             }
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
                 drain_map(map)?;
-                Ok(OptString(None))
+                Ok(OptString(FieldValue::Invalid))
             }
         }
         deserializer.deserialize_any(V)
@@ -612,7 +638,7 @@ impl<'de> Deserialize<'de> for StrictStringVec {
     }
 }
 
-struct OptMetadata(Option<Option<ModMetadata>>);
+struct OptMetadata(FieldValue<ModMetadata>);
 impl<'de> Deserialize<'de> for OptMetadata {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct V;
@@ -622,7 +648,7 @@ impl<'de> Deserialize<'de> for OptMetadata {
                 f.write_str("optional metadata object")
             }
             fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-                Ok(OptMetadata(Some(None)))
+                Ok(OptMetadata(FieldValue::Valid(None)))
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                 let mut donation_links = None;
@@ -634,42 +660,44 @@ impl<'de> Deserialize<'de> for OptMetadata {
                     }
                     if key.0.as_ref() == "donationLinks" {
                         match map.next_value::<OptDonationLinks>()?.0 {
-                            Some(v) => donation_links = v,
-                            None => valid = false,
+                            FieldValue::Valid(v) => donation_links = v,
+                            FieldValue::Invalid => valid = false,
                         }
                     } else {
                         map.next_value::<IgnoredAny>()?;
                     }
                 }
-                Ok(OptMetadata(
-                    valid.then_some(Some(ModMetadata { donation_links })),
-                ))
+                Ok(OptMetadata(if valid {
+                    FieldValue::Valid(Some(ModMetadata { donation_links }))
+                } else {
+                    FieldValue::Invalid
+                }))
             }
             fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
-                Ok(OptMetadata(None))
+                Ok(OptMetadata(FieldValue::Invalid))
             }
             fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
-                Ok(OptMetadata(None))
+                Ok(OptMetadata(FieldValue::Invalid))
             }
             fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
-                Ok(OptMetadata(None))
+                Ok(OptMetadata(FieldValue::Invalid))
             }
             fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
-                Ok(OptMetadata(None))
+                Ok(OptMetadata(FieldValue::Invalid))
             }
             fn visit_str<E: de::Error>(self, _: &str) -> Result<Self::Value, E> {
-                Ok(OptMetadata(None))
+                Ok(OptMetadata(FieldValue::Invalid))
             }
             fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
                 drain_seq(seq)?;
-                Ok(OptMetadata(None))
+                Ok(OptMetadata(FieldValue::Invalid))
             }
         }
         deserializer.deserialize_any(V)
     }
 }
 
-struct OptDonationLinks(Option<Option<Vec<DonationLink>>>);
+struct OptDonationLinks(FieldValue<Vec<DonationLink>>);
 impl<'de> Deserialize<'de> for OptDonationLinks {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct V;
@@ -679,7 +707,7 @@ impl<'de> Deserialize<'de> for OptDonationLinks {
                 f.write_str("optional array of donation links")
             }
             fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-                Ok(OptDonationLinks(Some(None)))
+                Ok(OptDonationLinks(FieldValue::Valid(None)))
             }
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 let mut links = Vec::with_capacity(seq.size_hint().unwrap_or(0));
@@ -690,26 +718,30 @@ impl<'de> Deserialize<'de> for OptDonationLinks {
                         _ => valid = false,
                     }
                 }
-                Ok(OptDonationLinks(valid.then_some(Some(links))))
+                Ok(OptDonationLinks(if valid {
+                    FieldValue::Valid(Some(links))
+                } else {
+                    FieldValue::Invalid
+                }))
             }
             fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
-                Ok(OptDonationLinks(None))
+                Ok(OptDonationLinks(FieldValue::Invalid))
             }
             fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
-                Ok(OptDonationLinks(None))
+                Ok(OptDonationLinks(FieldValue::Invalid))
             }
             fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
-                Ok(OptDonationLinks(None))
+                Ok(OptDonationLinks(FieldValue::Invalid))
             }
             fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
-                Ok(OptDonationLinks(None))
+                Ok(OptDonationLinks(FieldValue::Invalid))
             }
             fn visit_str<E: de::Error>(self, _: &str) -> Result<Self::Value, E> {
-                Ok(OptDonationLinks(None))
+                Ok(OptDonationLinks(FieldValue::Invalid))
             }
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
                 drain_map(map)?;
-                Ok(OptDonationLinks(None))
+                Ok(OptDonationLinks(FieldValue::Invalid))
             }
         }
         deserializer.deserialize_any(V)
@@ -735,12 +767,12 @@ impl<'de> Deserialize<'de> for StrictDonationLink {
                     }
                     match key.0.as_ref() {
                         "url" => match map.next_value::<OptString>()?.0 {
-                            Some(v) => link.url = v,
-                            None => valid = false,
+                            FieldValue::Valid(v) => link.url = v,
+                            FieldValue::Invalid => valid = false,
                         },
                         "platform" => match map.next_value::<OptString>()?.0 {
-                            Some(v) => link.platform = v,
-                            None => valid = false,
+                            FieldValue::Valid(v) => link.platform = v,
+                            FieldValue::Invalid => valid = false,
                         },
                         _ => {
                             map.next_value::<IgnoredAny>()?;

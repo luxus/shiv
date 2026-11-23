@@ -127,7 +127,7 @@ impl Dispatch<WlSeat, ()> for State {
         _: &mut Self,
         _: &WlSeat,
         _: <WlSeat as Proxy>::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -139,7 +139,7 @@ impl Dispatch<WlDataDeviceManager, ()> for State {
         _: &mut Self,
         _: &WlDataDeviceManager,
         _: <WlDataDeviceManager as Proxy>::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -151,7 +151,7 @@ impl Dispatch<WlDataOffer, ()> for State {
         state: &mut Self,
         offer: &WlDataOffer,
         event: wl_data_offer::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -166,7 +166,7 @@ impl Dispatch<WlDataDevice, ()> for State {
         state: &mut Self,
         _: &WlDataDevice,
         event: wl_data_device::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {

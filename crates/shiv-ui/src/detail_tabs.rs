@@ -394,9 +394,6 @@ fn append(model: &VecModel<TextRow>, rows: Vec<TextRow>, replace: bool) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rows (pure, unit-tested)
-
 fn when(secs: Option<i64>, now: i64) -> Option<String> {
     secs.map(|s| relative_secs(s, now))
 }

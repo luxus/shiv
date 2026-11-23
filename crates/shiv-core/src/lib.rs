@@ -1,7 +1,10 @@
 //! Shiv core: game location and the addons model.
 
-#![deny(clippy::unwrap_used, clippy::expect_used)]
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)
+)]
 
 pub mod addons;
 pub mod alloc_count;

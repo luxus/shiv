@@ -18,7 +18,7 @@ project-specific rules and gates linked below.
 
 | Tier | Crates | Standard |
 | --- | --- | --- |
-| **First-Party** | `shiv-core`, `shiv-api`, `shiv-ui` | Full `Exemplar`: `#![deny(clippy::unwrap_used, clippy::expect_used)]`, strict trust boundaries, minimal `pub` surface |
+| **First-Party** | `shiv-core`, `shiv-api`, `shiv-ui` | Full `Exemplar`: `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]`, strict trust boundaries, minimal `pub` surface |
 | **First-Party wrapper + upstream-synced port** | `shiv-repair` (`api.rs`, `gameinfo.rs`, `repair_backup.rs`, `lib.rs` are Shiv-owned; `mod_health.rs`, `vdata_history.rs`, `localization_overlay/` track `docs/upstream.json`) | `#![deny(clippy::unwrap_used, clippy::expect_used)]`, strict trust boundaries, and `CacheScope` idle-released caches; minimize gratuitous diffs in upstream-synced files |
 | **Ported / copied support crates** | `kv-parser`, `vpk-parser`, `source2-model`, `vpkmanager` | Workspace `clippy`/`test` green; upstream-tracked via `docs/upstream.json` |
 
@@ -40,6 +40,7 @@ Pick one issue or one coherent concern per PR, with its own proof.
 | Every pak rename or slot allocation takes `InstallPermit`, minted only by `InstallGuard` (including `complock::claim_reusable`). `addons::next_pak` is `pub(crate)` | Type system + `crates/shiv-core/tests/install_permit.rs` |
 | No blocking I/O on the Slint event loop; workers park on a `Condvar`, never poll | `crates/shiv-ui/tests/guards.rs` |
 | No `unwrap`/`expect` in production code of `shiv-core`, `shiv-api`, `shiv-repair`, `shiv-ui` | `#![deny(clippy::unwrap_used, clippy::expect_used)]` at each crate root |
+| First-party crates (`shiv-core`, `shiv-api`, `shiv-ui`) stay clean under Clippy's pedantic group | `#![deny(clippy::pedantic)]` at each crate root + `clippy.toml` (`doc-valid-idents`) |
 | CI bench diffs fail closed on missing baselines or >25% significant regressions | `.github/workflows/perf.yml` + `scripts/bench_diff_summary.py` |
 
 The full list of rules and the bugs that created them is in `docs/code-quality.md`.

@@ -85,9 +85,6 @@ pub fn check(paths: &GamePaths) -> Vec<Finding> {
     findings
 }
 
-// ---------------------------------------------------------------------------
-// Addons
-
 fn name_of(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -228,7 +225,6 @@ fn check_vpk(path: &Path, findings: &mut Vec<Finding>) {
 
     let header = match VpkParser::header_from_file(path) {
         Ok(h) => h,
-        // A valid signature followed by a short header: the file was cut off.
         Err(VpkError::BufferTooSmall { actual, .. }) if actual >= 4 => {
             return findings.push(truncated(format!(
                 "The header is cut off after {len} bytes"
@@ -288,7 +284,6 @@ fn check_chunk(dir_vpk: &Path, index: u16, need: u64, findings: &mut Vec<Finding
     let name = name_of(dir_vpk);
     let stem = name.strip_suffix(DISABLED_EXT).unwrap_or(&name);
     let Some(prefix) = stem.strip_suffix("_dir.vpk") else {
-        // Not a dir VPK name, so its chunks cannot be located.
         return;
     };
     let chunk = format!("{prefix}_{index:03}.vpk");
@@ -325,9 +320,6 @@ fn check_chunk(dir_vpk: &Path, index: u16, need: u64, findings: &mut Vec<Finding
         )),
     }
 }
-
-// ---------------------------------------------------------------------------
-// gameinfo.gi
 
 /// Conditions as the Windows game client resolves them (Deadlock runs under
 /// Proton on Linux, so the host OS is irrelevant).

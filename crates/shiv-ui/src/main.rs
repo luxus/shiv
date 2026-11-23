@@ -1,18 +1,20 @@
 //! Shiv desktop UI: a thin Slint shell over shiv-core and shiv-api.
 
-// A GUI app on Windows: no console window behind it.
 #![cfg_attr(windows, windows_subsystem = "windows")]
-// A panic on the event loop takes the whole app down, so production code
-// returns errors instead; workers report a panic as a message. The
-// handful of justified `expect`s carry a scoped `#[allow]` with the
-// reason (docs/code-quality.md).
-#![deny(clippy::unwrap_used, clippy::expect_used)]
-// Unit tests inside src may unwrap freely.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+// A panic on the event loop takes the whole app down; workers catch panics
+// and report them as messages instead (docs/code-quality.md).
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)
+)]
 
-// Slint's generated bindings are machine-made; their unwraps are the
-// generator's business, not Shiv's.
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::pedantic,
+    reason = "Slint-generated UI bindings"
+)]
 mod generated {
     slint::include_modules!();
 }

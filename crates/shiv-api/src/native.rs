@@ -951,13 +951,13 @@ impl ArtifactWire {
                 (resolved, None)
             }
             (None, Some(resolver)) => {
-                let resolved = resolve_url(document_url, resolver.trim());
-                if !origin_allowed(&resolved, &source.api_origins) {
+                let resolved_url = resolve_url(document_url, resolver.trim());
+                if !origin_allowed(&resolved_url, &source.api_origins) {
                     return Err(ApiError::Parse(format!(
-                        "the download resolver of artifact {id} is outside the source's API origins: {resolved}"
+                        "the download resolver of artifact {id} is outside the source's API origins: {resolved_url}"
                     )));
                 }
-                (String::new(), Some(resolved))
+                (String::new(), Some(resolved_url))
             }
             _ => {
                 return Err(ApiError::Parse(format!(

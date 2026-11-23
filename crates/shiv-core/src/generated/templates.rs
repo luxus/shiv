@@ -167,12 +167,13 @@ pub(crate) fn decode_b64(s: &str) -> Option<Vec<u8>> {
         let dv = if d == b'=' { 0 } else { val(d)? };
         let n =
             (u32::from(av) << 18) | (u32::from(bv) << 12) | (u32::from(cv) << 6) | u32::from(dv);
-        out.push((n >> 16) as u8);
+        let [_, b1, b2, b3] = n.to_be_bytes();
+        out.push(b1);
         if c != b'=' {
-            out.push((n >> 8) as u8);
+            out.push(b2);
         }
         if d != b'=' {
-            out.push(n as u8);
+            out.push(b3);
         }
     }
     Some(out)

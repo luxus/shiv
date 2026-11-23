@@ -11,7 +11,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -206,6 +207,13 @@ enum PackUpdate {
 /// screen shows for a cancelled transfer.
 const CANCELLED_TEXT: &str = "Cancelled";
 
+struct PreparedParts {
+    vpks: Vec<PathBuf>,
+    in_place: Vec<String>,
+    free_names: Vec<complock::Part>,
+    busy: Vec<(String, complock::ReusedPart)>,
+}
+
 /// Worker body: download the pak's pieces (a big pak arrives in
 /// numbered pieces that concatenate into one raw-DEFLATE stream), unpack
 /// and CRC-gate them into a VPK, then install it as a mod through the same
@@ -231,15 +239,105 @@ fn run_pack_install(
         .prefix("shiv-pack-")
         .tempdir()
         .map_err(|e| fail(format!("Could not create a temporary folder: {e}")))?;
-    let total = task.pak.download_size();
+    let mut prepared = prepare_pack_parts(
+        deps,
+        &paths.addons,
+        &task.pak,
+        dir.path(),
+        cancel,
+        &mut report,
+    )?;
+    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| fail(e.to_string()))?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err((CANCELLED_TEXT.into(), false));
+    }
+    let remove_after = stage_busy_reused(
+        dir.path(),
+        std::mem::take(&mut prepared.busy),
+        &mut prepared.vpks,
+    )
+    .map_err(fail)?;
+    let meta = ModMeta {
+        mod_id: task.mod_id.clone(),
+        name: task.name,
+        version: Some(complock::revision(&task.pak)),
+        thumbnail_url: None,
+        nsfw: false,
+        hero: None,
+        category: None,
+    };
+    let mut reused_moves = Vec::new();
+    if prepared.vpks.is_empty() {
+        claim_free_reused(
+            &paths.addons,
+            &prepared.free_names,
+            &mut prepared.in_place,
+            &mut reused_moves,
+            guard.permit(),
+        )
+        .map_err(fail)?;
+        if !prepared.in_place.is_empty() {
+            complock::adopt_reused(&paths.addons, &meta, &prepared.in_place)
+                .map_err(|e| fail(e.to_string()))?;
+        }
+        drop(guard);
+        return Ok(move_note(&reused_moves));
+    }
+    report(PackUpdate::Installing);
+    install_staged_pack(
+        deps,
+        &paths,
+        &mut prepared,
+        &meta,
+        &remove_after,
+        &mut reused_moves,
+        cancel,
+        &ask,
+        guard.permit(),
+    )
+}
+
+fn claim_free_reused(
+    addons: &Path,
+    free_names: &[complock::Part],
+    in_place: &mut Vec<String>,
+    reused_moves: &mut Vec<String>,
+    permit: install::InstallPermit<'_>,
+) -> Result<(), String> {
+    for part in free_names {
+        let reused = complock::claim_reusable(addons, part, permit).map_err(|e| e.to_string())?;
+        if let Some(reused) = reused {
+            if let Some(from) = reused.moved_from {
+                reused_moves.push(format!("{from} to {}", part.name));
+            }
+            in_place.push(part.name.clone());
+        }
+    }
+    Ok(())
+}
+
+/// Worker body: reuse matching paks already on disk or download and unpack
+/// missing parts into `dir`.
+fn prepare_pack_parts(
+    deps: &Deps,
+    addons: &Path,
+    pak: &complock::Pak,
+    dir: &Path,
+    cancel: &AtomicBool,
+    report: &mut impl FnMut(PackUpdate),
+) -> Result<PreparedParts, (String, bool)> {
+    let fail = |text: String| (text, false);
+    let total = pak.download_size();
     let mut done = 0u64;
     let mut last_step = u64::MAX;
-    let mut vpks = Vec::new();
-    let mut in_place = Vec::new();
-    let mut free_names = Vec::new();
-    let mut busy = Vec::new();
-    for part in &task.pak.parts {
-        match complock::locate_reusable(&paths.addons, part) {
+    let mut out = PreparedParts {
+        vpks: Vec::new(),
+        in_place: Vec::new(),
+        free_names: Vec::new(),
+        busy: Vec::new(),
+    };
+    for part in &pak.parts {
+        match complock::locate_reusable(addons, part) {
             Ok(Some(reused)) => {
                 let already = reused
                     .path
@@ -247,11 +345,11 @@ fn run_pack_install(
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.eq_ignore_ascii_case(&part.name));
                 if already {
-                    in_place.push(part.name.clone());
+                    out.in_place.push(part.name.clone());
                 } else if reused.moved_from.is_some() {
-                    free_names.push(part.clone());
+                    out.free_names.push(part.clone());
                 } else {
-                    busy.push((part.name.clone(), reused));
+                    out.busy.push((part.name.clone(), reused));
                 }
                 continue;
             }
@@ -268,7 +366,7 @@ fn run_pack_install(
                     "The pack data's url {url} does not resolve on the site"
                 ))
             })?;
-            let piece = dir.path().join(format!("piece-{n}.z"));
+            let piece = dir.join(format!("piece-{n}.z"));
             let base = done;
             {
                 let mut tick = |bytes: u64, _piece_total: Option<u64>| {
@@ -294,80 +392,73 @@ fn run_pack_install(
             });
             pieces.push(piece);
         }
-        let dest = dir.path().join(&part.name);
+        let dest = dir.join(&part.name);
         complock::unpack_pak(
             &pieces,
             &dest,
             part.crc,
             part.size,
             part.csize,
-            part.urls.first().map(String::as_str).unwrap_or(""),
+            part.urls.first().map_or("", String::as_str),
         )
         .map_err(fail)?;
-        vpks.push(dest);
+        out.vpks.push(dest);
     }
-    let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| fail(e.to_string()))?;
-    if cancel.load(Ordering::Relaxed) {
-        return Err((CANCELLED_TEXT.into(), false));
-    }
+    Ok(out)
+}
+
+/// Worker body: copy busy reused paks and their sibling chunks into staging.
+fn stage_busy_reused(
+    dir: &Path,
+    busy: Vec<(String, complock::ReusedPart)>,
+    vpks: &mut Vec<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
     let mut remove_after = Vec::new();
     for (name, reused) in busy {
-        let staged = dir.path().join(&name);
-        std::fs::copy(&reused.path, &staged).map_err(|e| fail(e.to_string()))?;
+        let staged = dir.join(&name);
+        std::fs::copy(&reused.path, &staged).map_err(|e| e.to_string())?;
         vpks.push(staged);
         remove_after.push(reused.path);
         for chunk in reused.chunks {
-            let staged_chunk = dir.path().join(&chunk.name);
-            std::fs::copy(&chunk.path, &staged_chunk).map_err(|e| fail(e.to_string()))?;
+            let staged_chunk = dir.join(&chunk.name);
+            std::fs::copy(&chunk.path, &staged_chunk).map_err(|e| e.to_string())?;
             vpks.push(staged_chunk);
             remove_after.push(chunk.path);
         }
     }
-    let meta = ModMeta {
-        mod_id: task.mod_id.clone(),
-        name: task.name,
-        version: Some(complock::revision(&task.pak)),
-        thumbnail_url: None,
-        nsfw: false,
-        hero: None,
-        category: None,
-    };
-    let mut reused_moves = Vec::new();
-    let claim_free = |in_place: &mut Vec<String>, reused_moves: &mut Vec<String>| {
-        for part in &free_names {
-            let reused = complock::claim_reusable(&paths.addons, part, guard.permit())
-                .map_err(|e| fail(e.to_string()))?;
-            if let Some(reused) = reused {
-                if let Some(from) = reused.moved_from {
-                    reused_moves.push(format!("{from} to {}", part.name));
-                }
-                in_place.push(part.name.clone());
-            }
-        }
-        Ok::<(), (String, bool)>(())
-    };
-    if vpks.is_empty() {
-        claim_free(&mut in_place, &mut reused_moves)?;
-        if !in_place.is_empty() {
-            complock::adopt_reused(&paths.addons, &meta, &in_place)
-                .map_err(|e| fail(e.to_string()))?;
-        }
-        drop(guard);
-        return Ok(move_note(&reused_moves));
-    }
-    report(PackUpdate::Installing);
+    Ok(remove_after)
+}
+
+/// Worker body: place staged pack VPKs into their slots and clean up replaced
+/// files.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "installs staged pack VPKs with slot conflict prompt and cleanup"
+)]
+fn install_staged_pack(
+    deps: &Deps,
+    paths: &shiv_core::game::GamePaths,
+    prepared: &mut PreparedParts,
+    meta: &ModMeta,
+    remove_after: &[PathBuf],
+    reused_moves: &mut Vec<String>,
+    cancel: &AtomicBool,
+    ask: &dyn Fn(&[install::SlotOccupant]) -> Option<install::SlotChoice>,
+    permit: install::InstallPermit<'_>,
+) -> Result<String, (String, bool)> {
+    let fail = |text: String| (text, false);
     let running = deps.running.clone();
     // Each part goes on the slot its name gives (HUD++ pak01, ...), so the
     // pack's load order does not depend on which download finished first.
     let running_again = running.clone();
     let first = install::install_files_in_slots(
-        &vpks,
+        &prepared.vpks,
         meta.clone(),
-        &paths,
+        paths,
         move || running(),
         complock::last_slot(),
         None,
-        guard.permit(),
+        permit,
     );
     let placed = match first {
         Err(install::InstallError::NeedsChoice(occupants)) => {
@@ -378,30 +469,37 @@ fn run_pack_install(
                 return Err((CANCELLED_TEXT.into(), false));
             }
             install::install_files_in_slots(
-                &vpks,
+                &prepared.vpks,
                 meta.clone(),
-                &paths,
+                paths,
                 move || running_again(),
                 complock::last_slot(),
                 Some(choice),
-                guard.permit(),
+                permit,
             )
             .map_err(|e| fail(install_error_text(&e)))?
         }
         Err(e) => return Err(fail(install_error_text(&e))),
         Ok(placed) => placed,
     };
-    for old in &remove_after {
+    for old in remove_after {
         let _ = std::fs::remove_file(old);
     }
-    claim_free(&mut in_place, &mut reused_moves)?;
-    if !in_place.is_empty() {
-        let mut names = in_place;
+    claim_free_reused(
+        &paths.addons,
+        &prepared.free_names,
+        &mut prepared.in_place,
+        reused_moves,
+        permit,
+    )
+    .map_err(fail)?;
+    if !prepared.in_place.is_empty() {
+        let mut names = std::mem::take(&mut prepared.in_place);
         names.extend(placed.sidecar.vpks.iter().cloned());
-        complock::adopt_reused(&paths.addons, &meta, &names).map_err(|e| fail(e.to_string()))?;
+        complock::adopt_reused(&paths.addons, meta, &names).map_err(|e| fail(e.to_string()))?;
     }
     let mut note = install::slot_note(&placed);
-    let reused = move_note(&reused_moves);
+    let reused = move_note(reused_moves);
     if !reused.is_empty() {
         if !note.is_empty() {
             note.push(' ');
@@ -448,9 +546,6 @@ pub(crate) fn reload() {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers (unit-tested)
-
 fn truthy(value: &str) -> bool {
     let v = value.trim();
     v.eq_ignore_ascii_case("true") || v.parse::<f64>().is_ok_and(|n| n != 0.0)
@@ -477,7 +572,6 @@ fn trim_number(text: String) -> String {
     }
 }
 
-/// `v` as the convar's kind writes it: whole numbers for ints, floats to the
 /// A whole f64 from the catalog or the user, shown without a decimal point.
 #[allow(
     clippy::cast_possible_truncation,
@@ -488,6 +582,7 @@ fn whole_number_text(v: f64) -> String {
     format!("{}", v as i64)
 }
 
+/// `v` as the convar's kind writes it: whole numbers for ints, floats to the
 /// step's precision (3 places without a step).
 #[allow(
     clippy::cast_possible_truncation,
@@ -657,9 +752,6 @@ fn complock_card(catalog: Option<&Catalog>, pack: &complock::PackLoad) -> PerfCo
     }
 }
 
-// ---------------------------------------------------------------------------
-// Worker side
-
 /// Where the catalog came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Origin {
@@ -756,9 +848,6 @@ fn write(deps: &Deps, entries: &[ConfigEntry]) -> Result<Written, (String, bool)
     Ok((current, perf::original_backup_path(&paths)))
 }
 
-// ---------------------------------------------------------------------------
-// Controller
-
 struct Item {
     name: String,
     lc: String,
@@ -792,7 +881,6 @@ struct Perf {
     pack_rows: Rc<VecModel<PerfPackRow>>,
     /// The ids of the rows in `pack_rows`, in order.
     pack_ids: RefCell<Vec<String>>,
-    /// CompLock pak mods that have a sidecar (`complock-<option>`).
     /// Installed CompLock paks: mod id → the revision their sidecar records
     /// (`complock::revision` of the pak installed), `None` when it records
     /// none.
@@ -808,10 +896,8 @@ struct Perf {
     pack_timer: RefCell<Option<slint::Timer>>,
 }
 
-/// A pack install, addressable from the Downloads screen. `generation`
-/// tells a late worker answer from a cancelled attempt apart after a retry.
-#[derive(Clone)]
 /// A pak row's install button.
+#[derive(Clone)]
 struct InstallButton {
     label: String,
     installing: bool,
@@ -820,6 +906,8 @@ struct InstallButton {
     current: bool,
 }
 
+/// A pack install, addressable from the Downloads screen. `generation`
+/// tells a late worker answer from a cancelled attempt apart after a retry.
 struct PackJob {
     task: PackTask,
     cancel: Arc<AtomicBool>,
@@ -1187,6 +1275,11 @@ impl Perf {
     }
 
     /// `v` as the FOV field writes it: the site's step precision.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=6.0 decimals before cast"
+    )]
     fn fov_text(fov: &complock::Fov, v: f64) -> String {
         let decimals = (-fov.by.log10().floor()).clamp(0.0, 6.0) as usize;
         trim_number(format!("{v:.decimals$}"))
@@ -1272,7 +1365,7 @@ impl Perf {
                     .map(|c| SharedString::from(c.title.as_str()))
                     .collect::<Vec<_>>(),
             )),
-            choice_index: choice_index as i32,
+            choice_index: i32::try_from(choice_index).unwrap_or(0),
             number: 0.0,
             minimum: 0.0,
             maximum: 1.0,
@@ -1376,6 +1469,10 @@ impl Perf {
 
     /// The FOV row: the slider over the site's range at the value the file
     /// or the staged changes hold.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Slint numeric slider properties are f32"
+    )]
     fn fov_row(&self, fov: &complock::Fov) -> PerfPackRow {
         let shown = self.fov_shown(fov);
         let mut row = self.pack_row(PackRowInfo {
@@ -1950,10 +2047,11 @@ impl Perf {
             pack.game()
         );
         if admission.skipped > 0 {
-            detail.push_str(&format!(
+            let _ = write!(
+                detail,
                 " {} of their settings are left out: blocked by the game or refused by the catalog's rules.",
                 admission.skipped
-            ));
+            );
         }
         self.with_state(|s| {
             s.set_active_tier(-1);
@@ -2007,10 +2105,11 @@ impl Perf {
         self.note.borrow_mut().clear();
         let mut detail = format!("{} {}.", option.title, if on { "off" } else { "on" });
         if admission.skipped > 0 {
-            detail.push_str(&format!(
+            let _ = write!(
+                detail,
                 " {} of its settings are left out: blocked by the game or refused by the catalog's rules.",
                 admission.skipped
-            ));
+            );
         }
         self.with_state(|s| {
             s.set_result_title("CompLock option staged".into());
@@ -2124,11 +2223,11 @@ impl Perf {
                 .iter()
                 .find(|o| o.id == id)
                 .and_then(|option| {
-                    let pak = self.option_pak(option)?;
+                    let found_pak = self.option_pak(option)?;
                     Some(PackTask::of(
                         pack_mod_id(id),
                         format!("CompLock {}", option.title),
-                        pak,
+                        found_pak,
                     ))
                 })
         };
@@ -2151,13 +2250,13 @@ impl Perf {
             PackUpdate::Progress { done, total } => {
                 if current {
                     crate::downloads::progress(id, done, total);
-                    self.refresh_pack_row(self.row_id_of_mod(id));
+                    self.refresh_pack_row(Self::row_id_of_mod(id));
                 }
             }
             PackUpdate::Installing => {
                 if current {
                     crate::downloads::installing(id);
-                    self.refresh_pack_row(self.row_id_of_mod(id));
+                    self.refresh_pack_row(Self::row_id_of_mod(id));
                 }
             }
             PackUpdate::Done(result) => {
@@ -2210,7 +2309,7 @@ impl Perf {
                     }
                 }
                 if current {
-                    self.refresh_pack_row(self.row_id_of_mod(id));
+                    self.refresh_pack_row(Self::row_id_of_mod(id));
                 }
             }
         }
@@ -2218,7 +2317,7 @@ impl Perf {
 
     /// The options-list row id behind a mod id (`complock-soundcap` →
     /// `soundcap`).
-    fn row_id_of_mod<'a>(&self, mod_id: &'a str) -> &'a str {
+    fn row_id_of_mod(mod_id: &str) -> &str {
         mod_id.strip_prefix(PACK_PREFIX).unwrap_or(mod_id)
     }
 
@@ -2244,16 +2343,12 @@ impl Perf {
             }
             jobs.remove(id).map(|job| job.task)
         };
-        match task {
-            Some(task) => {
-                let row = self.row_id_of_mod(id).to_string();
-                self.spawn_pack_install(task);
-                self.refresh_pack_row(&row);
-            }
-            None => {
-                let row = self.row_id_of_mod(id).to_string();
-                self.install_pack(&row);
-            }
+        let row = Self::row_id_of_mod(id).to_string();
+        if let Some(task) = task {
+            self.spawn_pack_install(task);
+            self.refresh_pack_row(&row);
+        } else {
+            self.install_pack(&row);
         }
     }
 
@@ -2286,8 +2381,8 @@ impl Perf {
         let weak = self.weak.clone();
         let ask_weak = weak.clone();
         let mod_id = task.mod_id.clone();
-        let worker_task = task.clone();
         let failed_id = task.mod_id.clone();
+        let worker_task = task;
         let poster = move |update: PackUpdate| {
             let id = mod_id.clone();
             let _ = weak.upgrade_in_event_loop(move |_| {

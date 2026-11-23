@@ -38,7 +38,8 @@ struct Snapshot {
     supported: bool,
     set_up: bool,
     active: String,
-    rows: Vec<(String, String, String)>, // id, name, detail
+    /// `(id, name, detail)` tuples for each profile.
+    rows: Vec<(String, String, String)>,
     running: bool,
 }
 

@@ -82,7 +82,7 @@ pub(crate) fn refresh(weak: Weak<App>, locate: Locate) {
                     LOADED.with(|c| c.set(false));
                     return;
                 };
-                PRESETS.with(|p| *p.borrow_mut() = presets.clone());
+                PRESETS.with(|p| p.borrow_mut().clone_from(&presets));
                 let labels: Vec<slint::SharedString> =
                     presets.iter().map(|p| p.title.as_str().into()).collect();
                 let state = app.global::<PerfState>();
@@ -251,11 +251,7 @@ fn hp_options(
     index: i32,
     presets: &[HpPreset],
 ) -> Result<BTreeMap<String, Value>, String> {
-    let hash = link
-        .rsplit_once('#')
-        .map(|(_, hash)| hash)
-        .unwrap_or(link)
-        .trim();
+    let hash = link.rsplit_once('#').map_or(link, |(_, hash)| hash).trim();
     if !hash.is_empty() {
         return Ok(generated::options_from_hash(hash));
     }
@@ -449,8 +445,13 @@ fn parse_u32(which: &str, label: &str, text: &str) -> Result<u32, String> {
 }
 
 fn fmt_num(n: f64) -> String {
-    if n.is_finite() && n.fract() == 0.0 && n.abs() < (i64::MAX as f64) {
-        format!("{}", n as i64)
+    if n.is_finite() && n.fract() == 0.0 && n.abs() < 9_223_372_036_854_775_808.0 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "n is verified finite, integral, and strictly below 2^63"
+        )]
+        let whole = n as i64;
+        format!("{whole}")
     } else {
         format!("{n}")
     }
