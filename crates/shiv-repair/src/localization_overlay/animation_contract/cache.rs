@@ -17,7 +17,23 @@ struct NodeCache {
     bytes: usize,
 }
 
+static CACHE: OnceLock<Mutex<NodeCache>> = OnceLock::new();
+
+pub(crate) fn clear_cache() {
+    if let Some(cache) = CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
 impl NodeCache {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.entries.shrink_to_fit();
+        self.bytes = 0;
+    }
+
     fn get(&mut self, key: &Key) -> Option<NodeResult> {
         let index = self
             .entries
@@ -45,11 +61,10 @@ impl NodeCache {
             return;
         }
         while self.bytes + size > MAX_BYTES || self.entries.len() >= MAX_ENTRIES {
-            let (_, _, removed) = self
-                .entries
-                .pop_front()
-                .expect("cache has an eviction candidate");
-            self.bytes -= removed;
+            let Some((_, _, removed)) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(removed);
         }
         self.bytes += size;
         self.entries.push_back((key, result, size));
@@ -57,7 +72,6 @@ impl NodeCache {
 }
 
 pub(super) fn decode(bytes: &[u8], path: &str) -> NodeResult {
-    static CACHE: OnceLock<Mutex<NodeCache>> = OnceLock::new();
     // Parsing depends on the resource type and exact bytes, not its provider.
     // The caller resolves the effective resource again on every analysis.
     let key = (
@@ -129,5 +143,8 @@ mod tests {
         );
         assert!(cache.get(&key(MAX_ENTRIES + 1)).is_none());
         assert!(cache.bytes <= MAX_BYTES);
+        cache.clear();
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.bytes, 0);
     }
 }

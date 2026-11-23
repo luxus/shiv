@@ -108,7 +108,8 @@ in `docs/perf-results.md` before a release tag.
 ### Native & release profile
 
 - **Zero unproved panics in production paths.** `deny(clippy::unwrap_used,
-  clippy::expect_used)` holds across `shiv-core`, `shiv-api`, and `shiv-ui`.
+  clippy::expect_used)` holds across `shiv-core`, `shiv-api`, `shiv-repair`,
+  and `shiv-ui`.
 - **Release profile decisions are measured (`docs/perf-results.md`, issue #8):**
   `panic = "unwind"` stays (abort saves 3.55 MB / 10.7 % with no cold-start
   win while turning any worker panic into a whole-app crash), `lto = true`

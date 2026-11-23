@@ -301,20 +301,45 @@ struct ParsedLocalizationFile {
     skipped_lines: Vec<usize>,
 }
 
+static ACTIVE_CACHE_SCOPES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Holds repair decode/observation caches warm across a batch (`analyze` or
+/// `apply`) and releases them back to the OS once the last active batch ends.
+pub(crate) struct CacheScope;
+
+pub(crate) fn enter_cache_scope() -> CacheScope {
+    ACTIVE_CACHE_SCOPES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    CacheScope
+}
+
+impl Drop for CacheScope {
+    fn drop(&mut self) {
+        if ACTIVE_CACHE_SCOPES.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+            compiled_resource::clear_cache();
+            observed_data::clear_cache();
+            animation_contract::cache::clear_cache();
+        }
+    }
+}
+
 #[derive(Default)]
 struct HistoricalLocalizationIndex {
     fingerprints: BTreeSet<[u8; 32]>,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "localization-history.bin is a compile-time asset verified by tests"
+)]
+fn decode_embedded_localization_history() -> HistoricalLocalizationIndex {
+    HistoricalLocalizationIndex::from_bytes(include_bytes!("../assets/localization-history.bin"))
+        .expect("embedded localization history index is valid")
+}
+
 impl HistoricalLocalizationIndex {
     fn embedded() -> &'static Self {
         static INDEX: OnceLock<HistoricalLocalizationIndex> = OnceLock::new();
-        INDEX.get_or_init(|| {
-            HistoricalLocalizationIndex::from_bytes(include_bytes!(
-                "../assets/localization-history.bin"
-            ))
-            .expect("embedded localization history index is valid")
-        })
+        INDEX.get_or_init(decode_embedded_localization_history)
     }
 
     fn from_bytes(bytes: &[u8]) -> Option<Self> {
@@ -1098,7 +1123,11 @@ impl LocalizationOverlayPlan {
             .collect();
         Ok(Self {
             analysis: LocalizationOverlayAnalysis {
-                hud_checks: hud_compatibility::analyze(resources),
+                hud_checks: if resources.mod_paths().any(|p| p.ends_with(".vxml_c")) {
+                    hud_compatibility::analyze(resources)
+                } else {
+                    Vec::new()
+                },
                 review_fingerprint: String::new(),
                 input_warnings: Vec::new(),
                 unmanaged_vpks: Vec::new(),
@@ -1442,14 +1471,11 @@ fn build_compiled_table(
             "Base {file_path} root is not an object"
         )));
     };
-    if base_encoding.as_object().is_none() {
+    let Some(base_row_encodings) = base_encoding.as_object() else {
         return Err(Error::ModInvalid(format!(
             "Base {file_path} encoding root is not an object"
         )));
-    }
-    let base_row_encodings = base_encoding
-        .as_object()
-        .expect("base encoding root was validated as an object");
+    };
 
     let mut table = TableSources::default();
     let mut unreadable = Vec::new();
@@ -1605,9 +1631,8 @@ fn compile_source(
             .clone();
         let vanilla_value = object_get_case_insensitive(base_rows, &row_name);
         if vanilla_value.is_none()
-            && baseline
-                .as_ref()
-                .is_some_and(|baseline| baseline.row_matches(&row_name, original_value))
+            && let Some(matched) = baseline.as_ref()
+            && matched.row_matches(&row_name, original_value)
         {
             enum_compatibility.normalize(&mut value, &mut row_encoding)?;
             if let vdata_compatibility::InheritedRebase::Rebased(rebased, encoding) =
@@ -1615,9 +1640,7 @@ fn compile_source(
                     (&value, &row_encoding),
                     (base_rows, base_row_encodings),
                     (&mod_rows, mod_row_encodings),
-                    baseline
-                        .as_ref()
-                        .expect("retired row has a matched baseline"),
+                    matched,
                     &enum_compatibility,
                 )?
             {
@@ -2129,8 +2152,14 @@ fn assign_unique_added_hero_ids(
     added_heroes: Vec<HeroIdRequest>,
 ) -> Result<(), Error> {
     for reassignment in plan_unique_added_hero_ids(base_root, added_heroes)? {
-        let row = object_get_case_insensitive_mut(merged_rows, &reassignment.row_name)
-            .expect("selected hero row remains present in the merged root");
+        let row = object_get_case_insensitive_mut(merged_rows, &reassignment.row_name).ok_or_else(
+            || {
+                Error::ModInvalid(format!(
+                    "Selected hero row {} is missing from merged root",
+                    reassignment.row_name
+                ))
+            },
+        )?;
         set_compiled_hero_id(row, reassignment.assigned_id)?;
     }
     Ok(())
@@ -2980,9 +3009,22 @@ fn compiled_path_label(path: &[Kv3Seg]) -> String {
     label
 }
 
+fn is_safe_vpk_relpath(normalized: &str) -> bool {
+    !normalized.is_empty()
+        && !normalized.starts_with('/')
+        && !normalized.ends_with('/')
+        && !normalized.contains(':')
+        && !normalized.chars().any(char::is_control)
+        && normalized
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
 fn is_localization_path(path: &str) -> bool {
     let normalized = normalize_path(path);
-    normalized.starts_with("resource/localization/") && normalized.ends_with(".txt")
+    is_safe_vpk_relpath(&normalized)
+        && normalized.starts_with("resource/localization/")
+        && normalized.ends_with(".txt")
 }
 
 fn is_protected_localization_path(path: &str) -> bool {
@@ -2992,7 +3034,9 @@ fn is_protected_localization_path(path: &str) -> bool {
 
 fn is_mergeable_compiled_data_path(path: &str) -> bool {
     let normalized = normalize_path(path);
-    normalized.starts_with("scripts/") && normalized.ends_with(".vdata_c")
+    is_safe_vpk_relpath(&normalized)
+        && normalized.starts_with("scripts/")
+        && normalized.ends_with(".vdata_c")
 }
 
 fn normalize_path(path: &str) -> String {
@@ -5060,5 +5104,32 @@ pub(crate) mod tests {
             }
             _ => false,
         }
+    }
+
+    #[test]
+    fn unsafe_vpk_paths_are_rejected_for_overlay_outputs() {
+        for bad in [
+            "resource/localization/../../escape.txt",
+            "resource/localization/./citadel_english.txt",
+            "/resource/localization/citadel_english.txt",
+            "resource/localization//citadel_english.txt",
+            "resource/localization/evil:stream.txt",
+            "resource/localization/bad\0name.txt",
+            "scripts/../scripts/heroes.vdata_c",
+            "scripts/./heroes.vdata_c",
+            "scripts//heroes.vdata_c",
+            "/scripts/heroes.vdata_c",
+            "scripts/C:heroes.vdata_c",
+        ] {
+            assert!(!is_localization_path(bad), "should reject {bad:?}");
+            assert!(
+                !is_mergeable_compiled_data_path(bad),
+                "should reject {bad:?}"
+            );
+        }
+        assert!(is_localization_path(
+            "resource/localization/citadel_english.txt"
+        ));
+        assert!(is_mergeable_compiled_data_path("scripts/heroes.vdata_c"));
     }
 }

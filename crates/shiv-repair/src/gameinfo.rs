@@ -134,7 +134,10 @@ pub fn without_overlay(text: &str) -> Result<Option<String>, RepairError> {
         let start = line_start(text, site.key_start);
         let end = line_end(text, value_range.end);
         let before = &text[start..site.key_start];
-        let after = text[value_range.end..end].trim();
+        let raw_after = text[value_range.end..end].trim();
+        let after = raw_after
+            .split_once("//")
+            .map_or(raw_after, |(code, _)| code.trim());
         let own_condition = after.starts_with('[')
             && after.ends_with(']')
             && after.matches('[').count() == 1
@@ -257,5 +260,20 @@ mod tests {
             with_overlay("GameInfo {"),
             Err(RepairError::Gameinfo(_))
         ));
+    }
+
+    #[test]
+    fn without_overlay_removes_mount_line_with_trailing_comment() {
+        let commented = "GameInfo\n{\n\tFileSystem\n\t{\n\t\tSearchPaths\n\t\t{\n\t\t\tGame citadel/shiv_repair [$WIN32] // shiv repair\n\t\t\tGame citadel/addons\n\t\t}\n\t}\n}\n";
+        assert!(mounts_overlay(commented).unwrap());
+        let removed = without_overlay(commented).unwrap().unwrap();
+        assert_eq!(
+            removed,
+            commented.replace(
+                "\t\t\tGame citadel/shiv_repair [$WIN32] // shiv repair\n",
+                ""
+            )
+        );
+        assert!(!mounts_overlay(&removed).unwrap());
     }
 }

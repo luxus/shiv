@@ -19,7 +19,7 @@ project-specific rules and gates linked below.
 | Tier | Crates | Standard |
 | --- | --- | --- |
 | **First-Party** | `shiv-core`, `shiv-api`, `shiv-ui` | Full `Exemplar`: `#![deny(clippy::unwrap_used, clippy::expect_used)]`, strict trust boundaries, minimal `pub` surface |
-| **First-Party wrapper + upstream-synced port** | `shiv-repair` (`api.rs`, `gameinfo.rs`, `repair_backup.rs`, `lib.rs` are Shiv-owned; `mod_health.rs`, `vdata_history.rs`, `localization_overlay/` track `docs/upstream.json`) | Strict trust boundaries and idle-released caches; `#![deny(clippy::unwrap_used, clippy::expect_used)]` tracked for the `shiv-repair` hardening pass; minimize gratuitous diffs in upstream-synced files |
+| **First-Party wrapper + upstream-synced port** | `shiv-repair` (`api.rs`, `gameinfo.rs`, `repair_backup.rs`, `lib.rs` are Shiv-owned; `mod_health.rs`, `vdata_history.rs`, `localization_overlay/` track `docs/upstream.json`) | `#![deny(clippy::unwrap_used, clippy::expect_used)]`, strict trust boundaries, and `CacheScope` idle-released caches; minimize gratuitous diffs in upstream-synced files |
 | **Ported / copied support crates** | `kv-parser`, `vpk-parser`, `source2-model`, `vpkmanager` | Workspace `clippy`/`test` green; upstream-tracked via `docs/upstream.json` |
 
 ## Where the work is
@@ -39,7 +39,7 @@ Pick one issue or one coherent concern per PR, with its own proof.
 | A new pak number comes from `pak_slot::occupied` / `pak_slot::free_slots`, never from files alone | Private `file_pak_numbers` inside `pak_slot.rs` + `scripts/check_pak_occupancy.py` (`cargo test -p shiv-core --test pak_occupancy`) |
 | Every pak rename or slot allocation takes `InstallPermit`, minted only by `InstallGuard` (including `complock::claim_reusable`). `addons::next_pak` is `pub(crate)` | Type system + `crates/shiv-core/tests/install_permit.rs` |
 | No blocking I/O on the Slint event loop; workers park on a `Condvar`, never poll | `crates/shiv-ui/tests/guards.rs` |
-| No `unwrap`/`expect` in production code of `shiv-core`, `shiv-api`, `shiv-ui` | `#![deny(clippy::unwrap_used, clippy::expect_used)]` at each crate root |
+| No `unwrap`/`expect` in production code of `shiv-core`, `shiv-api`, `shiv-repair`, `shiv-ui` | `#![deny(clippy::unwrap_used, clippy::expect_used)]` at each crate root |
 | CI bench diffs fail closed on missing baselines or >25% significant regressions | `.github/workflows/perf.yml` + `scripts/bench_diff_summary.py` |
 
 The full list of rules and the bugs that created them is in `docs/code-quality.md`.

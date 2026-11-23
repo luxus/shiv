@@ -7,6 +7,9 @@
 //! events and `ts-rs` exports were removed and the app-wide error type was
 //! replaced by [`RepairError`]. See `docs/repair-port.md` for what changed.
 
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod api;
 pub mod error;
 pub mod gameinfo;
@@ -21,3 +24,4 @@ pub use api::{
     overlay_state, remove_package, remove_package_with, restore_last, restore_last_with,
 };
 pub use error::RepairError;
+pub use mod_health::FixModsStatus;

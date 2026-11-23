@@ -151,7 +151,7 @@ pub(super) fn unsupported_definition(value: &Kv3Value, current: &Kv3Value) -> Op
     let mut authored = BTreeSet::new();
     let mut known = BTreeSet::new();
     enums(value, &mut Vec::new(), &mut authored);
-    for (_, current) in current.as_object().expect("base root is an object") {
+    for (_, current) in current.as_object().into_iter().flatten() {
         enums(current, &mut Vec::new(), &mut known);
     }
     authored

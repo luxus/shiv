@@ -7,7 +7,7 @@ use super::{CompiledDataSource, Kv3Value, decode_compiled_data};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-mod cache;
+pub(crate) mod cache;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -303,15 +303,11 @@ fn prove_sampled_rig(
     skeleton: &Kv3Value,
 ) -> Result<(), String> {
     let poses = sampled_contract(old, current, skeleton)?;
-    if poses
+    if let Some((name, _, _)) = poses
         .iter()
-        .any(|(_, a, b)| equivalent_pose(a, b) != Some(true))
+        .find(|(_, a, b)| equivalent_pose(a, b) != Some(true))
         && !scaled_rig::compatible(&poses)
     {
-        let (name, _, _) = poses
-            .iter()
-            .find(|(_, a, b)| equivalent_pose(a, b) != Some(true))
-            .expect("different pose exists");
         return Err(format!("Changed sampled bone reference pose: {name}"));
     }
     Ok(())

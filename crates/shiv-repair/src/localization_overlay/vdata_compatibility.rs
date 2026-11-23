@@ -251,18 +251,13 @@ pub(super) fn prepare(
                                 .contains_key(&reference.row.to_ascii_lowercase())
                     });
             if let Some(parent) = modified_parent {
-                let Kv3Value::Object(rows) = &mut merged[index].root else {
-                    unreachable!("merged root is an object")
-                };
-                object_set_case_insensitive(rows, &group.row_name, original.clone());
-                encoding_set_case_insensitive(
-                    merged[index]
-                        .encoding
-                        .as_object_mut()
-                        .expect("merged encoding is an object"),
-                    &group.row_name,
-                    encoding.clone(),
-                );
+                let entry = &mut merged[index];
+                if let (Kv3Value::Object(rows), Some(encodings)) =
+                    (&mut entry.root, entry.encoding.as_object_mut())
+                {
+                    object_set_case_insensitive(rows, &group.row_name, original.clone());
+                    encoding_set_case_insensitive(encodings, &group.row_name, encoding.clone());
+                }
                 skipped_rebases.insert((index, group.row_name.to_ascii_lowercase()));
                 warnings.push(DataWarning {
                     mod_id: winner.candidate.mod_id.clone(),
@@ -309,11 +304,7 @@ pub(super) fn prepare(
                 warnings.push(warning.clone());
             }
         }
-        for (name, value) in merged[index]
-            .root
-            .as_object()
-            .expect("merged root is an object")
-        {
+        for (name, value) in merged[index].root.as_object().into_iter().flatten() {
             if table.file_path != HEROES_VDATA_PATH
                 && row(&table.base_root, name).is_none()
                 && !skipped_rebases.contains(&(index, name.to_ascii_lowercase()))
@@ -399,18 +390,17 @@ pub(super) fn prepare(
         match collect_needed(&reference, tables, &merged) {
             Ok(needed) => {
                 for ((target, target_name), candidate) in needed {
-                    let Kv3Value::Object(rows) = &mut merged[target].root else {
-                        unreachable!("merged root is an object")
-                    };
-                    object_set_case_insensitive(rows, &target_name, candidate.value.clone());
-                    encoding_set_case_insensitive(
-                        merged[target]
-                            .encoding
-                            .as_object_mut()
-                            .expect("merged encoding is an object"),
-                        &target_name,
-                        candidate.encoding.clone(),
-                    );
+                    let entry = &mut merged[target];
+                    if let (Kv3Value::Object(rows), Some(encodings)) =
+                        (&mut entry.root, entry.encoding.as_object_mut())
+                    {
+                        object_set_case_insensitive(rows, &target_name, candidate.value.clone());
+                        encoding_set_case_insensitive(
+                            encodings,
+                            &target_name,
+                            candidate.encoding.clone(),
+                        );
+                    }
                     merged[target].applied_rows.insert(target_name.clone());
                     repairs.push(DataRepair {
                         mod_id: candidate.candidate.mod_id.clone(),

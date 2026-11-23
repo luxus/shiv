@@ -93,18 +93,13 @@ pub(super) fn restore(
     } else if !remove_optional_slot(&mut value, &mut encoding, &reference.path) {
         return Ok(false);
     }
-    let Kv3Value::Object(rows) = &mut merged.root else {
-        unreachable!("merged root is an object");
+    let (Kv3Value::Object(rows), Some(encodings)) =
+        (&mut merged.root, merged.encoding.as_object_mut())
+    else {
+        return Ok(false);
     };
     object_set_case_insensitive(rows, name, value);
-    encoding_set_case_insensitive(
-        merged
-            .encoding
-            .as_object_mut()
-            .expect("merged encoding is an object"),
-        name,
-        encoding,
-    );
+    encoding_set_case_insensitive(encodings, name, encoding);
     Ok(true)
 }
 

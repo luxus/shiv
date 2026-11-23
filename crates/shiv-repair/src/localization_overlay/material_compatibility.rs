@@ -48,10 +48,9 @@ pub(super) fn prepare(
     let Some(owner) = providers.first() else {
         return Ok(Assets::new());
     };
-    let mod_id = owner
-        .mod_id
-        .clone()
-        .expect("candidate is an enabled mod resource");
+    let Some(mod_id) = owner.mod_id.clone() else {
+        return Ok(Assets::new());
+    };
     let source_vpk = owner
         .archive
         .file_name()
