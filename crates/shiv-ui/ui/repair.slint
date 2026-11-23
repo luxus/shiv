@@ -89,82 +89,87 @@ component StatusTag inherits HorizontalLayout {
     }
 }
 
+// One mod as its own card. A mod that works shows only its name and files;
+// a status, its summary and the changes show when something needs repair.
 component RepairRowView inherits Rectangle {
     in property <RepairRow> item;
-    height: layout.preferred-height;
+    height: card.height + Theme.s1;
 
-    layout := VerticalLayout {
-        padding-top: Theme.s2;
-        padding-bottom: Theme.s2 + 1px;
-        padding-left: Theme.s1;
-        padding-right: Theme.s2;
-        spacing: Theme.s1;
+    card := Rectangle {
+        y: 0px;
+        // Room on the right for the list's scroll bar, as on Installed.
+        width: parent.width - 20px;
+        height: layout.preferred-height;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.raised;
 
-        HorizontalLayout {
-            spacing: Theme.s2;
-            VerticalLayout {
-                spacing: 2px;
-                horizontal-stretch: 1;
-                Text {
-                    text: root.item.name;
-                    color: root.item.enabled ? Theme.text : Theme.text-muted;
-                    font-size: Theme.text-lg;
-                    font-weight: 600;
-                    overflow: elide;
+        layout := VerticalLayout {
+            padding-top: 12px;
+            padding-bottom: 12px;
+            padding-left: Theme.s2;
+            padding-right: Theme.s2;
+            spacing: Theme.s1;
+
+            HorizontalLayout {
+                spacing: Theme.s2;
+                VerticalLayout {
+                    spacing: 3px;
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: root.item.name;
+                        color: root.item.enabled ? Theme.text : Theme.text-muted;
+                        font-size: Theme.text-lg;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    if root.item.summary != "": Text {
+                        text: root.item.summary;
+                        color: Theme.text-muted;
+                        font-size: Theme.text-md;
+                        overflow: elide;
+                    }
+                    if root.item.files != "": Text {
+                        text: root.item.files;
+                        color: Theme.text-faint;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                    }
                 }
-                if root.item.summary != "": Text {
-                    text: root.item.summary;
-                    color: Theme.text-muted;
-                    font-size: Theme.text-md;
-                    overflow: elide;
+                // A mod that works needs no word: only a status worth reading shows.
+                if root.item.tone != RepairTone.works: StatusTag {
+                    width: 140px;
+                    tone: root.item.tone;
+                    text: root.item.status;
                 }
             }
-            // A mod that works needs no word: only a status worth reading shows.
-            if root.item.tone != RepairTone.works: StatusTag {
-                width: 140px;
-                tone: root.item.tone;
-                text: root.item.status;
-            }
-        }
 
-        if root.item.changes.length > 0: HorizontalLayout {
-            spacing: Theme.s2;
-            Rectangle {
-                width: 2px;
-                background: Theme.border-strong;
-            }
-            VerticalLayout {
-                spacing: 2px;
-                for line in root.item.changes: Text {
-                    text: line;
-                    color: Theme.text;
-                    font-size: Theme.text-sm;
-                    wrap: word-wrap;
+            if root.item.changes.length > 0: HorizontalLayout {
+                spacing: Theme.s2;
+                Rectangle {
+                    width: 2px;
+                    background: Theme.border-strong;
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    for line in root.item.changes: Text {
+                        text: line;
+                        color: Theme.text;
+                        font-size: Theme.text-sm;
+                        wrap: word-wrap;
+                    }
                 }
             }
-        }
 
-        for line in root.item.remaining: Text {
-            text: line;
-            color: Theme.text-muted;
-            font-size: Theme.text-sm;
-            wrap: word-wrap;
+            for line in root.item.remaining: Text {
+                text: line;
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+                wrap: word-wrap;
+            }
         }
-
-        if root.item.files != "": Text {
-            text: root.item.files;
-            color: Theme.text-faint;
-            font-size: Theme.text-sm;
-            overflow: elide;
-        }
-    }
-
-    Rectangle {
-        x: Theme.s1;
-        y: parent.height - 1px;
-        width: parent.width - Theme.s1;
-        height: 1px;
-        background: Theme.border;
     }
 }
 
