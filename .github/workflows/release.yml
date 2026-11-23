@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a tag like v0.1.0 builds the AppImage, Flatpak and Windows files and publishes a GitHub release.
-# Running the workflow by hand builds the AppImage and keeps it as an artifact
-# only, so the packaging can be tested without releasing anything.
+# workflow_dispatch on a v* tag publishes the same way. The CompLock watch
+# does that, because a tag it pushes with GITHUB_TOKEN does not start this
+# workflow. Dispatch on a branch builds the artifacts and does not publish.
 on:
   push:
     tags: ["v*"]
@@ -49,7 +50,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           version=""
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
           packaging/build-appimage.sh "$version"
       - uses: actions/upload-artifact@v4
         with:
@@ -73,7 +74,7 @@ jobs:
       - name: Build the Flatpak
         run: |
           version=""
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
           FLATPAK_CARGO_GENERATOR="$RUNNER_TEMP/flatpak-cargo-generator.py" packaging/build-flatpak.sh "$version"
       - uses: actions/upload-artifact@v4
         with:
@@ -94,7 +95,7 @@ jobs:
       - name: Package
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/shiv-ui/Cargo.toml | head -1)
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
           mkdir -p dist
           cp target/release/shiv.exe "dist/Shiv-$version-x64-portable.exe"
           if ! command -v iscc >/dev/null; then choco install innosetup -y --no-progress; fi
@@ -108,7 +109,7 @@ jobs:
           path: dist/*
 
   publish:
-    if: github.ref_type == 'tag'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [appimage, flatpak, windows]
     runs-on: ubuntu-latest
     permissions:

@@ -7,6 +7,12 @@ name: CompLock watch
 # their gameinfo.gi, its build number and the options data (the pack-data
 # minus the gameinfo text) — or open one issue saying why not (#20). The
 # issue closes itself on the next green run.
+#
+# On main, a commit that changes the embedded pack also cuts one patch
+# release. scripts/data_release.py owns that decision. The watch tags the
+# commit and runs release.yml on that tag with workflow_dispatch: a
+# GITHUB_TOKEN push does not start other workflows, so the tag push is not
+# the trigger. The same pack on a later run does not bump, tag, or dispatch.
 on:
   schedule:
     - cron: "17 6 * * *"
@@ -20,6 +26,11 @@ on:
 permissions:
   contents: write
   issues: write
+  actions: write
+
+concurrency:
+  group: complock-watch
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,6 +42,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Fetch the site's pack-data and its parts
         env:
           SIMULATE: ${{ inputs.simulate || 'none' }}
@@ -109,25 +122,122 @@ jobs:
             exit "$code"
           fi
       - name: Embed the update
+        id: embed
         if: steps.check.outputs.green == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           t="$RUNNER_TEMP/complock"
           cp "$t/gameinfo.gi" crates/shiv-core/assets/complock-gameinfo.gi
           cp "$t/options.json" crates/shiv-core/assets/complock-options.json
-          game=$(cat "$t/game")
+          game=$(tr -d '[:space:]' < "$t/game")
           printf '{\n  "game": "%s",\n  "fetched": "%s"\n}\n' "$game" "$(date -u +%F)" \
             > crates/shiv-core/assets/complock.json
           git config user.name "shiv-complock-watch"
           git config user.email "actions@users.noreply.github.com"
+          assets_changed=true
           if git diff --quiet -- crates/shiv-core/assets/complock-gameinfo.gi crates/shiv-core/assets/complock-options.json; then
             git checkout -- crates/shiv-core/assets
-            echo "The embedded CompLock data is current."
+            assets_changed=false
+          fi
+          if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+            if [ "$assets_changed" = false ]; then
+              echo "The embedded CompLock data is current."
+              exit 0
+            fi
+            git add crates/shiv-core/assets
+            git commit -m "chore(complock): gameinfo build ${game} (deadlockconfig.com)"
+            git push
             exit 0
           fi
-          git add crates/shiv-core/assets
-          git commit -m "chore(complock): gameinfo build ${game} (deadlockconfig.com)"
-          git push
+          version=$(python3 scripts/data_release.py read-version crates/shiv-ui/Cargo.toml)
+          tag_exists=false
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            tag_exists=true
+          fi
+          release_exists=false
+          if gh release view "v${version}" >/dev/null 2>&1; then
+            release_exists=true
+          fi
+          marker=$(python3 scripts/data_release.py marker "$version")
+          head_pending=false
+          if git log -1 --format=%B | grep -F -q "$marker"; then
+            head_pending=true
+          fi
+          tag_is_data_release=false
+          if [ "$tag_exists" = true ] && git log -1 --format=%B "v${version}" | grep -F -q "$marker"; then
+            tag_is_data_release=true
+          fi
+          dispatch_settled=false
+          if [ "$tag_exists" = true ]; then
+            sha=$(git rev-parse "v${version}^{}")
+            count=$(gh run list --workflow release.yml --limit 50 \
+              --json headSha,event,status,conclusion \
+              --jq "[.[] | select(.headSha==\"${sha}\" and .event==\"workflow_dispatch\" and (.status==\"requested\" or .status==\"queued\" or .status==\"in_progress\" or .status==\"waiting\" or .status==\"pending\" or .conclusion==\"success\"))] | length")
+            if [ -z "$count" ]; then
+              echo "could not read release workflow runs" >&2
+              exit 2
+            fi
+            if [ "$count" != "0" ]; then
+              dispatch_settled=true
+            fi
+          fi
+          plan=$(python3 scripts/data_release.py plan \
+            --assets-changed "$assets_changed" \
+            --version "$version" \
+            --tag-exists "$tag_exists" \
+            --release-exists "$release_exists" \
+            --dispatch-settled "$dispatch_settled" \
+            --head-pending "$head_pending" \
+            --tag-is-data-release "$tag_is_data_release")
+          echo "release plan: ${plan}"
+          case "$plan" in
+            skip)
+              echo "No CompLock release."
+              exit 0
+              ;;
+            commit\ *)
+              release_version=${plan#commit }
+              python3 scripts/data_release.py apply \
+                --from "$version" \
+                --to "$release_version" \
+                --date "$(date -u +%F)" \
+                --summary "CompLock pack data from deadlockconfig.com, gameinfo build ${game}." \
+                --cargo crates/shiv-ui/Cargo.toml \
+                --lock Cargo.lock \
+                --metainfo packaging/flatpak/io.github.Siebe_Uy.shiv.metainfo.xml
+              release_marker=$(python3 scripts/data_release.py marker "$release_version")
+              git add \
+                crates/shiv-core/assets \
+                crates/shiv-ui/Cargo.toml \
+                Cargo.lock \
+                packaging/flatpak/io.github.Siebe_Uy.shiv.metainfo.xml
+              git commit \
+                -m "chore(complock): gameinfo build ${game} (deadlockconfig.com)" \
+                -m "$release_marker"
+              git push
+              git tag "v${release_version}"
+              git push origin "refs/tags/v${release_version}"
+              gh workflow run release.yml --ref "v${release_version}"
+              ;;
+            tag\ *)
+              release_version=${plan#tag }
+              git tag "v${release_version}"
+              git push origin "refs/tags/v${release_version}"
+              gh workflow run release.yml --ref "v${release_version}"
+              ;;
+            dispatch\ *)
+              release_version=${plan#dispatch }
+              gh workflow run release.yml --ref "v${release_version}"
+              ;;
+            *)
+              echo "unknown release plan: ${plan}" >&2
+              exit 2
+              ;;
+          esac
       - name: Open, update or close the watch issue
+        if: always() && steps.check.outputs.green != '' && steps.embed.outcome != 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           GREEN: ${{ steps.check.outputs.green }}
