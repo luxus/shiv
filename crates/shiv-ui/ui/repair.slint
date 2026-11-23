@@ -112,14 +112,15 @@ component RepairRowView inherits Rectangle {
                     font-weight: 600;
                     overflow: elide;
                 }
-                Text {
+                if root.item.summary != "": Text {
                     text: root.item.summary;
                     color: Theme.text-muted;
                     font-size: Theme.text-md;
                     overflow: elide;
                 }
             }
-            StatusTag {
+            // A mod that works needs no word: only a status worth reading shows.
+            if root.item.tone != RepairTone.works: StatusTag {
                 width: 140px;
                 tone: root.item.tone;
                 text: root.item.status;
