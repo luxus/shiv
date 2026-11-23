@@ -1,0 +1,22 @@
+{
+ "id": "ragdolls",
+ "group": "physics",
+ "title": "Ragdolls off",
+ "avg": "+2.6%",
+ "low": "±0%",
+ "est_avg": "±0%",
+ "est_low": "±0%",
+ "text": "Heroes and troopers don't ragdoll when they die.",
+ "warn": "Players caught in Doorman's ultimate sometimes fade.",
+ "how": "A ragdoll is the limp body of a hero or trooper that just died, which your PC simulates as it falls and settles. With this on, that simulation is skipped.",
+ "gameinfo": {
+  "cl_disable_ragdolls": "true"
+ },
+ "updated": {
+  "date": "2026-11-22",
+  "text": "22 Nov",
+  "long": "22 Nov 2026",
+  "new": true,
+  "href": "/docs/changelog/#cl-2026-11-22-ragdolls"
+ }
+}

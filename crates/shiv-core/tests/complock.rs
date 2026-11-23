@@ -779,3 +779,59 @@ fn manifest(rel: &str) -> PathBuf {
 fn page(json: &str) -> String {
     format!("<html><script id=\"pack-data\" type=\"application/json\">{json}</script></html>")
 }
+
+/// The site's ragdolls card as build 6860 serves it (22 Nov 2026): an
+/// opt-in option with no `gameinfo_else`, fetched verbatim (#37).
+const RAGDOLLS_6860: &str = include_str!("data/complock-6860-ragdolls.json");
+
+/// The embedded asset with its ragdolls card swapped for `card`.
+fn with_ragdolls(card: serde_json::Value) -> serde_json::Value {
+    let mut doc = asset_value();
+    let slot = doc["option"]
+        .as_array_mut()
+        .expect("options")
+        .iter_mut()
+        .find(|o| o["id"] == "ragdolls")
+        .expect("the asset carries ragdolls");
+    *slot = card;
+    doc
+}
+
+#[test]
+fn an_off_state_key_coming_or_going_is_not_a_schema_change() {
+    let upstream: serde_json::Value = serde_json::from_str(RAGDOLLS_6860).expect("fixture");
+    assert!(upstream.get("gameinfo_else").is_none());
+    let mut before = upstream.clone();
+    before["gameinfo_else"] = serde_json::json!({"cl_disable_ragdolls": "false"});
+    let (now, then) = (
+        with_ragdolls(upstream).to_string(),
+        with_ragdolls(before).to_string(),
+    );
+    assert_eq!(complock::check_pack(&now, GAMEINFO_ASSET, &then), []);
+    assert_eq!(complock::check_pack(&then, GAMEINFO_ASSET, &now), []);
+}
+
+#[test]
+fn an_option_without_gameinfo_else_turns_off_by_leaving_its_line_out() {
+    let mut live = with_ragdolls(serde_json::from_str(RAGDOLLS_6860).expect("fixture"));
+    live["gameinfo"] = serde_json::Value::String(GAMEINFO_ASSET.to_owned());
+    let loaded = complock::load_pack(|_| Ok(page(&live.to_string())), None);
+    assert_eq!(loaded.origin(), complock::PackOrigin::Live);
+    let ragdolls = loaded
+        .options()
+        .iter()
+        .find(|o| o.id == "ragdolls")
+        .expect("ragdolls");
+    assert_eq!(
+        ragdolls
+            .convars
+            .iter()
+            .map(|e| (e.path.last().cloned(), e.value.clone()))
+            .collect::<Vec<_>>(),
+        [(
+            Some("cl_disable_ragdolls".to_owned()),
+            Some("true".to_owned())
+        )]
+    );
+    assert!(ragdolls.off_convars.is_empty());
+}
