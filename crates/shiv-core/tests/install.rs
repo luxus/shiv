@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use shiv_core::game::GamePaths;
 use shiv_core::install::{self, InstallError, Limits, ModMeta};
+use shiv_core::reset;
 use shiv_core::sidecar::{self, Sidecar};
 use tempfile::{TempDir, tempdir};
 use zip::write::SimpleFileOptions;
@@ -29,10 +30,14 @@ fn env() -> Env {
 }
 
 fn meta(id: &str) -> ModMeta {
+    meta_version(id, "1.0")
+}
+
+fn meta_version(id: &str, version: &str) -> ModMeta {
     ModMeta {
         mod_id: id.into(),
         name: format!("Mod {id}"),
-        version: Some("1.0".into()),
+        version: Some(version.into()),
         thumbnail_url: None,
         nsfw: false,
         hero: None,
@@ -364,6 +369,107 @@ fn reinstall_replaces_old_files_and_keeps_old_on_failure() {
     assert_eq!(fs::read(e.paths.addons.join(name)).unwrap(), b"v2");
     assert_eq!(names(&e.paths.addons), vec![name.clone()]);
     assert_eq!(sidecar::read(&e.paths.addons, "m1").unwrap(), Some(second));
+}
+
+/// A catalog or GameBanana update is a second `install_with` of the same
+/// mod. The previous pak bytes have to survive in the reset backup, on the
+/// slot they already occupied, and Restore previous has to swap them back.
+#[test]
+fn a_catalog_update_keeps_the_previous_files_restorable() {
+    let e = env();
+    fs::write(e.paths.addons.join("pak50_dir.vpk"), b"neighbor").unwrap();
+    let v1 = e.work.join("v1.zip");
+    write_zip(
+        &v1,
+        &[
+            ("pak01_dir.vpk", b"version-one"),
+            ("pak01_000.vpk", b"chunk-one"),
+        ],
+    );
+    let first = install::install_with(
+        &v1,
+        meta_version("m1", "v1"),
+        &e.paths,
+        not_running,
+        install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    let old_name = first.vpks[0].clone();
+    let old_bytes = fs::read(e.paths.addons.join(&old_name)).unwrap();
+    assert_eq!(old_bytes, b"version-one");
+
+    let v2 = e.work.join("v2.zip");
+    write_zip(&v2, &[("fresh.vpk", b"version-two")]);
+    let second = install::install_with(
+        &v2,
+        meta_version("m1", "v2"),
+        &e.paths,
+        not_running,
+        install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    assert_ne!(
+        second.vpks, first.vpks,
+        "the new pak takes a free slot while the old one still occupies its own"
+    );
+    assert_eq!(
+        fs::read(e.paths.addons.join(&second.vpks[0])).unwrap(),
+        b"version-two"
+    );
+    assert_eq!(
+        fs::read(e.paths.addons.join("pak50_dir.vpk")).unwrap(),
+        b"neighbor"
+    );
+    assert!(
+        !e.paths.addons.join(&old_name).exists(),
+        "the replaced pak leaves the addons folder"
+    );
+
+    let backup = reset::latest_backup(&e.paths.addons, "m1").expect("previous files kept");
+    assert_eq!(backup.sidecar.version.as_deref(), Some("v1"));
+    assert_eq!(fs::read(backup.dir.join(&old_name)).unwrap(), old_bytes);
+    assert!(
+        backup
+            .files
+            .iter()
+            .any(|name| fs::read(backup.dir.join(name)).unwrap() == b"chunk-one"),
+        "the chunk is kept with the dir pak"
+    );
+
+    let restored = reset::restore_previous(
+        &e.paths,
+        "m1",
+        not_running,
+        install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    assert_eq!(restored.version.as_deref(), Some("v1"));
+    assert_eq!(fs::read(e.paths.addons.join(&old_name)).unwrap(), old_bytes);
+    assert_eq!(
+        fs::read(e.paths.addons.join("pak50_dir.vpk")).unwrap(),
+        b"neighbor"
+    );
+
+    let again = reset::restore_previous(
+        &e.paths,
+        "m1",
+        not_running,
+        install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    assert_eq!(again.version.as_deref(), Some("v2"));
+    assert_eq!(
+        fs::read(e.paths.addons.join(&second.vpks[0])).unwrap(),
+        b"version-two"
+    );
 }
 
 #[test]

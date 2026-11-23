@@ -8,9 +8,11 @@
 //! install — the same download, verify and install path the mod came
 //! through, so there is no second installer — and then returns the mod to
 //! its load position and enabled state. A failed install moves the files
-//! back. Restore previous swaps: the newest backup's files return under
-//! their old names, and the files they displace become a backup in turn.
-//! Both refuse while the game runs, before anything moves.
+//! back. A catalog or GameBanana update stashes the files it replaces into
+//! that same folder, after their pak numbers are already taken, so Restore
+//! previous swaps those too. Restore previous swaps: the newest backup's
+//! files return under their old names, and the files they displace become a
+//! backup in turn. Both refuse while the game runs, before anything moves.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -175,6 +177,29 @@ fn move_aside(addons: &Path, m: &InstalledMod) -> Result<Backup, ResetError> {
     let Some(sidecar) = m.sidecar.clone() else {
         return Err(ResetError::NotFound(String::new()));
     };
+    let files: Vec<PathBuf> = m
+        .vpks
+        .iter()
+        .flat_map(|v| std::iter::once(v.file.clone()).chain(v.chunks.iter().cloned()))
+        .collect();
+    write_backup(addons, &sidecar, &files)
+}
+
+/// Move `files` into a reset backup recorded as `sidecar`. An empty list
+/// writes nothing: there is no previous version to restore.
+pub(crate) fn stash_files(
+    addons: &Path,
+    sidecar: &Sidecar,
+    files: &[PathBuf],
+) -> Result<(), ResetError> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    write_backup(addons, sidecar, files)?;
+    Ok(())
+}
+
+fn write_backup(addons: &Path, sidecar: &Sidecar, files: &[PathBuf]) -> Result<Backup, ResetError> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -186,30 +211,32 @@ fn move_aside(addons: &Path, m: &InstalledMod) -> Result<Backup, ResetError> {
         dir = root.join(format!("{nanos:020}-{n}"));
     }
     fs::create_dir_all(&dir).map_err(io(&dir))?;
-    let files: Vec<PathBuf> = m
-        .vpks
-        .iter()
-        .flat_map(|v| std::iter::once(v.file.clone()).chain(v.chunks.iter().cloned()))
-        .collect();
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for file in &files {
+    for file in files {
         let to = dir.join(file_name(file));
         if let Err(e) = fs::rename(file, &to) {
             for (from, to) in moved.iter().rev() {
                 let _ = fs::rename(to, from);
             }
+            let _ = fs::remove_dir(&dir);
             return Err(io(file)(e));
         }
         moved.push((file.clone(), to));
     }
     let backup = Backup {
         dir: dir.clone(),
-        sidecar,
+        sidecar: sidecar.clone(),
         files: files.iter().map(|f| file_name(f)).collect(),
     };
     let manifest =
         serde_json::to_string_pretty(&backup).map_err(|e| io(&dir)(std::io::Error::other(e)))?;
-    fs::write(dir.join(MANIFEST), manifest).map_err(io(&dir))?;
+    if let Err(e) = fs::write(dir.join(MANIFEST), manifest) {
+        for (from, to) in moved.iter().rev() {
+            let _ = fs::rename(to, from);
+        }
+        let _ = fs::remove_dir(&dir);
+        return Err(io(&dir)(e));
+    }
     Ok(backup)
 }
 
