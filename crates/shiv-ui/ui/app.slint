@@ -9,7 +9,7 @@ import { RepairPage, RepairDialog, RepairState, RepairRow, RepairTone } from "re
 import { CrosshairPage, CrosshairState, CrosshairValues, CrosshairField } from "crosshair.slint";
 import { DownloadsPage, DownloadsState, TransferRow, DownloadPhase } from "downloads.slint";
 import { ProfilesPage, ProfilesState, ProfileRow } from "profiles.slint";
-import { Dropdown } from "widgets.slint";
+import { Dropdown, TooltipLayer } from "widgets.slint";
 import { PerformancePage, PerfState, PerfTier, PerfComplock, PerfPackRow, PerfPackKind, PerfRow, PerfControl, PerfEditor, PerfChange } from "performance.slint";
 
 export { BrowseState, ModRow, LoadState, InstallState, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow, InstalledState, InstalledRow, ConflictState, ModEditState, LocalInstallState, UpdateFileState, DropState, SourcesState, SourceRow, LaunchState, FindingRow, RepairState, RepairRow, RepairTone, CrosshairState, CrosshairValues, CrosshairField, PerfState, PerfTier, PerfComplock, PerfRow, PerfControl, PerfEditor, PerfChange, ProfilesState, ProfileRow, DownloadsState, DownloadPhase, TransferRow }
@@ -270,6 +270,14 @@ export component App inherits Window {
     }
 
     if DropState.hover: DropOverlay {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+    }
+
+    // Last, so a tip draws above every screen and dialog.
+    TooltipLayer {
         x: 0px;
         y: 0px;
         width: root.width;

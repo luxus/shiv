@@ -3,6 +3,78 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
+// Hover text for the whole window. A control arms it with its own text and
+// place; App draws it above everything once the pointer has rested.
+export global Tooltip {
+    in-out property <string> text;
+    // The hovered control's window position and size.
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <length> h;
+    // Waiting out the delay; `shown` once it has passed.
+    in-out property <bool> armed;
+    in-out property <bool> shown;
+
+    public function show(text: string, x: length, y: length, h: length) {
+        self.text = text;
+        self.x = x;
+        self.y = y;
+        self.h = h;
+        self.shown = false;
+        self.armed = text != "";
+    }
+    // Only the control that armed it hides it, so moving straight onto the
+    // next control keeps the next one's tip.
+    public function hide(text: string) {
+        if (self.text == text) {
+            self.armed = false;
+            self.shown = false;
+        }
+    }
+}
+
+// The tip itself, sized to its text and kept inside the window.
+export component TooltipLayer inherits Rectangle {
+    property <length> gap: 6px;
+    property <length> w: min(380px, measure.preferred-width + 2 * 10px);
+    property <length> below: Tooltip.y + Tooltip.h + root.gap;
+
+    measure := Text {
+        visible: false;
+        text: Tooltip.text;
+        font-size: Theme.text-sm;
+    }
+
+    if Tooltip.shown: Rectangle {
+        width: root.w;
+        height: body.preferred-height + 2 * 6px;
+        x: clamp(Tooltip.x, Theme.s1, root.width - self.width - Theme.s1);
+        y: root.below + self.height > root.height - Theme.s1 ? Tooltip.y - self.height - root.gap : root.below;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        background: Theme.raised;
+        body := Text {
+            x: 10px;
+            y: 6px;
+            width: parent.width - 2 * 10px;
+            text: Tooltip.text;
+            color: Theme.text;
+            font-size: Theme.text-sm;
+            wrap: word-wrap;
+        }
+    }
+
+    Timer {
+        interval: 450ms;
+        running: Tooltip.armed;
+        triggered => {
+            Tooltip.armed = false;
+            Tooltip.shown = true;
+        }
+    }
+}
+
 export component Button inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
