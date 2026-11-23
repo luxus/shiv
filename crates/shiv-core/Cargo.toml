@@ -41,6 +41,7 @@ sevenz-rust2 = { version = "0.21.4", default-features = false, features = [
     "bzip2",
     "ppmd",
 ] }
+md-5 = "0.10"
 
 [dev-dependencies]
 # Writes real VPKs (with inner paths) for the update-matching tests.

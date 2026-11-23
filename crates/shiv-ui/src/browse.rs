@@ -932,7 +932,7 @@ enum Update {
         new_name: String,
         with: Vec<(String, String)>,
     },
-    Done(Result<(), Failure>),
+    Done(Result<shiv_core::registry::DownloadTrust, Failure>),
 }
 
 enum Failure {
@@ -953,7 +953,7 @@ fn run_install(
     mut task: InstallTask,
     cancel: &AtomicBool,
     mut post: impl FnMut(Update),
-) -> Result<(), Failure> {
+) -> Result<shiv_core::registry::DownloadTrust, Failure> {
     let msg = Failure::Message;
     let paths = locate().map_err(|e| msg(game_error_text(&e)))?;
     // Checked before downloading too, so a long download is not wasted.
@@ -1008,10 +1008,12 @@ fn run_install(
     if cancel.load(Ordering::Relaxed) {
         return Err(Failure::Cancelled);
     }
-    // A registry publishes the checksum of the bytes it serves; a download
-    // that does not match never reaches the addons folder.
-    shiv_core::registry::verify_download(&dest, task.published_sha256.as_deref())
-        .map_err(|e| msg(e.to_string()))?;
+    let trust = shiv_core::registry::check_download(
+        &dest,
+        task.published_sha256.as_deref(),
+        task.file.md5_checksum.as_deref(),
+    )
+    .map_err(|e| msg(e.to_string()))?;
     post(Update::Installing);
     let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| msg(e.to_string()))?;
     // Cancel may have been pressed while waiting for another install.
@@ -1034,6 +1036,9 @@ fn run_install(
     };
     install::install_with(&dest, meta, &paths, crate::game_running, guard.permit())
         .map_err(|e| msg(install_error_text(&e)))?;
+    if trust == shiv_core::registry::DownloadTrust::Unverified {
+        let _ = sidecar::mark_unverified(&paths.addons, &mod_id);
+    }
     if fresh {
         let mods = sidecar::group(&paths.addons);
         let with = sidecar::conflicts_with(&mods, &mod_id, |id| kinds.get(id).cloned());
@@ -1044,7 +1049,7 @@ fn run_install(
             });
         }
     }
-    Ok(())
+    Ok(trust)
 }
 
 /// Mod ids with a sidecar in `addons`; empty when the game is not found.
@@ -2139,7 +2144,12 @@ impl Browse {
             Update::Done(result) => {
                 self.list.jobs.borrow_mut().remove(id);
                 match result {
-                    Ok(()) => crate::downloads::finished(id, crate::downloads::Outcome::Done),
+                    Ok(shiv_core::registry::DownloadTrust::Verified) => {
+                        crate::downloads::finished(id, crate::downloads::Outcome::Done);
+                    }
+                    Ok(shiv_core::registry::DownloadTrust::Unverified) => {
+                        crate::downloads::finished(id, crate::downloads::Outcome::DoneUnverified);
+                    }
                     Err(Failure::Cancelled) => {
                         crate::downloads::finished(id, crate::downloads::Outcome::Cancelled);
                     }

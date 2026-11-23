@@ -183,6 +183,7 @@ fn catalog_mods_and_different_vpk_counts_never_match() {
             notes: None,
             source: Some("Haze Skin.vpk".into()),
             stamps: None,
+            unverified: None,
         },
     )
     .unwrap();
@@ -352,6 +353,7 @@ fn replace_refuses_without_touching_anything() {
         notes: None,
         source: None,
         stamps: None,
+        unverified: None,
     };
     sidecar::write(&e.paths.addons, &catalog).unwrap();
     let before = files(&e.paths.addons);

@@ -15,6 +15,7 @@ fn sc(id: &str, vpks: &[&str]) -> Sidecar {
         notes: None,
         source: None,
         stamps: None,
+        unverified: None,
     }
 }
 

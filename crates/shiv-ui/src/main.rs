@@ -1230,6 +1230,7 @@ mod tests {
                 notes: None,
                 source: None,
                 stamps: None,
+                unverified: None,
             },
         )
         .unwrap();
@@ -3111,8 +3112,8 @@ mod tests {
         assert!(row.detail.contains("revision-1"), "{}", row.detail);
         assert_eq!(
             row.pill.as_str(),
-            "",
-            "the installed revision is the one the registry publishes"
+            "Unverified",
+            "this fixture publishes no checksum, and the revision matches so there is no drift pill"
         );
 
         // The registry mod's page opens too, and its Changelog tab reads
@@ -3320,6 +3321,7 @@ mod tests {
                 notes: None,
                 source: None,
                 stamps: None,
+                unverified: None,
             },
         )
         .expect("sidecar");
@@ -4581,6 +4583,7 @@ mod tests {
                     notes: None,
                     source: None,
                     stamps: None,
+                    unverified: None,
                 },
             )
             .expect("sidecar");

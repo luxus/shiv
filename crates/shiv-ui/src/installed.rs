@@ -138,6 +138,8 @@ pub(crate) struct Entry {
     pub drift: Drift,
     /// A reset can reinstall the published release.
     pub can_reset: bool,
+    /// The download that placed this mod published no checksum.
+    pub unverified: bool,
 }
 
 /// The disk side of a row's drift, read on the worker: whether the files
@@ -257,6 +259,30 @@ pub(crate) fn drift_text(d: Drift) -> &'static str {
         Drift::UpdateAvailable => "A newer release is published",
         Drift::Retired => "Retired upstream: no longer published",
         Drift::Pristine | Drift::Untracked => "",
+    }
+}
+
+const UNVERIFIED_PILL: &str = "Unverified";
+const UNVERIFIED_TIP: &str = "This download had no checksum, so Shiv did not verify it.";
+
+/// The pill a row shows. Drift wins when there is something to say about
+/// the files. An install whose download had no checksum says so instead.
+pub(crate) fn status_pill(drift: Drift, unverified: bool) -> &'static str {
+    let pill = drift_pill(drift);
+    if pill.is_empty() && unverified {
+        UNVERIFIED_PILL
+    } else {
+        pill
+    }
+}
+
+/// The tooltip for [`status_pill`].
+pub(crate) fn status_tip(drift: Drift, unverified: bool) -> &'static str {
+    let tip = drift_text(drift);
+    if tip.is_empty() && unverified {
+        UNVERIFIED_TIP
+    } else {
+        tip
     }
 }
 
@@ -395,6 +421,7 @@ fn entry(m: &InstalledMod) -> Entry {
             facts: Facts::default(),
             drift: Drift::Untracked,
             can_reset: false,
+            unverified: false,
         };
     };
     let mut parts: Vec<String> = Vec::new();
@@ -441,6 +468,7 @@ fn entry(m: &InstalledMod) -> Entry {
         facts: Facts::default(),
         drift: Drift::Untracked,
         can_reset: false,
+        unverified: s.unverified == Some(true),
     }
 }
 
@@ -526,7 +554,7 @@ fn run_reset(
         .prefix("shiv-reset-")
         .tempdir()
         .map_err(|e| format!("Could not create a temporary folder: {e}"))?;
-    let fetched = fetch_release(deps, dir.path(), plan)?;
+    let (fetched, unverified) = fetch_release(deps, dir.path(), plan)?;
     let running = deps.running.clone();
     let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     let note = RefCell::new(String::new());
@@ -595,12 +623,19 @@ fn run_reset(
         guard.permit(),
     )
     .map_err(|e| reset_error_text(name, &e))?;
+    if unverified {
+        let _ = sidecar::mark_unverified(&paths.addons, id);
+    }
     Ok(note.into_inner())
 }
 
 /// The plan's release on disk in `dir`: a CompLock pak's VPKs unpacked and
 /// CRC-checked, or a registry artifact checked against its sha256.
-fn fetch_release(deps: &Deps, dir: &Path, plan: &ResetPlan) -> Result<Vec<PathBuf>, String> {
+fn fetch_release(
+    deps: &Deps,
+    dir: &Path,
+    plan: &ResetPlan,
+) -> Result<(Vec<PathBuf>, bool), String> {
     match plan {
         ResetPlan::CompLock { pak } => {
             let mut vpks = Vec::new();
@@ -625,13 +660,14 @@ fn fetch_release(deps: &Deps, dir: &Path, plan: &ResetPlan) -> Result<Vec<PathBu
                 )?;
                 vpks.push(dest);
             }
-            Ok(vpks)
+            Ok((vpks, false))
         }
         ResetPlan::Registry(r) => {
             let dest = dir.join("archive");
             (deps.download)(&r.url, &dest)?;
-            registry::verify_download(&dest, r.sha256.as_deref()).map_err(|e| e.to_string())?;
-            Ok(vec![dest])
+            let trust = registry::check_download(&dest, r.sha256.as_deref(), None)
+                .map_err(|e| e.to_string())?;
+            Ok((vec![dest], trust == registry::DownloadTrust::Unverified))
         }
     }
 }
@@ -1394,8 +1430,8 @@ impl Installed {
         row.author = card.author.into();
         row.blurb = card.blurb.into();
         row.about = card.about.into();
-        row.drift = drift_text(e.drift).into();
-        row.pill = drift_pill(e.drift).into();
+        row.drift = status_tip(e.drift, e.unverified).into();
+        row.pill = status_pill(e.drift, e.unverified).into();
         row.can_reset = e.can_reset;
         row.can_restore = e.facts.has_backup;
         if let Some(img) = e.thumb_url.as_deref().and_then(|u| self.cache.get(u)) {
@@ -2504,7 +2540,33 @@ mod tests {
             notes: None,
             source: None,
             stamps: None,
+            unverified: None,
         }
+    }
+
+    #[test]
+    fn an_unverified_install_shows_the_marker_and_a_verified_one_does_not() {
+        assert_eq!(status_pill(Drift::Pristine, true), "Unverified");
+        assert_eq!(
+            status_tip(Drift::Pristine, true),
+            "This download had no checksum, so Shiv did not verify it."
+        );
+        assert_eq!(status_pill(Drift::Pristine, false), "");
+        assert_eq!(status_tip(Drift::Pristine, false), "");
+        assert_eq!(
+            status_pill(Drift::Modified, true),
+            "Modified",
+            "a file that differs from its release still says that"
+        );
+        let mut recorded = sidecar("haze", "Haze");
+        recorded.unverified = Some(true);
+        recorded.vpks = vec!["pak01_dir.vpk".into()];
+        let row = entries(&[InstalledMod {
+            sidecar: Some(recorded),
+            vpks: vec![vpk("pak01_dir.vpk", Some(1), true)],
+        }]);
+        assert!(row[0].unverified);
+        assert_eq!(status_pill(row[0].drift, row[0].unverified), "Unverified");
     }
 
     #[test]

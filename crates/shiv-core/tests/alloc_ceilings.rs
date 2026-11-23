@@ -180,6 +180,7 @@ fn sidecar_claiming(id: &str, vpk: &str) -> Sidecar {
         notes: None,
         source: None,
         stamps: None,
+        unverified: None,
     }
 }
 

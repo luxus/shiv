@@ -13,6 +13,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use md5::Md5;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -259,9 +260,76 @@ pub fn revision_is_newer(installed: Option<&str>, current: &str) -> bool {
     installed.is_none_or(|old| old != current)
 }
 
-/// Where a downloaded registry artifact waits for its hash check: a
+/// Whether a download's bytes were checked against a published checksum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadTrust {
+    /// A published checksum matched the bytes.
+    Verified,
+    /// Nothing was published to check. The bytes are installed anyway.
+    Unverified,
+}
+
+/// Check `downloaded` against the checksums a catalog or registry published.
+///
+/// A SHA-256, an MD5, or both must match, or the file is deleted and the
+/// download is refused. No checksum at all is [`DownloadTrust::Unverified`].
+/// The file stays, and the caller shows that it was not checked.
+///
+/// # Errors
+///
+/// [`RegistryError::Refused`] when a published checksum does not match —
+/// the download is deleted then; [`RegistryError::Io`] when it cannot be read.
+pub fn check_download(
+    downloaded: &Path,
+    published_sha256: Option<&str>,
+    published_md5: Option<&str>,
+) -> Result<DownloadTrust, RegistryError> {
+    let sha = published(published_sha256);
+    let md5 = published(published_md5);
+    match (sha, md5) {
+        (None, None) => Ok(DownloadTrust::Unverified),
+        (Some(sha), sum) => {
+            verify_download(downloaded, Some(sha))?;
+            if let Some(sum) = sum {
+                verify_md5(downloaded, sum)?;
+            }
+            Ok(DownloadTrust::Verified)
+        }
+        (None, Some(md5)) => {
+            verify_md5(downloaded, md5)?;
+            Ok(DownloadTrust::Verified)
+        }
+    }
+}
+
+fn published(checksum: Option<&str>) -> Option<&str> {
+    checksum.map(str::trim).filter(|text| !text.is_empty())
+}
+
+fn verify_md5(downloaded: &Path, expected: &str) -> Result<(), RegistryError> {
+    let actual = md5_hex_of(downloaded)?;
+    if !actual.eq_ignore_ascii_case(expected.trim()) {
+        fs::remove_file(downloaded).ok();
+        return Err(RegistryError::Refused(
+            "the download does not match the checksum published for it".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn md5_hex_of(path: &Path) -> Result<String, RegistryError> {
+    let bytes = fs::read(path).map_err(|source| RegistryError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(format!("{:x}", Md5::digest(bytes)))
+}
+
+/// Where a downloaded registry artifact waits for its SHA-256 check: a
 /// published checksum the bytes must match, or the download is deleted
-/// and refused. `None` published means unverifiable, which passes.
+/// and refused. `None` published means this function has nothing to check.
+/// Installs use [`check_download`], which reports that case as
+/// [`DownloadTrust::Unverified`].
 ///
 /// # Errors
 ///

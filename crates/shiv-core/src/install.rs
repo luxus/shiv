@@ -884,6 +884,7 @@ fn place_numbered(
         notes: None,
         source: None,
         stamps: Some(stamps),
+        unverified: None,
     };
     if let Err(e) = sidecar::write(addons_dir, &new_sidecar) {
         rollback(&moved);
@@ -1998,6 +1999,7 @@ pub fn replace_local_with(
             notes: None,
             source,
             stamps: None,
+            unverified: None,
         }
     };
     if let Err(e) = sidecar::write(addons_dir, &sc) {

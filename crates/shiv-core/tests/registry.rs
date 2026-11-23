@@ -174,6 +174,54 @@ fn a_published_checksum_gates_the_download() {
     registry::verify_download(&good, None).unwrap();
 }
 
+/// MD5 is the checksum the catalog publishes per download. A mismatch is
+/// the same refusal as a bad SHA-256. No checksum at all still leaves the
+/// file, and says so.
+#[test]
+fn an_md5_mismatch_is_rejected_and_a_missing_checksum_is_unverified() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("archive");
+    // RFC 1321: MD5("abc").
+    let published = "900150983cd24fb0d6963f7d28e17f72";
+    fs::write(&file, b"abc").unwrap();
+    assert_eq!(
+        registry::check_download(&file, None, Some(published)).unwrap(),
+        registry::DownloadTrust::Verified
+    );
+    assert!(file.is_file(), "a matching checksum keeps the download");
+    fs::write(&file, b"abc").unwrap();
+    let wrong = registry::check_download(&file, None, Some("900150983cd24fb0d6963f7d28e17f73"));
+    assert!(
+        wrong.is_err(),
+        "one changed nibble is not the published checksum"
+    );
+    assert!(!file.exists(), "a refused download is deleted");
+
+    fs::write(&file, b"abc").unwrap();
+    assert_eq!(
+        registry::check_download(&file, None, Some(&published.to_ascii_uppercase())).unwrap(),
+        registry::DownloadTrust::Verified,
+        "the catalog's hex is compared regardless of case"
+    );
+}
+
+#[test]
+fn a_download_with_no_checksum_is_unverified() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("archive");
+    fs::write(&file, b"no checksum was published").unwrap();
+    assert_eq!(
+        registry::check_download(&file, None, None).unwrap(),
+        registry::DownloadTrust::Unverified
+    );
+    assert!(file.is_file(), "nothing to check still allows the install");
+    assert_eq!(
+        registry::check_download(&file, Some(""), Some("  ")).unwrap(),
+        registry::DownloadTrust::Unverified,
+        "a blank checksum is not a checksum"
+    );
+}
+
 /// The SHA-256 of `bytes` as lowercase hex.
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
