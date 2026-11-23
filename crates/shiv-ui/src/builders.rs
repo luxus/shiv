@@ -251,16 +251,18 @@ fn hp_options(
     index: i32,
     presets: &[HpPreset],
 ) -> Result<BTreeMap<String, Value>, String> {
-    let hash = link.rsplit_once('#').map_or(link, |(_, hash)| hash).trim();
+    let hash = match link.rsplit_once('#') {
+        Some((_, hash)) => hash,
+        None if link.contains("://") => "",
+        None => link,
+    }
+    .trim();
     if !hash.is_empty() {
         return Ok(generated::options_from_hash(hash));
     }
     let index = usize::try_from(index).unwrap_or(0);
     if let Some(preset) = presets.get(index) {
         return Ok(preset.options.clone());
-    }
-    if index == 0 {
-        return Ok(BTreeMap::new());
     }
     Err("The presets are still loading. Try again in a moment.".into())
 }

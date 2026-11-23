@@ -24,6 +24,13 @@ var HpBars = (function () {
   // narrower than VALVE Pulp at that font size (fit; the preview takes the straight line between), its middle 0.3 left
   // of x 80 at every size.
   var CRIT = { x: 79.7, top: 80, mid: 11.7, size: 12, fit: [[8, 0.94], [12, 0.97], [16, 0.962], [20, 0.97]] };
+  // The Assassinate text (#AssassinateIndicator) is the game's too, the same kind of panel: centered with margins 0
+  // and 30, its label (8 px, the same font, padding 6px 8px) with margins 2 and 12, so its middle is where the
+  // critical text's is, and its capitals' middle 6 + 0.475 of the font size under the panel's top at 86 (the critical
+  // text's measured 11.7 at 12 px, less its padding). Worked out from the stylesheet, not measured in game. w: the
+  // word's width per font size, taken from the critical text's letters (8 of them are 4.8 wide); the font isn't on
+  // the site, so the preview's word is a stand-in drawn that wide.
+  var ASSA = { x: 79.7, top: 86, mid: 9.8, size: 8, w: 6.5, cap: 0.675 };
   function measured(table, v) {
     if (v <= table[0][0]) return table[0][1];
     for (var i = 1; i < table.length; i++)
@@ -39,9 +46,13 @@ var HpBars = (function () {
     ticks: "off", tickW: 1, tickColor: "#000000", stamina: "dots", pip: 5.04, icon: true,
     // the critical text
     crit: true, critSize: 12, critColor: "#FFFFFF", critGlow: "#FF410D",
-    // the bar moved (everything placed by it goes along), and the number, ultimate icon, stamina and critical text
-    // moved from there (x right, y down)
-    barX: 0, barY: 0, numX: 0, numY: 0, iconX: 0, iconY: 0, staX: 0, staY: 0, critX: 0, critY: 0
+    // the Assassinate text: jcStani's bars hide it, so it is off; the game's size, color and glow (offBlack)
+    assa: false, assaSize: 8, assaColor: "#FFFFFF", assaGlow: "#10130D",
+    // the flame behind the bar of a hero on a kill streak (#KillStreakIndicator): the game's, left as it is
+    fire: true,
+    // the bar moved (everything placed by it goes along), and the number, ultimate icon, stamina, critical text and
+    // Assassinate text moved from there (x right, y down)
+    barX: 0, barY: 0, numX: 0, numY: 0, iconX: 0, iconY: 0, staX: 0, staY: 0, critX: 0, critY: 0, assaX: 0, assaY: 0
   };
   // fill looks: brightness down the bar as [position, brightness], multiplied with the bar color
   var FILLS = {
@@ -50,6 +61,15 @@ var HpBars = (function () {
     gloss: [[0, 0.82], [0.42, 1], [0.5, 0.72], [1, 0.56]]
   };
   var PRESETS = [
+    // the first one is the style the page opens on: the bars in the site's pak, jcStani's own in game (the bars of
+    // 2026-11-20, and since 2026-11-23 with the Assassinate text over the bar's right end and without the kill streak
+    // flame). Its rules are that pak's, character for character, so downloading it gives the site's stylesheet.
+    // When he changes his bars, this entry and the pak change together. Flat is his first style: what every option
+    // is counted from (DEF), and what the base stylesheet holds
+    { id: "jcstani", title: "jcStani's", o: { w: 65, h: 6.5, outline: 2, bg: "#6B6B6B", ally: "#0084FF", icon: false,
+        numSize: 15, font: "numericBlock", numX: -8.95, numY: 3.5, barX: -5.5, barY: 1.5, ticks: "large", tickW: 2,
+        critSize: 9, critX: 40.5, critY: 14.5, assa: true, assaSize: 7, assaX: 55.5, assaY: -11.5, fire: false,
+        stamina: "squares", pip: 4.7, staX: 1 } },
     { id: "flat", title: "Flat", o: {} },
     { id: "ticks", title: "Ticks", o: { ticks: "all" } },
     { id: "slim", title: "Slim", o: { h: 3.78, numSize: 13.86, pip: 3.78 } },
@@ -201,7 +221,10 @@ var HpBars = (function () {
       // the critical text in the window, with every move: its middle, its size against the game's and how wide the
       // game draws the word (fit, per font size)
       crit: { x: CRIT.x + dx + s.critX, mid: CRIT.top + CRIT.mid + dy + s.critY,
-        k: s.critSize / CRIT.size, fit: measured(CRIT.fit, s.critSize) }
+        k: s.critSize / CRIT.size, fit: measured(CRIT.fit, s.critSize) },
+      // the Assassinate text the same way (its width is the critical text's fit at that size: the same font)
+      assa: { x: ASSA.x + dx + s.assaX, mid: ASSA.top + ASSA.mid + dy + s.assaY,
+        k: s.assaSize / ASSA.size, fit: measured(CRIT.fit, s.assaSize) }
     };
   }
 
@@ -286,6 +309,23 @@ var HpBars = (function () {
       if (!is("critGlow")) lab += "text-shadow: 0px 0px 5.0 " + s.critGlow + ";";
       if (lab) rule(".player #CriticalIndicator Label", lab);
     }
+    // the Assassinate text: jcStani's rules collapse the panel, so it comes back under the class the game shows it
+    // on. The panel has the wobble too (TagGroove1 on its transform, like its label), so it can't take a translate:
+    // it moves by its margins. It is centered, so a margin taken from one side and given to the other moves it that
+    // far, and the top margin moves it down. A new size scales the whole label like the critical text's, and the
+    // margins keep its middle where it was
+    if (s.assa) {
+      var ak = L.assa.k, ax = Math.round((L.dx + s.assaX + 5 * (ak - 1)) * 100) / 100, ay = Math.round((L.dy + s.assaY - ASSA.mid * (ak - 1)) * 100) / 100;
+      rule(side("health_assassinate", "#AssassinateIndicator"), "visibility: visible;"
+        + (ax || ay ? "margin-top: " + px(ASSA.top + ay) + ";margin-left: " + px(ax) + ";margin-right: " + px(30 - ax) + ";" : ""));
+      var al = "";
+      if (ak !== 1) al += "font-size: " + px(s.assaSize) + ";padding: " + px(6 * ak) + " " + px(8 * ak) + ";margin-left: " + px(2 * ak) + ";margin-right: " + px(12 * ak) + ";max-width: " + px(76 * ak) + ";";
+      if (!is("assaColor")) al += "color: " + s.assaColor + ";";
+      if (!is("assaGlow")) al += "text-shadow: 0px 0px 4.0 " + s.assaGlow + ";";
+      if (al) rule(".player #AssassinateIndicator Label", al);
+    }
+    // the kill streak flame, taken away under the class the game shows it on
+    if (!s.fire) rule(side("has_killstreak", "#KillStreakIndicator"), "visibility: collapse;");
     if (s.stamina === "off") rule(".player #StaminaContainer", "visibility: collapse;");
     else {
       var sx = L.dx + s.staX, sy = L.dy + s.staY;
@@ -310,7 +350,7 @@ var HpBars = (function () {
   }
 
   return {
-    BASE_PAK: BASE_PAK, SHEET: SHEET, DEF: DEF, PRESETS: PRESETS, FILLS: FILLS, TOP: TOP, BAR_Y: BAR_Y, BAR_X: BAR_X, CRIT: CRIT,
+    BASE_PAK: BASE_PAK, SHEET: SHEET, DEF: DEF, PRESETS: PRESETS, FILLS: FILLS, TOP: TOP, BAR_Y: BAR_Y, BAR_X: BAR_X, CRIT: CRIT, ASSA: ASSA,
     crc32: crc32, readVpk: readVpk, buildVpk: buildVpk, cssText: cssText, cssC: cssC,
     options: options, layout: layout, rules: rules, buildPak: buildPak
   };
