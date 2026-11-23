@@ -1267,6 +1267,35 @@ pub(crate) fn catalog_submission_map() -> HashMap<String, String> {
     out
 }
 
+/// Open the catalog page of the `GameBanana` submission `(remote_id, audio)`
+/// — what a pasted mod page link names — from screen `from`. False when the
+/// catalog carries no such mod (not loaded, or removed).
+pub(crate) fn show_detail_for_submission(remote_id: &str, audio: bool, from: i32) -> bool {
+    let mut shown = false;
+    with_browse(|b| {
+        let id = b
+            .catalog
+            .borrow()
+            .iter()
+            .find(|m| m.remote_id == remote_id && m.is_audio == audio)
+            .map(|m| m.id.clone());
+        // The catalog borrow ends with the statement above; opening the
+        // page takes it again.
+        if let Some(id) = id {
+            shown = b.show_detail_from(&id, from);
+        }
+    });
+    shown
+}
+
+/// Whether a catalog has loaded: it is empty until then, so the install
+/// dialog can say "still loading" instead of "not in the catalog".
+pub(crate) fn catalog_loaded() -> bool {
+    let mut loaded = false;
+    with_browse(|b| loaded = !b.catalog.borrow().is_empty());
+    loaded
+}
+
 /// Start an update of an installed mod (the Installed screen's Update button).
 pub(crate) fn update_mod(id: &str) {
     with_browse(|b| b.install(id));

@@ -33,6 +33,7 @@ mod dnd;
 mod downloads;
 mod installed;
 mod launch;
+mod link_target;
 mod log;
 mod performance;
 mod profiles;
@@ -4326,6 +4327,20 @@ mod tests {
         assert!(!state.get_detail_open());
         assert_eq!(app.get_screen(), 3);
         assert_eq!(state.get_return_screen(), -1);
+        app.set_screen(0);
+
+        // A pasted mod page link resolves through the catalog: the
+        // submission's page opens, and Back returns to the caller's screen.
+        assert!(browse::catalog_loaded());
+        assert!(!browse::show_detail_for_submission("999", false, 1));
+        assert!(
+            !browse::show_detail_for_submission("5", true, 1),
+            "a mod's id must not match a sound's page"
+        );
+        assert!(browse::show_detail_for_submission("5", false, 1));
+        assert_eq!(state.get_detail().name.as_str(), "Gallery Mod");
+        click(&app, "Back");
+        assert_eq!(app.get_screen(), 1);
         app.set_screen(0);
 
         // The GameBanana tabs load on first use and reset when the page closes.

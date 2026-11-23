@@ -7,6 +7,7 @@
 )]
 
 mod client;
+mod deadlocker;
 mod dto;
 mod error;
 mod gamebanana;
@@ -15,6 +16,7 @@ mod native;
 mod query;
 
 pub use client::Client;
+pub use deadlocker::DeadlockerClient;
 pub use dto::{DonationLink, DownloadFile, ModDto, ModMetadata, is_donation_url};
 pub use error::ApiError;
 pub use gamebanana::{ChangelogEntry, Comment, Comments, GameBananaClient, ModFile, Page};

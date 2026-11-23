@@ -89,6 +89,10 @@ const MODULES_OUTSIDE_THE_GUARDS: &[(&str, &str)] = &[
         "pure view-model text; it performs no I/O of any kind",
     ),
     (
+        "link_target",
+        "pure pasted-link classification; it performs no I/O of any kind",
+    ),
+    (
         "log",
         "the cfg(windows) diagnostics appender: a Mutex-guarded bounded \
          write, a deliberate exception",

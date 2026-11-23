@@ -74,7 +74,10 @@ To verify any number: its commands are recorded beside it in
 - **Install** mods from zip, rar, 7z and multi-VPK archives, with a file picker when a mod offers
   several downloads, and a **Downloads** screen with progress, speed, cancel and retry.
 - **Install local files and links** the same way: a `.vpk` or archive from disk, a dropped file —
-  several at once — or a pasted download link, managed like any other mod.
+  several at once — or a pasted download link, managed like any other mod. A pasted mod page from
+  gamebanana.com or deadlocker.net, or a Deadlock Mod Manager or Grimoire 1-click link, opens the
+  mod's catalog page; when the catalog has no such mod, a 1-click link downloads the GameBanana
+  archive it names.
 - **Move your library** between mod managers with the Deadlock Mod Interchange format: export an
   interchange bundle from Installed, and import one back — duplicate mods are recognised, files
   already in the game folder are adopted in place, and nothing of the source bundle is touched.

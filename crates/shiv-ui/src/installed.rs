@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use shiv_api::{ApiError, Client, NativeListing};
+use shiv_api::{ApiError, Client, DeadlockerClient, NativeListing};
 use shiv_core::addons::{self, AddonsError};
 use shiv_core::complock;
 use shiv_core::drift::{self, Drift, Published};
@@ -30,6 +30,7 @@ use shiv_repair::OverlayState;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::browse::{game_error_text, install_error_text, to_slint};
+use crate::link_target::{self, LinkTarget};
 use crate::thumbs;
 use crate::{
     App, DropState, InstalledRow, InstalledState, LoadState, LocalInstallState, ModEditState,
@@ -69,8 +70,10 @@ const GAME_RUNNING_TEXT: &str =
 const SUFFIX: &str = ".disabled";
 /// Shown when the file dialog returns nothing: cancelled, or no file dialog
 /// service (xdg-desktop-portal) is reachable.
-const NO_FILE_PICKED: &str =
-    "No file picked. You can also type or paste a path or a link, or drop the file on the window.";
+const NO_FILE_PICKED: &str = "No file picked. You can also type or paste a path, a link, or a mod page link, or drop the file on the window.";
+/// deadlocker.net named something Shiv cannot resolve to a mod.
+const DEADLOCKER_NO_MOD_PAGE: &str =
+    "deadlocker.net's answer for that mod named no GameBanana mod page.";
 
 /// What the banner says when dropped files wait behind a dialog.
 pub(crate) fn queued_banner(n: usize) -> String {
@@ -1130,13 +1133,6 @@ pub(crate) fn typed_pak(text: &str) -> Option<u32> {
     t.parse().ok()
 }
 
-/// Whether the text in the install dialog is a download link rather than a
-/// local path.
-pub(crate) fn is_link(text: &str) -> bool {
-    let t = text.trim();
-    t.starts_with("http://") || t.starts_with("https://")
-}
-
 /// The progress step for a downloaded chunk: percent when the size is
 /// known and positive — a zero `Content-Length` with a body must not
 /// divide by zero — otherwise one per MB. A server that understates the
@@ -1954,9 +1950,17 @@ impl Installed {
         };
         let s = app.global::<LocalInstallState>();
         let text = s.get_path().to_string();
-        if is_link(&text) {
-            self.install_link(&text, &s.get_name());
-            return;
+        // A link routes by what it names; everything else is a local path.
+        match link_target::classify(&text) {
+            Ok(None) => {}
+            Ok(Some(target)) => {
+                self.install_target(target, &s.get_name());
+                return;
+            }
+            Err(refusal) => {
+                s.set_error_text(refusal.into());
+                return;
+            }
         }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let path = typed_path(&s.get_path(), home.as_deref());
@@ -2058,6 +2062,99 @@ impl Installed {
         s.set_open(false);
         crate::downloads::started(&id, &name);
         self.start_link_job(&id, n, &url, &name, &file, cancel);
+    }
+
+    /// Route a classified link from the install dialog to its flow.
+    fn install_target(&self, target: LinkTarget, name: &str) {
+        match target {
+            LinkTarget::Download { url } => self.install_link(&url, name),
+            LinkTarget::GameBananaPage { audio, remote_id } => {
+                if let Err(refusal) = self.try_open_submission(&remote_id, audio) {
+                    self.dialog_refusal(refusal);
+                }
+            }
+            LinkTarget::DeadlockerPage { slug } => self.resolve_deadlocker(&slug),
+            LinkTarget::ManagerInstall {
+                archive_url,
+                audio,
+                mod_id,
+            } => {
+                // A 1-click link knows the mod it installs: its page when the
+                // catalog carries it, the named archive otherwise.
+                let opened = mod_id
+                    .as_deref()
+                    .is_some_and(|id| self.try_open_submission(id, audio).is_ok());
+                if !opened {
+                    self.install_link(&archive_url, name);
+                }
+            }
+        }
+    }
+
+    /// Open the catalog page of the GameBanana submission `remote_id` from
+    /// the Installed screen. The refusal names why nothing opened.
+    fn try_open_submission(&self, remote_id: &str, audio: bool) -> Result<(), String> {
+        if crate::browse::show_detail_for_submission(remote_id, audio, 1) {
+            self.with_app(|app| app.global::<LocalInstallState>().set_open(false));
+            return Ok(());
+        }
+        let kind = if audio { "sound" } else { "mod" };
+        if !crate::browse::catalog_loaded() {
+            return Err("The catalog has not finished loading; try again in a moment.".into());
+        }
+        Err(format!(
+            "Shiv's catalog does not carry GameBanana {kind} {remote_id}."
+        ))
+    }
+
+    /// Show `refusal` in the install dialog, which stays open.
+    fn dialog_refusal(&self, refusal: String) {
+        self.with_app(|app| {
+            app.global::<LocalInstallState>()
+                .set_error_text(refusal.into());
+        });
+    }
+
+    /// Ask deadlocker.net which GameBanana submission its page names. The
+    /// dialog stays busy until the answer arrives; the request runs off the
+    /// event loop.
+    fn resolve_deadlocker(&self, slug: &str) {
+        self.with_app(|app| {
+            let s = app.global::<LocalInstallState>();
+            s.set_busy(true);
+            s.set_error_text("".into());
+        });
+        let slug = slug.to_owned();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-resolve-link",
+            move || DeadlockerClient::default().mod_link(&slug),
+            move |result| {
+                let answer = result.and_then(|fetched| fetched.map_err(|e| e.to_string()));
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.deadlocker_resolved(answer));
+                });
+            },
+        );
+        if !started {
+            self.deadlocker_resolved(Err("Could not start a background thread.".into()));
+        }
+    }
+
+    /// deadlocker.net answered: open the GameBanana page it names.
+    fn deadlocker_resolved(&self, answer: Result<String, String>) {
+        self.with_app(|app| app.global::<LocalInstallState>().set_busy(false));
+        let submission = answer.and_then(|link| {
+            link_target::gamebanana_submission(&link).map_err(|_| DEADLOCKER_NO_MOD_PAGE.to_owned())
+        });
+        match submission {
+            Ok((audio, remote_id)) => {
+                if let Err(refusal) = self.try_open_submission(&remote_id, audio) {
+                    self.dialog_refusal(refusal);
+                }
+            }
+            Err(text) => self.dialog_refusal(text),
+        }
     }
 
     /// Start (or restart, after a retry) the worker behind a link row.
@@ -2920,15 +3017,6 @@ mod tests {
         assert_eq!(progress_step(1, Some(0)), 0, "no divide by zero");
         assert_eq!(progress_step(2_500_000, None), 2, "one step per MB");
         assert_eq!(progress_step(0, None), 0);
-    }
-
-    #[test]
-    fn links_are_told_apart_from_paths() {
-        assert!(is_link("https://host/Haze Skin.vpk"));
-        assert!(is_link(" http://host/mod.zip "));
-        assert!(!is_link("/home/kai/Haze Skin.vpk"));
-        assert!(!is_link("file:///tmp/a.vpk"));
-        assert!(!is_link(""));
     }
 
     #[test]
