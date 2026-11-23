@@ -2,7 +2,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Button, TextButton, Switch, ProgressBar, SearchField } from "widgets.slint";
+import { Button, TextButton, Switch, ProgressBar, SearchField, Tooltip } from "widgets.slint";
 import { LoadState, CenteredMessage } from "browse.slint";
 
 export struct InstalledRow {
@@ -11,6 +11,13 @@ export struct InstalledRow {
     detail: string,
     // Subtle label for VPKs Shiv did not install; empty for managed mods.
     tag: string,
+    // The catalog's author; "" when unknown.
+    author: string,
+    // The one line under the name: the description's first line, else the
+    // tag, else the detail.
+    blurb: string,
+    // The card's tooltip: the full description and the file details.
+    about: string,
     thumb: image,
     has-thumb: bool,
     enabled: bool,
@@ -32,6 +39,9 @@ export struct InstalledRow {
     // How the files compare with the source's release ("" when they match
     // or nothing is known): modified, a newer release, retired upstream.
     drift: string,
+    // The drift as a short pill ("Update available"); "" for none. `drift`
+    // is its tooltip.
+    pill: string,
     // Reset to release can reinstall the published files.
     can-reset: bool,
     // A reset left the previous files to put back.
@@ -85,6 +95,8 @@ export global InstalledState {
 }
 
 // A small triangle button for moving a mod up or down.
+
+// A small triangle button for moving a mod up or down.
 component ArrowButton inherits Rectangle {
     in property <bool> up;
     in property <bool> disabled;
@@ -99,15 +111,15 @@ component ArrowButton inherits Rectangle {
         }
     }
 
-    width: 32px;
-    height: 24px;
+    width: 28px;
+    height: 16px;
     border-radius: Theme.radius;
     opacity: root.disabled ? 0.3 : 1.0;
     background: ta.has-hover && !root.disabled ? Theme.hover : transparent;
 
     Path {
-        width: 12px;
-        height: 7px;
+        width: 10px;
+        height: 6px;
         viewbox-width: 12;
         viewbox-height: 7;
         commands: root.up ? "M 0 7 L 6 0 L 12 7 Z" : "M 0 0 L 12 0 L 6 7 Z";
@@ -121,233 +133,315 @@ component ArrowButton inherits Rectangle {
     }
 }
 
+// Small caps status pill next to a mod's name; its full text on hover.
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <string> tip;
+
+    height: 18px;
+    width: label.preferred-width + 2 * 7px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: Theme.accent.with-alpha(0.6);
+    background: Theme.accent.with-alpha(0.12);
+
+    label := Text {
+        text: root.text.to-uppercase();
+        color: Theme.accent;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        changed has-hover => {
+            if (self.has-hover) {
+                Tooltip.show(root.tip, root.absolute-position.x, root.absolute-position.y, root.height);
+            } else {
+                Tooltip.hide(root.tip);
+            }
+        }
+    }
+}
+
+// One installed mod as its own card: load order, switch, thumbnail when
+// there is one, name with author and status, one line about it, actions.
+// Secondary actions show while the card is hovered.
 component InstalledRowView inherits Rectangle {
     in property <InstalledRow> item;
     in property <bool> locked;
     // Files are being replaced: no toggling or uninstalling meanwhile.
     property <bool> frozen: root.locked || root.item.transferring;
+    property <bool> confirming: InstalledState.confirm-id == root.item.id;
+    property <bool> active: hover-area.has-hover || place.has-focus || root.confirming;
 
-    height: 90px + 2 * Theme.s1 + 1px;
-    background: hover-area.has-hover ? Theme.raised : transparent;
+    height: 72px + Theme.s1;
 
-    hover-area := TouchArea {
-        mouse-cursor: root.item.managed && !root.item.local ? pointer : default;
-        clicked => {
-            if (root.item.managed && !root.item.local) {
-                InstalledState.open-detail(root.item.id);
+    card := Rectangle {
+        y: 0px;
+        // Room on the right for the list's scroll bar.
+        width: parent.width - 20px;
+        height: 72px;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: root.active ? Theme.border-strong : Theme.border;
+        background: Theme.raised;
+
+        // The content sits inside the hover area, so pointing at a control
+        // keeps the card hovered and its actions visible.
+        hover-area := TouchArea {
+            mouse-cursor: root.item.managed && !root.item.local ? pointer : default;
+            clicked => {
+                if (root.item.managed && !root.item.local) {
+                    InstalledState.open-detail(root.item.id);
+                }
             }
-        }
-    }
 
-    HorizontalLayout {
-        padding-top: Theme.s1;
-        padding-bottom: Theme.s1 + 1px;
-        padding-left: Theme.s1;
-        padding-right: Theme.s2;
-        spacing: Theme.s2;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: Theme.s2;
+                spacing: 12px;
 
-        if root.item.position > 0: VerticalLayout {
-            width: 36px;
-            alignment: center;
-            spacing: 2px;
-            ArrowButton {
-                up: true;
-                label: "Load " + root.item.name + " earlier";
-                disabled: root.frozen || !root.item.can-up;
-                clicked => { InstalledState.move(root.item.id, 0); }
-            }
-            // Type a place and press Enter to jump there.
-            Rectangle {
-                height: 24px;
-                border-radius: Theme.radius;
-                border-width: 1px;
-                border-color: place.has-focus ? Theme.accent : Theme.border;
-                place := TextInput {
-                    text: "" + root.item.position;
-                    input-type: number;
-                    font-size: Theme.text-sm;
-                    color: Theme.text;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    enabled: !root.frozen;
-                    accessible-label: "Load order place of " + root.item.name;
-                    accepted => {
-                        InstalledState.move-to(root.item.id, Math.round(self.text.to-float()));
-                        self.clear-focus();
+                // Load order: the place, with arrows while hovered. Type a
+                // place and press Enter to jump there.
+                VerticalLayout {
+                    width: 28px;
+                    alignment: center;
+                    if root.item.position > 0: ArrowButton {
+                        up: true;
+                        opacity: root.active ? (self.disabled ? 0.3 : 1.0) : 0.0;
+                        label: "Load " + root.item.name + " earlier";
+                        disabled: root.frozen || !root.item.can-up;
+                        clicked => { InstalledState.move(root.item.id, 0); }
                     }
-                    // A moved mod gets a new place; typing breaks the text
-                    // binding, so set it again.
-                    property <int> shown: root.item.position;
-                    changed shown => { self.text = "" + self.shown; }
-                    changed has-focus => {
-                        if (!self.has-focus) {
-                            self.text = "" + root.item.position;
+                    Rectangle {
+                        height: 22px;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: place.has-focus ? Theme.accent : (place-hover.has-hover ? Theme.border-strong : transparent);
+                        visible: root.item.position > 0;
+                        place-hover := TouchArea {
+                            mouse-cursor: text;
+                            place := TextInput {
+                                text: "" + root.item.position;
+                                input-type: number;
+                                font-size: Theme.text-sm;
+                                font-weight: 600;
+                                color: Theme.text-muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                enabled: !root.frozen;
+                                accessible-label: "Load order place of " + root.item.name;
+                                accepted => {
+                                    InstalledState.move-to(root.item.id, Math.round(self.text.to-float()));
+                                    self.clear-focus();
+                                }
+                                // A moved mod gets a new place; typing breaks the text
+                                // binding, so set it again.
+                                property <int> shown: root.item.position;
+                                changed shown => { self.text = "" + self.shown; }
+                                changed has-focus => {
+                                    if (!self.has-focus) {
+                                        self.text = "" + root.item.position;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.item.position > 0: ArrowButton {
+                        up: false;
+                        opacity: root.active ? (self.disabled ? 0.3 : 1.0) : 0.0;
+                        label: "Load " + root.item.name + " later";
+                        disabled: root.frozen || !root.item.can-down;
+                        clicked => { InstalledState.move(root.item.id, 1); }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    Switch {
+                        label: "Enable " + root.item.name;
+                        checked: root.item.enabled;
+                        disabled: root.frozen;
+                        toggled => { InstalledState.toggle(root.item.id); }
+                    }
+                }
+
+                if root.item.has-thumb: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 96px;
+                        height: 54px;
+                        border-radius: Theme.radius;
+                        clip: true;
+                        Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: root.item.thumb;
+                            image-fit: cover;
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: Theme.s1;
+                        alignment: start;
+                        Text {
+                            text: root.item.name;
+                            color: root.item.enabled ? Theme.text : Theme.text-muted;
+                            font-size: Theme.text-lg;
+                            font-weight: 600;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        if root.item.author != "": Text {
+                            text: "by " + root.item.author;
+                            color: Theme.text-muted;
+                            font-size: Theme.text-sm;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        if root.item.pill != "": VerticalLayout {
+                            alignment: center;
+                            Pill {
+                                text: root.item.pill;
+                                tip: root.item.drift;
+                            }
+                        }
+                    }
+                    blurb := Text {
+                        text: root.item.blurb;
+                        color: Theme.text-muted;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                        TouchArea {
+                            mouse-cursor: hover-area.mouse-cursor;
+                            clicked => {
+                                if (root.item.managed && !root.item.local) {
+                                    InstalledState.open-detail(root.item.id);
+                                }
+                            }
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    Tooltip.show(root.item.about, blurb.absolute-position.x, blurb.absolute-position.y, blurb.height);
+                                } else {
+                                    Tooltip.hide(root.item.about);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Actions: an update, a running download and the drift fix
+                // always; the rest fade in while hovered. Uninstall asks first.
+                if !root.confirming: HorizontalLayout {
+                    alignment: end;
+                    spacing: Theme.s1;
+                    if root.item.transferring: VerticalLayout {
+                        width: 160px;
+                        alignment: center;
+                        spacing: 2px;
+                        ProgressBar { progress: root.item.progress; }
+                        Text {
+                            text: root.item.transfer-text;
+                            color: Theme.text-muted;
+                            font-size: Theme.text-sm;
+                            overflow: elide;
+                        }
+                    }
+                    if root.item.can-restore: VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: "Restore previous";
+                            // Shown while the card is hovered; always in place, so the
+                            // card does not reflow under the pointer.
+                            opacity: root.active ? (self.disabled ? 0.4 : 1.0) : 0.0;
+                            disabled: root.frozen;
+                            clicked => { InstalledState.restore(root.item.id); }
+                        }
+                    }
+                    if root.item.local || !root.item.managed: VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: "Update from file";
+                            opacity: root.active ? (self.disabled ? 0.4 : 1.0) : 0.0;
+                            disabled: root.frozen;
+                            clicked => { InstalledState.update-file(root.item.id); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: root.item.managed ? "Edit" : "Adopt";
+                            opacity: root.active ? (self.disabled ? 0.4 : 1.0) : 0.0;
+                            disabled: root.frozen;
+                            clicked => { InstalledState.edit(root.item.id); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: "Uninstall";
+                            opacity: root.active ? (self.disabled ? 0.4 : 1.0) : 0.0;
+                            disabled: root.frozen;
+                            clicked => { InstalledState.confirm-id = root.item.id; }
+                        }
+                    }
+                    if root.item.can-reset: VerticalLayout {
+                        alignment: center;
+                        Button {
+                            text: "Reset to release";
+                            disabled: root.frozen;
+                            clicked => { InstalledState.reset(root.item.id); }
+                        }
+                    }
+                    if root.item.update && !root.item.transferring: VerticalLayout {
+                        alignment: center;
+                        Button {
+                            text: "Update";
+                            primary: true;
+                            disabled: root.frozen;
+                            clicked => { InstalledState.update(root.item.id); }
+                        }
+                    }
+                }
+
+                if root.confirming: HorizontalLayout {
+                    alignment: end;
+                    spacing: Theme.s1;
+                    Text {
+                        text: "Delete this mod's files?";
+                        color: Theme.text;
+                        font-size: Theme.text-md;
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: "Keep";
+                            clicked => { InstalledState.confirm-id = ""; }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Button {
+                            text: "Delete";
+                            danger: true;
+                            disabled: root.frozen;
+                            clicked => {
+                                InstalledState.uninstall(root.item.id);
+                            }
                         }
                     }
                 }
             }
-            ArrowButton {
-                up: false;
-                label: "Load " + root.item.name + " later";
-                disabled: root.frozen || !root.item.can-down;
-                clicked => { InstalledState.move(root.item.id, 1); }
-            }
         }
-        if root.item.position == 0: Rectangle { width: 44px; }
-
-        Rectangle {
-            width: 160px;
-            height: 90px;
-            border-radius: Theme.radius;
-            clip: true;
-            background: Theme.hover;
-            Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.item.thumb;
-                image-fit: cover;
-                visible: root.item.has-thumb;
-            }
-        }
-
-        VerticalLayout {
-            alignment: center;
-            spacing: Theme.s1;
-            horizontal-stretch: 1;
-            Text {
-                text: root.item.name;
-                color: root.item.enabled ? Theme.text : Theme.text-muted;
-                font-size: Theme.text-lg;
-                font-weight: 600;
-                overflow: elide;
-            }
-            if root.item.detail != "": Text {
-                text: root.item.detail;
-                color: Theme.text-muted;
-                font-size: Theme.text-md;
-                overflow: elide;
-            }
-            property <bool> drifted: root.item.drift != "" || root.item.can-restore;
-            if root.item.tag != "" && !drifted: Text {
-                text: root.item.tag;
-                color: Theme.text-faint;
-                font-size: Theme.text-sm;
-                overflow: elide;
-            }
-            if drifted: HorizontalLayout {
-                spacing: Theme.s1;
-                alignment: start;
-                if root.item.drift != "": Text {
-                    text: root.item.drift;
-                    color: root.item.can-reset ? Theme.accent : Theme.text-muted;
-                    font-size: Theme.text-sm;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-                if root.item.can-reset: TextButton {
-                    text: "Reset to release";
-                    disabled: root.frozen;
-                    clicked => { InstalledState.reset(root.item.id); }
-                }
-                if root.item.can-restore: TextButton {
-                    text: "Restore previous";
-                    disabled: root.frozen;
-                    clicked => { InstalledState.restore(root.item.id); }
-                }
-            }
-        }
-
-        VerticalLayout {
-            width: 300px;
-            alignment: center;
-            spacing: Theme.s1;
-
-            if InstalledState.confirm-id != root.item.id: HorizontalLayout {
-                spacing: Theme.s1;
-                Text {
-                    text: root.item.enabled ? "Enabled" : "Disabled";
-                    color: Theme.text-muted;
-                    font-size: Theme.text-md;
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                    horizontal-stretch: 1;
-                }
-                Switch {
-                    label: "Enable " + root.item.name;
-                    checked: root.item.enabled;
-                    disabled: root.frozen;
-                    toggled => { InstalledState.toggle(root.item.id); }
-                }
-            }
-            if InstalledState.confirm-id != root.item.id: HorizontalLayout {
-                alignment: end;
-                spacing: Theme.s1;
-                if root.item.transferring: VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
-                    ProgressBar { progress: root.item.progress; }
-                    Text {
-                        text: root.item.transfer-text;
-                        color: Theme.text-muted;
-                        font-size: Theme.text-sm;
-                        overflow: elide;
-                    }
-                }
-                if root.item.update && !root.item.transferring: Button {
-                    text: "Update";
-                    primary: true;
-                    disabled: root.frozen;
-                    clicked => { InstalledState.update(root.item.id); }
-                }
-                if root.item.local || !root.item.managed: TextButton {
-                    text: "Update from file";
-                    disabled: root.frozen;
-                    clicked => { InstalledState.update-file(root.item.id); }
-                }
-                TextButton {
-                    text: root.item.managed ? "Edit" : "Adopt";
-                    disabled: root.frozen;
-                    clicked => { InstalledState.edit(root.item.id); }
-                }
-                TextButton {
-                    text: "Uninstall";
-                    disabled: root.frozen;
-                    clicked => { InstalledState.confirm-id = root.item.id; }
-                }
-            }
-
-            if InstalledState.confirm-id == root.item.id: Text {
-                text: "Delete this mod's files?";
-                color: Theme.text;
-                font-size: Theme.text-md;
-                horizontal-alignment: right;
-            }
-            if InstalledState.confirm-id == root.item.id: HorizontalLayout {
-                spacing: Theme.s1;
-                alignment: end;
-                TextButton {
-                    text: "Keep";
-                    clicked => { InstalledState.confirm-id = ""; }
-                }
-                Button {
-                    text: "Delete";
-                    danger: true;
-                    disabled: root.frozen;
-                    clicked => {
-                        InstalledState.uninstall(root.item.id);
-                    }
-                }
-            }
-        }
-    }
-
-    Rectangle {
-        x: Theme.s1;
-        y: parent.height - 1px;
-        width: parent.width - Theme.s1;
-        height: 1px;
-        background: Theme.border;
     }
 }
 

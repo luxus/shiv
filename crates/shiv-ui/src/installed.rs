@@ -260,6 +260,77 @@ pub(crate) fn drift_text(d: Drift) -> &'static str {
     }
 }
 
+/// The pill a row shows for its drift; the full text is its tooltip.
+pub(crate) fn drift_pill(d: Drift) -> &'static str {
+    match d {
+        Drift::Modified => "Modified",
+        Drift::UpdateAvailable => "Update available",
+        Drift::Retired => "Retired",
+        Drift::Pristine | Drift::Untracked => "",
+    }
+}
+
+/// Longest description a card's tooltip shows, in characters.
+const ABOUT_CHARS: usize = 600;
+
+/// What a card says about a mod: the author, one line under the name, and
+/// the tooltip with the full description and the file details.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct CardText {
+    pub author: String,
+    pub blurb: String,
+    pub about: String,
+}
+
+/// The card text from the catalog's author and description, the row's tag
+/// (notes, "Installed from a file", not installed by Shiv) and its detail
+/// (version and paks). The line under the name is the description's first
+/// line, else the tag, else the detail; the tooltip holds the rest.
+pub(crate) fn card_text(
+    author: Option<&str>,
+    description: Option<&str>,
+    tag: &str,
+    detail: &str,
+) -> CardText {
+    let plain = description
+        .map(crate::describe::to_plain_text)
+        .unwrap_or_default();
+    let plain = plain.trim();
+    let first = plain
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let blurb = [first, tag, detail]
+        .into_iter()
+        .find(|t| !t.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let mut about = String::new();
+    if !plain.is_empty() {
+        about = plain.chars().take(ABOUT_CHARS).collect();
+        if plain.chars().count() > ABOUT_CHARS {
+            about.push('\u{2026}');
+        }
+    }
+    for extra in [tag, detail] {
+        if !extra.is_empty() && extra != blurb && !about.contains(extra) {
+            if !about.is_empty() {
+                about.push_str("\n\n");
+            }
+            about.push_str(extra);
+        }
+    }
+    if about.is_empty() {
+        about.clone_from(&blurb);
+    }
+    CardText {
+        author: author.map(str::trim).unwrap_or("").to_string(),
+        blurb,
+        about,
+    }
+}
+
 /// Whether the catalog's file version is newer than the installed one. Both
 /// are ISO-8601 timestamps, which sort correctly as text; a missing or empty
 /// side means unknown, never an update.
@@ -1286,9 +1357,19 @@ impl Installed {
             )
         {
             row.update = true;
-            row.tag = "Update available".into();
         }
+        let (author, description) = crate::browse::catalog_about(&e.id).unwrap_or_default();
+        let card = card_text(
+            author.as_deref(),
+            description.as_deref(),
+            &row.tag,
+            &e.detail,
+        );
+        row.author = card.author.into();
+        row.blurb = card.blurb.into();
+        row.about = card.about.into();
         row.drift = drift_text(e.drift).into();
+        row.pill = drift_pill(e.drift).into();
         row.can_reset = e.can_reset;
         row.can_restore = e.facts.has_backup;
         if let Some(img) = e.thumb_url.as_deref().and_then(|u| self.cache.get(u)) {
@@ -2342,6 +2423,38 @@ mod tests {
     use shiv_core::addons::InstalledVpk;
     use shiv_core::sidecar::Sidecar;
     use std::path::PathBuf;
+
+    #[test]
+    fn card_text_shows_the_first_description_line_and_keeps_the_rest_for_the_tooltip() {
+        let c = card_text(
+            Some(" jcStani "),
+            Some("<p>Cleaner HUD.</p><p>Second paragraph.</p>"),
+            "",
+            "Version 1 \u{b7} pak01",
+        );
+        assert_eq!(c.author, "jcStani");
+        assert_eq!(c.blurb, "Cleaner HUD.");
+        assert!(c.about.contains("Second paragraph."), "{}", c.about);
+        assert!(c.about.ends_with("Version 1 \u{b7} pak01"), "{}", c.about);
+    }
+
+    #[test]
+    fn card_text_without_a_description_falls_back_to_the_tag_then_the_detail() {
+        let tagged = card_text(None, None, "Installed from a file", "pak06");
+        assert_eq!(tagged.blurb, "Installed from a file");
+        assert_eq!(tagged.about, "pak06");
+        let bare = card_text(None, Some("   "), "", "pak06");
+        assert_eq!(bare.blurb, "pak06");
+        assert_eq!(bare.author, "");
+    }
+
+    #[test]
+    fn a_long_description_is_cut_in_the_tooltip() {
+        let long = "word ".repeat(400);
+        let c = card_text(None, Some(&long), "", "");
+        assert!(c.about.chars().count() <= ABOUT_CHARS + 1);
+        assert!(c.about.ends_with('\u{2026}'));
+    }
 
     fn vpk(file: &str, pak: Option<u32>, enabled: bool) -> InstalledVpk {
         InstalledVpk {
