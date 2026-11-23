@@ -32,16 +32,53 @@ globalThis.atob = function (s) {
 };
 function TextEncoder() {}
 TextEncoder.prototype.encode = function (s) {
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
-  return out;
+  const bytes = [];
+  for (let i = 0; i < s.length; i++) {
+    let cp = s.codePointAt(i);
+    if (cp > 0xffff) i++;
+    if (cp < 0x80) {
+      bytes.push(cp);
+    } else if (cp < 0x800) {
+      bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    } else if (cp < 0x10000) {
+      bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else {
+      bytes.push(
+        0xf0 | (cp >> 18),
+        0x80 | ((cp >> 12) & 0x3f),
+        0x80 | ((cp >> 6) & 0x3f),
+        0x80 | (cp & 0x3f)
+      );
+    }
+  }
+  return new Uint8Array(bytes);
 };
 globalThis.TextEncoder = TextEncoder;
 function TextDecoder() {}
 TextDecoder.prototype.decode = function (u8) {
-  let s = "";
-  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
-  return s;
+  let out = "";
+  for (let i = 0; i < u8.length; ) {
+    const b0 = u8[i++];
+    if (b0 < 0x80) {
+      out += String.fromCharCode(b0);
+    } else if ((b0 & 0xe0) === 0xc0 && i < u8.length) {
+      out += String.fromCharCode(((b0 & 0x1f) << 6) | (u8[i++] & 0x3f));
+    } else if ((b0 & 0xf0) === 0xe0 && i + 1 < u8.length) {
+      out += String.fromCharCode(
+        ((b0 & 0x0f) << 12) | ((u8[i++] & 0x3f) << 6) | (u8[i++] & 0x3f)
+      );
+    } else if ((b0 & 0xf8) === 0xf0 && i + 2 < u8.length) {
+      const cp =
+        ((b0 & 0x07) << 18) |
+        ((u8[i++] & 0x3f) << 12) |
+        ((u8[i++] & 0x3f) << 6) |
+        (u8[i++] & 0x3f);
+      out += String.fromCodePoint(cp);
+    } else {
+      out += "\uFFFD";
+    }
+  }
+  return out;
 };
 globalThis.TextDecoder = TextDecoder;
 "#;
@@ -208,6 +245,8 @@ fn set_samples(ctx: &Ctx<'_>, name: &str, samples: &[f32]) -> Result<(), JsError
 }
 
 fn copy_bytes(value: &TypedArray<'_, u8>) -> Result<Vec<u8>, JsError> {
+    // SAFETY: `value` is borrowed for the lifetime of this call and no JS
+    // executes before `to_vec()` copies the backing bytes out.
     let bytes = unsafe { value.as_bytes() }
         .ok_or_else(|| JsError("the builder returned no bytes".into()))?;
     Ok(bytes.to_vec())
@@ -229,6 +268,8 @@ fn with_runtime<T>(f: impl for<'js> FnOnce(Ctx<'js>) -> Result<T, JsError>) -> R
     let runtime = Runtime::new().map_err(|e| JsError(e.to_string()))?;
     runtime.set_memory_limit(256 * 1024 * 1024);
     runtime.set_max_stack_size(8 * 1024 * 1024);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    runtime.set_interrupt_handler(Some(Box::new(move || std::time::Instant::now() > deadline)));
     let context = Context::full(&runtime).map_err(|e| JsError(e.to_string()))?;
     context.with(f)
 }

@@ -70,25 +70,31 @@ fn root(paths: &GamePaths) -> PathBuf {
     paths.addons.with_file_name(DIR)
 }
 
+fn is_safe_id(id: &str) -> bool {
+    crate::fs_util::is_plain_filename(id) && id != INDEX
+}
+
 fn folder(paths: &GamePaths, id: &str) -> PathBuf {
     root(paths).join(id)
 }
 
+fn safe_folder(paths: &GamePaths, id: &str) -> Option<PathBuf> {
+    is_safe_id(id).then(|| root(paths).join(id))
+}
+
 fn read_index(paths: &GamePaths) -> Index {
-    fs::read(root(paths).join(INDEX))
+    let mut index: Index = fs::read(root(paths).join(INDEX))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    index.profiles.retain(|p| is_safe_id(&p.id));
+    index
 }
 
 fn write_index(paths: &GamePaths, index: &Index) -> Result<(), ProfileError> {
     let path = root(paths).join(INDEX);
-    let tmp = path.with_extension("json.tmp");
-    fs::write(
-        &tmp,
-        serde_json::to_vec_pretty(index).map_err(io::Error::other)?,
-    )?;
-    fs::rename(&tmp, &path)?;
+    let bytes = serde_json::to_vec_pretty(index).map_err(io::Error::other)?;
+    crate::fs_util::write_atomic(&path, &bytes)?;
     Ok(())
 }
 
@@ -102,7 +108,6 @@ fn link(_target: &Path, _at: &Path) -> io::Result<()> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
-/// Point `addons` at `target`, atomically replacing a previous link.
 fn point_addons(paths: &GamePaths, target: &Path) -> io::Result<()> {
     let tmp = paths.addons.with_file_name("addons.shiv-link");
     let _ = fs::remove_file(&tmp);
@@ -112,7 +117,6 @@ fn point_addons(paths: &GamePaths, target: &Path) -> io::Result<()> {
     })
 }
 
-/// The profile id `addons` currently points at, when it is one of ours.
 fn active_id(paths: &GamePaths) -> Option<String> {
     let target = fs::read_link(&paths.addons).ok()?;
     let target = if target.is_relative() {
@@ -121,7 +125,13 @@ fn active_id(paths: &GamePaths) -> Option<String> {
         target
     };
     (target.parent()? == root(paths))
-        .then(|| target.file_name()?.to_str().map(str::to_owned))
+        .then(|| {
+            target
+                .file_name()?
+                .to_str()
+                .filter(|id| is_safe_id(id))
+                .map(str::to_owned)
+        })
         .flatten()
 }
 
@@ -172,7 +182,10 @@ pub fn is_set_up(paths: &GamePaths) -> bool {
 /// How many mod packages (`*_dir.vpk`, enabled or not) a profile holds.
 #[must_use]
 pub fn mod_count(paths: &GamePaths, id: &str) -> usize {
-    fs::read_dir(folder(paths, id)).map_or(0, |entries| {
+    let Some(dir) = safe_folder(paths, id) else {
+        return 0;
+    };
+    fs::read_dir(dir).map_or(0, |entries| {
         entries
             .flatten()
             .filter(|e| {
@@ -198,9 +211,27 @@ pub fn load(paths: &GamePaths) -> Result<Profiles, ProfileError> {
     }
     fs::create_dir_all(root(paths))?;
     let mut index = read_index(paths);
-    let meta = fs::symlink_metadata(&paths.addons);
     let mut changed = false;
 
+    let before = index.profiles.len();
+    index
+        .profiles
+        .retain(|p| safe_folder(paths, &p.id).is_some_and(|dir| dir.is_dir()));
+    changed |= index.profiles.len() != before;
+    for entry in fs::read_dir(root(paths))?.flatten() {
+        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if is_safe_id(&id) && entry.path().is_dir() && !index.profiles.iter().any(|p| p.id == id) {
+            index.profiles.push(Profile {
+                name: id.clone(),
+                id,
+            });
+            changed = true;
+        }
+    }
+
+    let meta = fs::symlink_metadata(&paths.addons);
     match meta {
         Ok(m) if m.file_type().is_symlink() => {
             if active_id(paths).is_none() {
@@ -208,10 +239,7 @@ pub fn load(paths: &GamePaths) -> Result<Profiles, ProfileError> {
             }
         }
         Ok(m) if m.is_dir() => {
-            // Mods that were in a plain addons folder: the first time they are
-            // the Default profile; later (Steam recreated the folder, a manual
-            // install) they are kept as a profile of their own, not lost.
-            let (id, name) = if index.profiles.is_empty() {
+            let (id, name) = if index.profiles.is_empty() && !folder(paths, DEFAULT_ID).exists() {
                 (DEFAULT_ID.to_owned(), "Default".to_owned())
             } else {
                 (unique_id(paths, "Recovered"), "Recovered".to_owned())
@@ -226,7 +254,6 @@ pub fn load(paths: &GamePaths) -> Result<Profiles, ProfileError> {
             if index.profiles.len() == 1 {
                 point_addons(paths, &dest)?;
             } else {
-                // Keep using the profile that was active before.
                 let previous = index.profiles.iter().find(|p| p.id != id).cloned();
                 let keep = previous.map_or(dest, |p| folder(paths, &p.id));
                 point_addons(paths, &keep)?;
@@ -253,23 +280,6 @@ pub fn load(paths: &GamePaths) -> Result<Profiles, ProfileError> {
         Err(e) => return Err(e.into()),
     }
 
-    // Folders without a name entry (index lost or edited) get one; entries
-    // whose folder is gone are dropped.
-    let before = index.profiles.len();
-    index.profiles.retain(|p| folder(paths, &p.id).is_dir());
-    changed |= index.profiles.len() != before;
-    for entry in fs::read_dir(root(paths))?.flatten() {
-        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if entry.path().is_dir() && !index.profiles.iter().any(|p| p.id == id) {
-            index.profiles.push(Profile {
-                name: id.clone(),
-                id,
-            });
-            changed = true;
-        }
-    }
     if changed {
         write_index(paths, &index)?;
     }
@@ -392,7 +402,8 @@ pub fn delete(paths: &GamePaths, id: &str) -> Result<(), ProfileError> {
     if profiles.active == id {
         return Err(ProfileError::DeleteActive);
     }
-    fs::remove_dir_all(folder(paths, id))?;
+    let dir = safe_folder(paths, id).ok_or(ProfileError::Unknown)?;
+    fs::remove_dir_all(dir)?;
     let mut index = read_index(paths);
     index.profiles.retain(|p| p.id != id);
     write_index(paths, &index)
@@ -410,7 +421,8 @@ pub fn switch(paths: &GamePaths, id: &str) -> Result<(), ProfileError> {
     if profiles.active == id {
         return Ok(());
     }
-    point_addons(paths, &folder(paths, id))?;
+    let dir = safe_folder(paths, id).ok_or(ProfileError::Unknown)?;
+    point_addons(paths, &dir)?;
     Ok(())
 }
 

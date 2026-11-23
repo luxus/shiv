@@ -83,8 +83,9 @@ every byte untouched. Pinned by
 ## One lock for everything that touches pak numbers
 
 Every function that allocates a pak number or renames a `pakNN` file takes
-`install::InstallPermit`. `InstallGuard::acquire` holds the lock until drop,
-and `permit` is the only constructor, so the call does not compile without it.
+`install::InstallPermit` (including `complock::claim_reusable`).
+`InstallGuard::acquire` holds the lock until drop, and `permit` is the only
+constructor, so the call does not compile without it.
 `forgotten_pak_change_does_not_compile` pins those calls and verifies that
 `addons::next_pak` stays `pub(crate)`. The lock is not reentrant: a cancel
 check stays after `acquire`, and the function receives the permit.
@@ -122,11 +123,12 @@ blocking calls do not run on the event loop and that workers park on a
 `addons` carries the number, or a sidecar names it. `pak_slot::free_slots` is
 how a new mod takes one. While a CompLock pak is installed it keeps
 `1..=complock::last_slot()` for the pack, and uses a free pack slot only when
-nothing above is left. `set_pak` refuses stale slots with
-`SidecarError::StalePak`.
+nothing above is left. `set_pak` and `renumber` refuse invalid, duplicate, or
+stale slots with `SidecarError::BadPak`, `DuplicatePak`, or `StalePak`.
 
-`scripts/check_pak_occupancy.py` (`cargo test -p shiv-core --test pak_occupancy`)
-enforces that files-only helpers are never called outside `pak_slot.rs`.
+`file_pak_numbers` is private inside `pak_slot.rs` (compile-time boundary),
+backed by `scripts/check_pak_occupancy.py`
+(`cargo test -p shiv-core --test pak_occupancy`).
 
 ## Global caches release when idle
 

@@ -4,8 +4,8 @@
 //! under another URL and a moved registry asks for a fresh review.
 //!
 //! A mod installed from a registry gets the sidecar id
-//! `src:<sourceId>:<listingId>` and the release's `contentRevision` as its
-//! version, so the Installed screen's existing update machinery recognises
+//! `src-<encoded source>-<encoded listing>` and the release's `contentRevision`
+//! as its version, so the Installed screen's existing update machinery recognises
 //! a newer revision exactly like a catalog date.
 
 use std::collections::BTreeMap;
@@ -229,12 +229,7 @@ impl Registry {
             })?;
         }
         let json = serde_json::to_vec_pretty(&self.sources).map_err(RegistryError::Parse)?;
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, json).map_err(|source| RegistryError::Io {
-            path: tmp.clone(),
-            source,
-        })?;
-        fs::rename(&tmp, &self.path).map_err(|source| RegistryError::Io {
+        crate::fs_util::write_atomic(&self.path, &json).map_err(|source| RegistryError::Io {
             path: self.path.clone(),
             source,
         })
@@ -286,43 +281,63 @@ pub fn check_download(
 ) -> Result<DownloadTrust, RegistryError> {
     let sha = published(published_sha256);
     let md5 = published(published_md5);
-    match (sha, md5) {
-        (None, None) => Ok(DownloadTrust::Unverified),
-        (Some(sha), sum) => {
-            verify_download(downloaded, Some(sha))?;
-            if let Some(sum) = sum {
-                verify_md5(downloaded, sum)?;
-            }
-            Ok(DownloadTrust::Verified)
-        }
-        (None, Some(md5)) => {
-            verify_md5(downloaded, md5)?;
-            Ok(DownloadTrust::Verified)
-        }
+    if sha.is_none() && md5.is_none() {
+        return Ok(DownloadTrust::Unverified);
     }
+    let (actual_sha, actual_md5) = stream_digests(downloaded, sha.is_some(), md5.is_some())?;
+    if let Some(expected) = sha
+        && !actual_sha.eq_ignore_ascii_case(expected)
+    {
+        fs::remove_file(downloaded).ok();
+        return Err(RegistryError::Refused(
+            "the download does not match the checksum the registry published".into(),
+        ));
+    }
+    if let Some(expected) = md5
+        && !actual_md5.eq_ignore_ascii_case(expected)
+    {
+        fs::remove_file(downloaded).ok();
+        return Err(RegistryError::Refused(
+            "the download does not match the checksum published for it".into(),
+        ));
+    }
+    Ok(DownloadTrust::Verified)
 }
 
 fn published(checksum: Option<&str>) -> Option<&str> {
     checksum.map(str::trim).filter(|text| !text.is_empty())
 }
 
-fn verify_md5(downloaded: &Path, expected: &str) -> Result<(), RegistryError> {
-    let actual = md5_hex_of(downloaded)?;
-    if !actual.eq_ignore_ascii_case(expected.trim()) {
-        fs::remove_file(downloaded).ok();
-        return Err(RegistryError::Refused(
-            "the download does not match the checksum published for it".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn md5_hex_of(path: &Path) -> Result<String, RegistryError> {
-    let bytes = fs::read(path).map_err(|source| RegistryError::Io {
+fn stream_digests(
+    path: &Path,
+    want_sha256: bool,
+    want_md5: bool,
+) -> Result<(String, String), RegistryError> {
+    use std::io::Read as _;
+    let io_err = |source| RegistryError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
-    Ok(format!("{:x}", Md5::digest(bytes)))
+    };
+    let mut file = fs::File::open(path).map_err(io_err)?;
+    let mut sha = want_sha256.then(Sha256::new);
+    let mut md5 = want_md5.then(Md5::new);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(io_err)?;
+        if n == 0 {
+            break;
+        }
+        let chunk = &buf[..n];
+        if let Some(h) = &mut sha {
+            h.update(chunk);
+        }
+        if let Some(h) = &mut md5 {
+            h.update(chunk);
+        }
+    }
+    let sha_hex = sha.map_or_else(String::new, |h| format!("{:x}", h.finalize()));
+    let md5_hex = md5.map_or_else(String::new, |h| format!("{:x}", h.finalize()));
+    Ok((sha_hex, md5_hex))
 }
 
 /// Where a downloaded registry artifact waits for its SHA-256 check: a
@@ -340,27 +355,17 @@ pub fn verify_download(
     downloaded: &Path,
     published_sha256: Option<&str>,
 ) -> Result<(), RegistryError> {
-    let Some(expected) = published_sha256 else {
+    let Some(expected) = published(published_sha256) else {
         return Ok(());
     };
-    let actual = sha256_hex_of(downloaded)?;
-    if actual != expected {
+    let (actual, _) = stream_digests(downloaded, true, false)?;
+    if !actual.eq_ignore_ascii_case(expected) {
         fs::remove_file(downloaded).ok();
         return Err(RegistryError::Refused(
             "the download does not match the checksum the registry published".into(),
         ));
     }
     Ok(())
-}
-
-fn sha256_hex_of(path: &Path) -> Result<String, RegistryError> {
-    let bytes = fs::read(path).map_err(|source| RegistryError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Install the downloaded artifact of a registry listing's current release:

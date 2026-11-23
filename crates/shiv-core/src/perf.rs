@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -53,6 +53,8 @@ pub enum PerfError {
         "the performance catalog uses schema version {found}, but this version of Shiv reads version {expected}. Update Shiv to use it"
     )]
     SchemaVersion { found: u32, expected: u32 },
+    #[error("vanilla mode is on; turn it off before changing gameinfo.gi")]
+    VanillaActive,
     #[error("{} is read-only, so Shiv left it unchanged", .0.display())]
     ReadOnly(PathBuf),
     #[error("{} is not plain text, so Shiv left it unchanged", .0.display())]
@@ -513,7 +515,10 @@ fn normalize(value: &str) -> String {
         return "0".into();
     }
     match v.parse::<f64>() {
-        Ok(n) if n.is_finite() => n.to_string(),
+        Ok(n) if n.is_finite() => {
+            let n = if n == 0.0 { 0.0 } else { n };
+            n.to_string()
+        }
         _ => v.to_string(),
     }
 }
@@ -682,6 +687,9 @@ pub fn read_current(paths: &GamePaths) -> Result<Vec<ConfigEntry>, PerfError> {
 /// [`PerfError::Entry`] when a requested path cannot be written as asked;
 /// [`PerfError::Io`] when the backup or replacement fails.
 pub fn apply(paths: &GamePaths, entries: &[ConfigEntry]) -> Result<(), PerfError> {
+    if crate::vanilla::is_active(paths) {
+        return Err(PerfError::VanillaActive);
+    }
     let path = resolve(&paths.gameinfo)?;
     let text = read_text(&path)?;
     let edited = edit(&path, &text, entries)?;
@@ -713,7 +721,11 @@ pub fn apply(paths: &GamePaths, entries: &[ConfigEntry]) -> Result<(), PerfError
         Some(meta.permissions()),
     )?;
     write_atomic(&path, edited.as_bytes(), Some(meta.permissions()))?;
-    store_gameinfo_record(&paths.addons, &edited, &edited)
+    if let Err(err) = store_gameinfo_record(&paths.addons, &edited, &edited) {
+        let _ = write_atomic(&path, text.as_bytes(), Some(meta.permissions()));
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
@@ -995,33 +1007,15 @@ fn search_entries(body: &str) -> Vec<SearchEntry> {
     list
 }
 
-/// Write `contents` to `path` through a temp file in the same folder.
+/// Write `contents` to `path` through a unique temp file in the same folder.
 fn write_atomic(
     path: &Path,
     contents: &[u8],
     permissions: Option<fs::Permissions>,
 ) -> Result<(), PerfError> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = dir.join(format!(".{name}.shiv-{}.tmp", std::process::id()));
     let permissions = permissions.or_else(|| fs::metadata(path).ok().map(|m| m.permissions()));
-    let written = fs::File::create(&tmp)
-        .and_then(|mut f| {
-            f.write_all(contents)?;
-            f.sync_all()
-        })
-        .and_then(|()| match permissions {
-            Some(p) => fs::set_permissions(&tmp, p),
-            None => Ok(()),
-        })
-        .map_err(io_err("write", &tmp))
-        .and_then(|()| fs::rename(&tmp, path).map_err(io_err("replace", path)));
-    if written.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    written
+    crate::fs_util::write_atomic_with_permissions(path, contents, permissions)
+        .map_err(io_err("replace", path))
 }
 
 /// One line of the text with its own ending.

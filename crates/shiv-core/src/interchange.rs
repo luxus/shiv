@@ -254,7 +254,7 @@ pub fn read_manifest(path: &Path) -> Result<(PathBuf, Document), InterchangeErro
     if doc.format != FORMAT {
         return Err(InterchangeError::WrongFormat(doc.format));
     }
-    if doc.version > VERSION {
+    if doc.version != VERSION {
         return Err(InterchangeError::Version(doc.version));
     }
     Ok((dir, doc))
@@ -262,7 +262,7 @@ pub fn read_manifest(path: &Path) -> Result<(PathBuf, Document), InterchangeErro
 
 /// Resolve a manifest file path against the bundle folder and refuse
 /// anything that would leave it: no absolute paths, no `..`, forward
-/// slashes only, no empty or `.` segments.
+/// slashes only, no empty or `.` segments, and no symlinks below `dir`.
 #[must_use]
 pub fn bundle_file(dir: &Path, path: &str) -> Option<PathBuf> {
     if path.contains('\\') || path.is_empty() {
@@ -272,13 +272,27 @@ pub fn bundle_file(dir: &Path, path: &str) -> Option<PathBuf> {
     if relative.is_absolute() {
         return None;
     }
+    let mut cur = dir.to_path_buf();
     for component in relative.components() {
         match component {
-            Component::Normal(_) => {}
+            Component::Normal(part) => {
+                cur.push(part);
+                if let Ok(meta) = fs::symlink_metadata(&cur)
+                    && meta.file_type().is_symlink()
+                {
+                    return None;
+                }
+            }
             _ => return None,
         }
     }
-    Some(dir.join(relative))
+    if cur.exists()
+        && let (Ok(root), Ok(target)) = (fs::canonicalize(dir), fs::canonicalize(&cur))
+        && !target.starts_with(&root)
+    {
+        return None;
+    }
+    Some(cur)
 }
 
 // ---- hashing ----
@@ -437,12 +451,14 @@ pub fn export_into(
         let remote = m.sidecar.as_ref().and_then(|s| remote_of(&s.mod_id));
         let primary_hash = files.first().and_then(|f| f.sha256.clone());
         let entry = interchange_mod(
-            m,
-            &name,
-            enabled,
-            order,
-            remote,
-            primary_hash.as_deref(),
+            ExportMod {
+                installed: m,
+                name: &name,
+                enabled,
+                order,
+                remote,
+                primary_hash: primary_hash.as_deref(),
+            },
             files,
         );
         order += 1;
@@ -469,23 +485,18 @@ pub fn export_into(
             .map(|(name, why)| format!("{name}: {why}"))
             .collect(),
     };
-    // The manifest is written last and atomically, so a crash never leaves
-    // a folder that looks complete.
-    let tmp = root.join(".mod-interchange.json.tmp");
+    // Written last and atomically so a crash never leaves a half-built bundle looking complete.
+    let manifest_path = root.join(MANIFEST);
     let json = serde_json::to_vec_pretty(&document).map_err(|source| InterchangeError::Parse {
-        path: root.to_path_buf(),
+        path: manifest_path.clone(),
         source,
     })?;
-    fs::write(&tmp, json).map_err(io_err(tmp.clone()))?;
-    fs::rename(&tmp, root.join(MANIFEST)).map_err(|source| InterchangeError::Io {
-        path: root.join(MANIFEST),
-        source,
-    })?;
+    crate::fs_util::write_atomic(&manifest_path, &json).map_err(io_err(manifest_path))?;
     Ok(report)
 }
 
-/// The mod's VPKs copied into `dir` under their enabled names, or why
-/// copying stopped. Empty means nothing was readable.
+/// The mod's VPKs and sibling chunks copied into `dir` under their enabled
+/// names, or why copying stopped. Empty means nothing was readable.
 fn exported_files(
     m: &sidecar::InstalledMod,
     dir: &Path,
@@ -493,59 +504,58 @@ fn exported_files(
 ) -> Result<Vec<InterchangeFile>, String> {
     let mut files: Vec<InterchangeFile> = Vec::new();
     for vpk in &m.vpks {
-        let raw = vpk
-            .file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if raw.is_empty() {
-            return Err("a file has no readable name".into());
-        }
-        // The enabled form of the name: a disabled `pakNN_dir.vpk`
-        // rides along as the mod's file (the mod's `enabled` carries
-        // the on/off state, not a `selected: false` variant, which the
-        // format means for alternative files that are kept but never
-        // part of the installed mod).
-        let file_name = raw.strip_suffix(".disabled").unwrap_or(raw).to_owned();
-        let target = dir.join(&file_name);
-        if let Err(e) = fs::copy(&vpk.file, &target) {
-            return Err(format!("copying failed: {e}"));
-        }
-        let sha = match sha256_of(&target) {
-            Ok(s) => s,
-            Err(InterchangeError::Io { source, .. }) => {
-                return Err(format!("hashing failed: {source}"));
+        for source in std::iter::once(&vpk.file).chain(&vpk.chunks) {
+            let raw = source
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if raw.is_empty() {
+                return Err("a file has no readable name".into());
             }
-            Err(e) => return Err(e.to_string()),
-        };
-        let size = fs::metadata(&target).map_or(0, |m| m.len());
-        files.push(InterchangeFile {
-            name: file_name,
-            path: url_path_name(&target, root),
-            sha256: Some(sha),
-            size: Some(size),
-            selected: true,
-        });
+            // The enabled form of the name: a disabled VPK rides along as the
+            // mod's file (the mod's `enabled` carries the on/off state, not
+            // `selected: false`).
+            let file_name = raw.strip_suffix(".disabled").unwrap_or(raw).to_owned();
+            let target = dir.join(&file_name);
+            if let Err(e) = fs::copy(source, &target) {
+                return Err(format!("copying failed: {e}"));
+            }
+            let sha = match sha256_of(&target) {
+                Ok(s) => s,
+                Err(InterchangeError::Io { source, .. }) => {
+                    return Err(format!("hashing failed: {source}"));
+                }
+                Err(e) => return Err(e.to_string()),
+            };
+            let size = fs::metadata(&target).map_or(0, |m| m.len());
+            files.push(InterchangeFile {
+                name: file_name,
+                path: url_path_name(&target, root),
+                sha256: Some(sha),
+                size: Some(size),
+                selected: true,
+            });
+        }
     }
     Ok(files)
+}
+
+struct ExportMod<'a> {
+    installed: &'a sidecar::InstalledMod,
+    name: &'a str,
+    enabled: bool,
+    order: i64,
+    remote: Option<RemoteRef>,
+    primary_hash: Option<&'a str>,
 }
 
 /// The entry for one installed mod: the key from its `GameBanana` reference
 /// when known, else `local:sha256:<hash>` of its primary VPK, so the same
 /// mod gets the same key in every export and importers can spot a
 /// re-import.
-#[allow(clippy::too_many_arguments)]
-fn interchange_mod(
-    m: &sidecar::InstalledMod,
-    name: &str,
-    enabled: bool,
-    order: i64,
-    remote: Option<RemoteRef>,
-    primary_hash: Option<&str>,
-    files: Vec<InterchangeFile>,
-) -> InterchangeMod {
-    let sc = m.sidecar.as_ref();
-    let key = match (remote.as_ref(), primary_hash) {
+fn interchange_mod(ctx: ExportMod<'_>, files: Vec<InterchangeFile>) -> InterchangeMod {
+    let sc = ctx.installed.sidecar.as_ref();
+    let key = match (ctx.remote.as_ref(), ctx.primary_hash) {
         (Some(r), _) => format!(
             "gamebanana:{}:{}",
             if r.is_audio { "sound" } else { "mod" },
@@ -554,7 +564,7 @@ fn interchange_mod(
         (None, Some(hash)) => format!("local:sha256:{hash}"),
         (None, None) => "local:".into(),
     };
-    let origin = remote.map(|r| Origin {
+    let origin = ctx.remote.map(|r| Origin {
         provider: "gamebanana".into(),
         submission_type: Some(if r.is_audio { "sound" } else { "mod" }.into()),
         submission_id: Some(r.submission_id.clone()),
@@ -564,9 +574,9 @@ fn interchange_mod(
     });
     InterchangeMod {
         key,
-        name: name.to_owned(),
-        enabled,
-        order,
+        name: ctx.name.to_owned(),
+        enabled: ctx.enabled,
+        order: ctx.order,
         origin,
         author: None,
         description: sc.and_then(|s| s.notes.clone()),
@@ -596,8 +606,8 @@ fn first_file_name(m: &sidecar::InstalledMod) -> String {
         .unwrap_or_default()
 }
 
-/// `mod-313-dir-vpk` from `QOL Lock`: lowercase, letters digits dashes and
-/// underscores kept, everything else folded to a `-`, never empty.
+/// `mod-313-dir-vpk` from `QOL Lock`: lowercase ASCII alphanumerics kept,
+/// everything else folded to a `-`, falling back to `"mod"` when empty.
 fn slug(name: &str) -> String {
     let mut out = String::new();
     let mut dash = false;
@@ -610,7 +620,12 @@ fn slug(name: &str) -> String {
             dash = true;
         }
     }
-    out.trim_end_matches('-').to_owned()
+    let trimmed = out.trim_end_matches('-');
+    if trimmed.is_empty() {
+        "mod".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 /// The manifest path of `file` relative to `root`, forward slashes.
@@ -658,15 +673,8 @@ fn write_ledger(addons: &Path, ledger: &BTreeMap<String, String>) -> Result<(), 
         path: path.clone(),
         source,
     })?;
-    let tmp = dir.join(".interchange.json.tmp");
-    fs::write(&tmp, json).map_err(|source| InterchangeError::Io {
-        path: tmp.clone(),
-        source,
-    })?;
-    fs::rename(&tmp, &path).map_err(|source| InterchangeError::Io {
-        path: path.clone(),
-        source,
-    })
+    crate::fs_util::write_atomic(&path, &json)
+        .map_err(|source| InterchangeError::Io { path, source })
 }
 
 /// Import the bundle `path` points at (its folder, or its manifest) into
@@ -703,10 +711,25 @@ pub fn import(
     let mut report = ImportReport::default();
     let mut ledger = read_ledger(addons);
 
-    // Relative order first: ascending `order`, ties by the document's own
-    // position so the source's view decides.
+    // Ascending `order`, ties broken by document position.
     let mut mods: Vec<&InterchangeMod> = doc.mods.iter().collect();
     mods.sort_by_key(|m| m.order);
+
+    // Snapshot unmanaged VPKs once before the loop; newly installed mods carry
+    // sidecars, so the unmanaged set only shrinks as mods are adopted.
+    let unmanaged: Vec<addons::InstalledVpk> = sidecar::group(addons)
+        .into_iter()
+        .filter(|installed| installed.sidecar.is_none())
+        .flat_map(|installed| installed.vpks)
+        .collect();
+    let mut adopted_flags = vec![false; unmanaged.len()];
+    let mut by_size: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (idx, vpk) in unmanaged.iter().enumerate() {
+        let Ok(meta) = fs::metadata(&vpk.file) else {
+            continue;
+        };
+        by_size.entry(meta.len()).or_default().push(idx);
+    }
 
     for m in &mods {
         let name = if m.name.trim().is_empty() {
@@ -714,8 +737,6 @@ pub fn import(
         } else {
             m.name.trim().to_owned()
         };
-        // Selected VPKs are what the source loaded; a mod with none has
-        // nothing to install.
         let selected: Vec<&InterchangeFile> = m.files.iter().filter(|f| f.selected).collect();
         if selected.is_empty() {
             report
@@ -723,12 +744,48 @@ pub fn import(
                 .push((name, "no selected VPK files in the bundle".into()));
             continue;
         }
-        // Every file must stay inside the bundle and exist.
-        let mut files: Vec<PathBuf> = Vec::with_capacity(selected.len());
+        // Every file must stay inside the bundle, exist, and match any declared size/sha256.
+        let mut files: Vec<(PathBuf, Option<String>)> = Vec::with_capacity(selected.len());
         let mut bad: Option<String> = None;
         for f in &selected {
             match bundle_file(&dir, &f.path) {
-                Some(p) if p.is_file() => files.push(p),
+                Some(p) if p.is_file() => {
+                    if let Some(expected_size) = f.size {
+                        match fs::metadata(&p) {
+                            Ok(meta) if meta.len() == expected_size => {}
+                            Ok(meta) => {
+                                bad = Some(format!(
+                                    "{} is {} bytes, manifest declares {expected_size}",
+                                    f.path,
+                                    meta.len()
+                                ));
+                                break;
+                            }
+                            Err(e) => {
+                                bad = Some(format!("{} cannot be read: {e}", f.path));
+                                break;
+                            }
+                        }
+                    }
+                    let checked_hash = if let Some(expected_sha) = f.sha256.as_deref() {
+                        match sha256_of(&p) {
+                            Ok(actual) if actual.eq_ignore_ascii_case(expected_sha.trim()) => {
+                                Some(actual)
+                            }
+                            Ok(_) => {
+                                bad = Some(format!("{} checksum mismatch", f.path));
+                                break;
+                            }
+                            Err(e) => {
+                                bad = Some(format!("{} cannot be hashed: {e}", f.path));
+                                break;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    files.push((p, checked_hash));
+                }
                 Some(_) => {
                     bad = Some(format!("{} is missing from the bundle", f.path));
                     break;
@@ -743,11 +800,8 @@ pub fn import(
             report.skipped.push((name, why));
             continue;
         }
-        // Duplicate: this key is already a Shiv mod (the ledger of an
-        // earlier import, the catalog for GameBanana keys, or Shiv's own
-        // extension for a re-imported Shiv bundle). A local id is only
-        // unique per folder (`local-<seconds>-<n>`), so it names the same
-        // mod only when that sidecar also carries the mod's name.
+        // Local ids are only unique per folder (`local-<seconds>-<n>`), so a
+        // re-imported Shiv extension matches only when the sidecar name also matches.
         let mine = m
             .extensions
             .as_ref()
@@ -766,16 +820,18 @@ pub fn import(
             report.skipped.push((name, "already installed".into()));
             continue;
         }
-        // A file already in the addons folder byte for byte is adopted in
-        // place (checked by size, then hash), so the game never loads two
-        // copies. All files matching means adopting the whole mod.
         let guard = install::InstallGuard::acquire(addons)?;
+        let mut pool = UnmanagedPool {
+            vpks: &unmanaged,
+            by_size: &by_size,
+            used: &mut adopted_flags,
+        };
         match adopt_or_install(
-            addons,
             paths,
             m,
             &name,
             &files,
+            &mut pool,
             &game_running,
             guard.permit(),
         ) {
@@ -794,68 +850,73 @@ pub fn import(
     Ok(report)
 }
 
-/// Adopt the mod in place when all its selected VPKs already sit in the
-/// addons folder byte for byte; otherwise install the files as a new local
+struct UnmanagedPool<'a> {
+    vpks: &'a [addons::InstalledVpk],
+    by_size: &'a BTreeMap<u64, Vec<usize>>,
+    used: &'a mut [bool],
+}
+
+/// Adopt the mod in place when all its selected VPKs already sit unmanaged in
+/// the addons folder byte for byte; otherwise install the files as a new local
 /// mod. `Ok(true, id)` means adopted. Errors are per-entry strings, so one
 /// bad mod never stops the import.
 fn adopt_or_install(
-    addons: &Path,
     paths: &GamePaths,
     m: &InterchangeMod,
     name: &str,
-    files: &[PathBuf],
+    files: &[(PathBuf, Option<String>)],
+    pool: &mut UnmanagedPool<'_>,
     game_running: &dyn Fn() -> bool,
     permit: install::InstallPermit<'_>,
 ) -> Result<(bool, String), String> {
-    // Sizes first, hashes only for same-size files: hashing every VPK in a
-    // big library would take a while for nothing.
-    let mut by_size: BTreeMap<u64, Vec<PathBuf>> = BTreeMap::new();
-    let listed = addons::list(addons).map_err(|e| e.to_string())?;
-    for vpk in &listed {
-        let Ok(meta) = fs::metadata(&vpk.file) else {
-            continue;
-        };
-        by_size
-            .entry(meta.len())
-            .or_default()
-            .push(vpk.file.clone());
-    }
-    let mut adoptable: Vec<addons::InstalledVpk> = Vec::new();
-    for file in files {
+    let addons = paths.addons.as_path();
+    let mut matched_indices: Vec<usize> = Vec::with_capacity(files.len());
+    for (file, known_hash) in files {
         let want = match fs::metadata(file) {
-            Ok(m) => m.len(),
+            Ok(meta) => meta.len(),
             Err(_) => return Err(format!("{} cannot be read", file.display())),
         };
         let mut found = None;
-        for candidate in by_size.get(&want).into_iter().flatten() {
-            if let (Ok(a), Ok(b)) = (sha256_of(file), sha256_of(candidate))
-                && a == b
-            {
-                found = Some(candidate.clone());
-                break;
+        if let Some(indices) = pool.by_size.get(&want) {
+            let file_hash = match known_hash {
+                Some(h) => Ok(h.clone()),
+                None => sha256_of(file),
+            };
+            if let Ok(a) = file_hash {
+                for &idx in indices {
+                    if pool.used[idx] || matched_indices.contains(&idx) {
+                        continue;
+                    }
+                    if let Ok(b) = sha256_of(&pool.vpks[idx].file)
+                        && a == b
+                    {
+                        found = Some(idx);
+                        break;
+                    }
+                }
             }
         }
-        let Some(found) = found else {
-            // Not all files are on disk: install the mod instead.
-            return install_from_bundle(paths, m, name, files, game_running, permit)
+        let Some(idx) = found else {
+            let paths_only: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
+            return install_from_bundle(paths, m, name, &paths_only, game_running, permit)
                 .map(|sc| (false, sc.mod_id))
                 .map_err(|e| e.to_string());
         };
-        if let Some(vpk) = listed.iter().find(|v| v.file == found).cloned() {
-            adoptable.push(vpk);
-        }
+        matched_indices.push(idx);
     }
-    // Adopt: only a sidecar is written; the files stay where they are,
-    // disabled or not — the document's enabled state is restored after.
+    let adoptable: Vec<addons::InstalledVpk> = matched_indices
+        .iter()
+        .map(|&idx| pool.vpks[idx].clone())
+        .collect();
     let group = sidecar::InstalledMod {
         sidecar: None,
         vpks: adoptable,
     };
     let sc =
         sidecar::adopt(addons, &group, name, m.description.clone()).map_err(|e| e.to_string())?;
-    // The document's state wins: an enabled mod switches stray `.disabled`
-    // files on, a disabled one switches the enabled ones off. The files are
-    // the ones just adopted, still in the state the listing read.
+    for idx in matched_indices {
+        pool.used[idx] = true;
+    }
     for vpk in &group.vpks {
         if vpk.enabled != m.enabled {
             let _ = addons::set_enabled(vpk, m.enabled);
@@ -881,9 +942,16 @@ fn install_from_bundle(
         hero: m.hero.clone(),
         category: m.category.clone(),
     };
-    let sc = install::install_files(files, meta, paths, game_running, permit)?;
-    // The mod lands as the source had it: an enabled mod stays on, a
-    // disabled one is switched off right after installing.
+    let mut sc = install::install_files(files, meta, paths, game_running, permit)?;
+    if let Some(notes) = m
+        .description
+        .as_ref()
+        .filter(|d| !d.trim().is_empty())
+        .cloned()
+    {
+        sc.notes = Some(notes);
+        sidecar::write(&paths.addons, &sc)?;
+    }
     if !m.enabled {
         let mods = sidecar::group(&paths.addons);
         if let Some(installed) = mods

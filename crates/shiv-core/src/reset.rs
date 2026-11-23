@@ -87,8 +87,9 @@ pub fn reset_with(
     let position = current.load_position();
     let was_disabled = !current.vpks.is_empty() && current.vpks.iter().all(|v| !v.enabled);
     let backup = move_aside(addons, &current)?;
+    let _ = sidecar::remove(addons, mod_id);
     if let Err(e) = install() {
-        put_back(addons, &backup)?;
+        let _ = put_back(addons, &backup);
         return Err(ResetError::Install(e));
     }
     settle(addons, mod_id, position, was_disabled, permit)?;
@@ -117,8 +118,13 @@ pub fn restore_previous(
     let addons = paths.addons.as_path();
     let previous =
         latest_backup(addons, mod_id).ok_or_else(|| ResetError::NoBackup(mod_id.into()))?;
+    for name in &previous.files {
+        if !crate::fs_util::is_plain_filename(name) {
+            return Err(ResetError::SlotTaken(name.clone()));
+        }
+    }
     let current = find(addons, mod_id).ok();
-    let own: Vec<PathBuf> = current
+    let own: std::collections::HashSet<PathBuf> = current
         .iter()
         .flat_map(|m| {
             m.vpks
@@ -126,13 +132,34 @@ pub fn restore_previous(
                 .flat_map(|v| std::iter::once(v.file.clone()).chain(v.chunks.iter().cloned()))
         })
         .collect();
-    if let Some(taken) = previous
-        .files
+    let own_slots: std::collections::BTreeSet<u32> = current
         .iter()
-        .map(|name| addons.join(name))
-        .find(|p| p.exists() && !own.contains(p))
-    {
-        return Err(ResetError::SlotTaken(file_name(&taken)));
+        .flat_map(|m| m.vpks.iter().filter_map(|v| v.pak))
+        .chain(
+            current
+                .iter()
+                .filter_map(|m| m.sidecar.as_ref())
+                .flat_map(|s| {
+                    s.vpks
+                        .iter()
+                        .filter_map(|v| crate::addons::parse_pak(v).map(|(n, _)| n))
+                }),
+        )
+        .collect();
+    let occupied = crate::pak_slot::occupied(addons).map_err(SidecarError::from)?;
+    for name in &previous.files {
+        let p = addons.join(name);
+        let counterpart = counterpart_path(addons, name);
+        let file_taken = (p.exists() && !own.contains(&p))
+            || (counterpart.exists() && !own.contains(&counterpart));
+        let enabled = name
+            .strip_suffix(crate::addons::DISABLED_EXT)
+            .unwrap_or(name);
+        let slot_taken = crate::addons::parse_pak(enabled)
+            .is_some_and(|(n, _)| occupied.contains(&n) && !own_slots.contains(&n));
+        if file_taken || slot_taken {
+            return Err(ResetError::SlotTaken(name.clone()));
+        }
     }
     let displaced = match &current {
         Some(m) => Some(move_aside(addons, m)?),
@@ -145,6 +172,13 @@ pub fn restore_previous(
         return Err(e);
     }
     Ok(previous.sidecar)
+}
+
+fn counterpart_path(addons: &Path, name: &str) -> PathBuf {
+    match name.strip_suffix(crate::addons::DISABLED_EXT) {
+        Some(enabled) => addons.join(enabled),
+        None => addons.join(format!("{name}{}", crate::addons::DISABLED_EXT)),
+    }
 }
 
 /// The newest backup kept for `mod_id`, if any.
@@ -171,8 +205,6 @@ fn find(addons: &Path, mod_id: &str) -> Result<InstalledMod, ResetError> {
         .ok_or_else(|| ResetError::NotFound(mod_id.into()))
 }
 
-/// Move a mod's files and a copy of its sidecar into a fresh backup folder.
-/// On a failed move the files moved so far go back.
 fn move_aside(addons: &Path, m: &InstalledMod) -> Result<Backup, ResetError> {
     let Some(sidecar) = m.sidecar.clone() else {
         return Err(ResetError::NotFound(String::new()));
@@ -185,8 +217,6 @@ fn move_aside(addons: &Path, m: &InstalledMod) -> Result<Backup, ResetError> {
     write_backup(addons, &sidecar, &files)
 }
 
-/// Move `files` into a reset backup recorded as `sidecar`. An empty list
-/// writes nothing: there is no previous version to restore.
 pub(crate) fn stash_files(
     addons: &Path,
     sidecar: &Sidecar,
@@ -240,21 +270,34 @@ fn write_backup(addons: &Path, sidecar: &Sidecar, files: &[PathBuf]) -> Result<B
     Ok(backup)
 }
 
-/// Move a backup's files back under their names, write its sidecar, and
-/// drop the emptied backup folder.
 fn put_back(addons: &Path, backup: &Backup) -> Result<(), ResetError> {
     for name in &backup.files {
+        if !crate::fs_util::is_plain_filename(name) {
+            return Err(ResetError::SlotTaken(name.clone()));
+        }
         let to = addons.join(name);
         if to.exists() {
             return Err(ResetError::SlotTaken(name.clone()));
         }
     }
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     for name in &backup.files {
         let from = backup.dir.join(name);
         let to = addons.join(name);
-        fs::rename(&from, &to).map_err(io(&from))?;
+        if let Err(e) = fs::rename(&from, &to) {
+            for (orig_from, orig_to) in moved.iter().rev() {
+                let _ = fs::rename(orig_to, orig_from);
+            }
+            return Err(io(&from)(e));
+        }
+        moved.push((from, to));
     }
-    sidecar::write(addons, &backup.sidecar)?;
+    if let Err(e) = sidecar::write(addons, &backup.sidecar) {
+        for (orig_from, orig_to) in moved.iter().rev() {
+            let _ = fs::rename(orig_to, orig_from);
+        }
+        return Err(e.into());
+    }
     let _ = fs::remove_file(backup.dir.join(MANIFEST));
     let _ = fs::remove_dir(&backup.dir);
     Ok(())

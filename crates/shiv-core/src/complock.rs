@@ -83,16 +83,17 @@ fn entries_of(gameinfo: &str) -> Vec<ConfigEntry> {
 /// The parsed meta, or `None` when the workflow wrote something malformed —
 /// which the core test on the asset catches before it reaches a build.
 fn build_meta() -> Option<(&'static str, &'static str)> {
-    static META_ONCE: std::sync::OnceLock<Option<(&'static str, &'static str)>> =
-        std::sync::OnceLock::new();
-    *META_ONCE.get_or_init(parse_meta)
+    static META_ONCE: OnceLock<Option<(String, String)>> = OnceLock::new();
+    META_ONCE
+        .get_or_init(parse_meta)
+        .as_ref()
+        .map(|(game, fetched)| (game.as_str(), fetched.as_str()))
 }
 
-fn parse_meta() -> Option<(&'static str, &'static str)> {
+fn parse_meta() -> Option<(String, String)> {
     let parsed: serde_json::Value = serde_json::from_str(META).ok()?;
-    let game: &'static str = Box::leak(parsed.get("game")?.as_str()?.to_owned().into_boxed_str());
-    let fetched: &'static str =
-        Box::leak(parsed.get("fetched")?.as_str()?.to_owned().into_boxed_str());
+    let game = parsed.get("game")?.as_str()?.to_owned();
+    let fetched = parsed.get("fetched")?.as_str()?.to_owned();
     Some((game, fetched))
 }
 
@@ -760,14 +761,7 @@ fn app_min_is_newer(min: &serde_json::Value) -> bool {
 
 fn write_pack_cache(dir: &Path, json: &str) -> Result<(), std::io::Error> {
     std::fs::create_dir_all(dir)?;
-    let dest = dir.join(PACK_CACHE_FILE);
-    let tmp = dir.join(format!(".{PACK_CACHE_FILE}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, json)?;
-    if let Err(e) = std::fs::rename(&tmp, &dest) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
+    crate::fs_util::write_atomic(&dir.join(PACK_CACHE_FILE), json.as_bytes())
 }
 
 /// The site's options, in the order the pack data lists them.
@@ -801,13 +795,41 @@ pub fn fov() -> Option<&'static Fov> {
 }
 
 /// A part's url as a full download url. The pack data carries site-relative
-/// paths; an absolute url passes through, and anything else is refused.
+/// paths; an `https://` (or loopback `http://`) url passes through, and
+/// anything else is refused.
 #[must_use]
 pub fn part_url(url: &str) -> Option<String> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if url.is_empty()
+        || url
+            .bytes()
+            .any(|b| b.is_ascii_control() || b.is_ascii_whitespace())
+    {
+        return None;
+    }
+    if url.starts_with("https://") || is_loopback_http(url) {
         return Some(url.to_owned());
     }
-    url.strip_prefix('/').map(|path| format!("{SITE}/{path}"))
+    let path = url.strip_prefix('/')?;
+    if path.starts_with('/') {
+        return None;
+    }
+    Some(format!("{SITE}/{path}"))
+}
+
+fn is_loopback_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split_once(']').map(|(h, _)| h).unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 /// The raw-DEFLATE stream of a pak split into numbered pieces: the pieces
@@ -867,6 +889,11 @@ pub fn unpack_pak(
     use std::io::Read as _;
     let unpacked = (|| -> Result<(), String> {
         let compressed = compressed_len(pieces)?;
+        if compressed != csize {
+            return Err(format!(
+                "the compressed part is {compressed} bytes, the pack data declares {csize}"
+            ));
+        }
         let mut chain = Pieces::new(pieces)?;
         let mut decoder = flate2::read::DeflateDecoder::new(&mut chain);
         let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
@@ -875,6 +902,7 @@ pub fn unpack_pak(
         let mut state = 0xFFFF_FFFF;
         let mut sha = Sha256::new();
         let mut head = [0u8; 4];
+        let mut head_len = 0usize;
         loop {
             let n = decoder.read(&mut buf).map_err(|e| e.to_string())?;
             if n == 0 {
@@ -885,10 +913,11 @@ pub fn unpack_pak(
             if next > size {
                 return Err("the part is larger than the site says; nothing replaced".into());
             }
-            if written == 0 {
-                let take = head.len().min(chunk.len());
-                head[..take].copy_from_slice(&chunk[..take]);
-                if head != VPK_SIGNATURE {
+            if head_len < head.len() {
+                let take = (head.len() - head_len).min(chunk.len());
+                head[head_len..head_len + take].copy_from_slice(&chunk[..take]);
+                head_len += take;
+                if head_len == head.len() && head != VPK_SIGNATURE {
                     return Err("the decompressed part is not a VPK".into());
                 }
             }
@@ -898,6 +927,9 @@ pub fn unpack_pak(
             written = next;
         }
         drop(file);
+        if head_len < head.len() || head != VPK_SIGNATURE {
+            return Err("the decompressed part is not a VPK".into());
+        }
         let crc = state ^ 0xFFFF_FFFF;
         if written != size {
             return Err(format!(
@@ -907,11 +939,6 @@ pub fn unpack_pak(
         if crc != crc_wanted {
             return Err(format!(
                 "the part's CRC is {crc:#x}, the pack data declares {crc_wanted:#x}"
-            ));
-        }
-        if compressed != csize {
-            return Err(format!(
-                "the compressed part is {compressed} bytes, the pack data declares {csize}"
             ));
         }
         if let Some(prefix) = url_sha_prefix(url) {
@@ -1084,15 +1111,22 @@ pub fn adopt_reused(
 /// Find `part`'s bytes under any `pakNN` name. Nothing is renamed.
 ///
 /// `None` when nothing in `addons` has the part's length and CRC. When the
-/// part's name is free, [`ReusedPart::moved_from`] is the name a later
-/// [`claim_reusable`] would move, and [`ReusedPart::chunks`] are the chunk
-/// files that would follow. When the part's name is already a different
-/// file, the match stays described where it is and `moved_from` is `None`.
+/// part's name is free (no file, `.disabled` sibling, or sidecar claim on
+/// its slot) and the matched file is unmanaged, [`ReusedPart::moved_from`] is
+/// the name a later [`claim_reusable`] would move, and [`ReusedPart::chunks`]
+/// are the chunk files that would follow. Otherwise the match stays described
+/// where it is and `moved_from` is `None`.
 ///
 /// # Errors
 ///
-/// Reading a candidate.
+/// Invalid part name or reading a candidate.
 pub fn locate_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<ReusedPart>> {
+    if !crate::fs_util::is_plain_filename(&part.name) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid part file name {:?}", part.name),
+        ));
+    }
     let Some(found) = find_reusable(addons, part)? else {
         return Ok(None);
     };
@@ -1105,7 +1139,20 @@ pub fn locate_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<Reu
         }));
     }
     let moves = chunk_moves(&found, &dest)?;
-    let blocked = dest.is_file() || moves.iter().any(|(_, target)| target.is_file());
+    let occupied =
+        crate::pak_slot::occupied(addons).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let slot_taken =
+        crate::addons::parse_pak(&part.name).is_some_and(|(n, _)| occupied.contains(&n));
+    let owned_by_sidecar = crate::sidecar::group(addons)
+        .into_iter()
+        .any(|m| m.sidecar.is_some() && m.vpks.iter().any(|v| v.file == found));
+    let blocked = owned_by_sidecar
+        || slot_taken
+        || dest.exists()
+        || disabled_sibling(&dest).exists()
+        || moves
+            .iter()
+            .any(|(_, target)| target.exists() || disabled_sibling(target).exists());
     let from = found
         .file_name()
         .and_then(|n| n.to_str())
@@ -1128,17 +1175,27 @@ pub fn locate_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<Reu
     }))
 }
 
+fn disabled_sibling(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".disabled");
+    PathBuf::from(name)
+}
+
 /// Find `part`'s bytes under any `pakNN` name and, when the part's name is
 /// free, rename them there (chunks of that number follow the dir VPK).
 ///
 /// `None` when nothing in `addons` has the part's length and CRC. When the
-/// part's name is already a different file, the match stays put: `path` is
-/// that other file and `moved_from` is `None`.
+/// part's name is already taken or the match is owned by a sidecar, the match
+/// stays put: `path` is that other file and `moved_from` is `None`.
 ///
 /// # Errors
 ///
-/// Reading a candidate or renaming the match onto a free name.
-pub fn claim_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<ReusedPart>> {
+/// Invalid part name, reading a candidate, or renaming the match onto a free name.
+pub fn claim_reusable(
+    addons: &Path,
+    part: &Part,
+    _permit: crate::install::InstallPermit<'_>,
+) -> std::io::Result<Option<ReusedPart>> {
     let Some(found) = locate_reusable(addons, part)? else {
         return Ok(None);
     };
@@ -1175,8 +1232,8 @@ fn find_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<PathBuf>>
             continue;
         }
         let path = entry.path();
-        let len = entry.metadata()?.len();
-        if len != part.size {
+        let meta = entry.metadata()?;
+        if !meta.is_file() || meta.len() != part.size {
             continue;
         }
         if crc32_file(&path)? != part.crc {
@@ -1192,8 +1249,15 @@ fn find_reusable(addons: &Path, part: &Part) -> std::io::Result<Option<PathBuf>>
 
 fn rename_pak(from: &Path, dest: &Path, chunks: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
     std::fs::rename(from, dest)?;
+    let mut done: Vec<(&Path, &Path)> = vec![(from, dest)];
     for (chunk, target) in chunks {
-        std::fs::rename(chunk, target)?;
+        if let Err(err) = std::fs::rename(chunk, target) {
+            for &(orig, moved) in done.iter().rev() {
+                let _ = std::fs::rename(moved, orig);
+            }
+            return Err(err);
+        }
+        done.push((chunk.as_path(), target.as_path()));
     }
     Ok(())
 }
@@ -1669,16 +1733,29 @@ pub fn check_parts(fresh: &str, dir: &std::path::Path) -> Vec<PackProblem> {
             if !checked.insert(part.url.clone()) {
                 continue;
             }
-            let pieces: Vec<std::path::PathBuf> = part
-                .url
-                .iter()
-                .map(|url| dir.join(url.rsplit('/').next().unwrap_or(url)))
-                .collect();
             let fail = |reason: String| PackProblem::PartFailed {
                 pak: name.clone(),
                 part: part.name.clone(),
                 reason,
             };
+            if !crate::fs_util::is_plain_filename(&part.name) {
+                problems.push(fail(format!("unsafe part name {:?}", part.name)));
+                continue;
+            }
+            let mut pieces: Vec<std::path::PathBuf> = Vec::with_capacity(part.url.len());
+            let mut bad_url = None;
+            for url in &part.url {
+                let file = url.rsplit('/').next().unwrap_or(url);
+                if !crate::fs_util::is_plain_filename(file) {
+                    bad_url = Some(format!("unsafe piece name in url {url:?}"));
+                    break;
+                }
+                pieces.push(dir.join(file));
+            }
+            if let Some(reason) = bad_url {
+                problems.push(fail(reason));
+                continue;
+            }
             if let Some(missing) = pieces.iter().find(|p| !p.is_file()) {
                 problems.push(fail(format!("{} did not download", missing.display())));
                 continue;
