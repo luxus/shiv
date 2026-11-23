@@ -170,6 +170,9 @@ struct PackRowInfo<'a> {
     id: &'a str,
     title: &'a str,
     detail: String,
+    /// Measured gains, "+9.7%".
+    avg: Option<&'a str>,
+    low: Option<&'a str>,
     text: Option<&'a str>,
     warn: Option<&'a str>,
     convars: &'a [ConfigEntry],
@@ -1255,6 +1258,8 @@ impl Perf {
             maximum: 1.0,
             step: 0.05,
             value_text: SharedString::new(),
+            avg: info.avg.unwrap_or_default().into(),
+            low: info.low.unwrap_or_default().into(),
         }
     }
 
@@ -1267,17 +1272,14 @@ impl Perf {
             .get(&option.id)
             .copied()
             .and_then(|i| option.choices.get(i));
-        let gains = |avg: &Option<String>, low: &Option<String>| match (avg, low) {
-            (Some(avg), Some(low)) => format!("avg {avg} · low {low}"),
-            (Some(avg), None) => format!("avg {avg}"),
-            _ => String::new(),
-        };
         let (avg, low) = choice.map_or((&option.avg, &option.low), |c| (&c.avg, &c.low));
         self.pack_row(PackRowInfo {
             kind: PerfPackKind::Option,
             id: &option.id,
             title: &option.title,
-            detail: gains(avg, low),
+            detail: String::new(),
+            avg: avg.as_deref(),
+            low: low.as_deref(),
             text: choice
                 .and_then(|c| c.text.as_deref())
                 .or(option.text.as_deref()),
@@ -1324,16 +1326,31 @@ impl Perf {
             kind: PerfPackKind::Hud,
             id: PACK_HUD_ID,
             title: &hud.title,
-            detail: format!(
-                "avg {} · low {}",
-                hud.avg.clone().unwrap_or_default(),
-                hud.low.clone().unwrap_or_default()
-            ),
+            detail: String::new(),
+            avg: hud.avg.as_deref(),
+            low: hud.low.as_deref(),
             text: hud.text.as_deref(),
             warn: None,
             convars: &[],
             choices: &hud.choices,
             pak: hud.pak_of_choice(picked),
+        })
+    }
+
+    /// A group heading in the options list: its title and blurb.
+    fn heading_row(&self, title: &str, blurb: &str) -> PerfPackRow {
+        self.pack_row(PackRowInfo {
+            kind: PerfPackKind::Heading,
+            id: "",
+            title,
+            detail: blurb.to_string(),
+            avg: None,
+            low: None,
+            text: None,
+            warn: None,
+            convars: &[],
+            choices: &[],
+            pak: None,
         })
     }
 
@@ -1346,6 +1363,8 @@ impl Perf {
             id: PACK_FOV_ID,
             title: "Field of view",
             detail: format!("{} · default {}", fov.cvar, fov.default),
+            avg: None,
+            low: None,
             text: None,
             warn: None,
             convars: &[],
@@ -1429,6 +1448,10 @@ impl Perf {
         let pack = self.pack();
         let mut rows = Vec::new();
         let mut ids = Vec::new();
+        if pack.hud().is_some() || pack.fov().is_some() {
+            rows.push(self.heading_row("HUD and view", ""));
+            ids.push(String::new());
+        }
         if let Some(hud) = pack.hud() {
             rows.push(self.hud_row(hud));
             ids.push(PACK_HUD_ID.to_string());
@@ -1446,23 +1469,7 @@ impl Perf {
             if options.is_empty() {
                 continue;
             }
-            rows.push(PerfPackRow {
-                kind: PerfPackKind::Heading,
-                id: SharedString::new(),
-                title: group.title.as_str().into(),
-                detail: group.text.as_str().into(),
-                ..self.pack_row(PackRowInfo {
-                    kind: PerfPackKind::Heading,
-                    id: "",
-                    title: "",
-                    detail: String::new(),
-                    text: None,
-                    warn: None,
-                    convars: &[],
-                    choices: &[],
-                    pak: None,
-                })
-            });
+            rows.push(self.heading_row(&group.title, &group.text));
             ids.push(String::new());
             for option in options {
                 rows.push(self.option_row(option));

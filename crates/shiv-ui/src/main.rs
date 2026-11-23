@@ -1632,8 +1632,9 @@ mod tests {
             original
         );
 
-        // At the default window size the CompLock options fill the page
-        // below the card: no small box of its own (it was 198 px).
+        // At the default window size the CompLock options are the page's
+        // one scroll, from the tabs down to the footer: no small box of
+        // their own (it was 198 px).
         app.window()
             .set_size(slint::LogicalSize::new(1120.0, 760.0));
         run_until(&app, Duration::from_millis(50), |_| false);
@@ -1647,7 +1648,13 @@ mod tests {
             .expect("the CompLock options list");
         let bottom = options.absolute_position().y + options.size().height;
         assert!(options.size().height > 360.0, "{:?}", options.size());
-        assert!(bottom > 760.0 - 40.0, "reaches the page bottom: {bottom}");
+        let footer = ElementHandle::find_by_element_id(&app, "PerformancePage::footer")
+            .next()
+            .expect("the Apply footer");
+        assert!(
+            (bottom - footer.absolute_position().y).abs() < 1.0,
+            "reaches the footer: {bottom}"
+        );
         click(&app, "All settings");
         assert_eq!(state.get_section(), 1);
         assert_eq!(
@@ -1693,6 +1700,9 @@ mod tests {
         assert_eq!(state.get_editor().control, PerfControl::Choice);
         state.invoke_pick_option(1);
         assert_eq!(state.get_changes().row_count(), 3);
+        // The changes list opens from the footer.
+        click(&app, "Review");
+        run_until(&app, Duration::from_millis(50), |_| false);
         click(&app, "Undo r_mode");
         assert_eq!(state.get_changes().row_count(), 2);
 
@@ -1964,9 +1974,10 @@ mod tests {
         };
         assert!(run_until(&app, Duration::from_secs(20), ready));
 
-        // The rows are the embedded data: the HUD base, the FOV field, and
-        // the options under a heading per group that has any.
-        let expected_rows = 2
+        // The rows are the embedded data: the HUD base and the FOV field
+        // under their heading, and the options under a heading per group
+        // that has any.
+        let expected_rows = 3
             + complock::groups()
                 .iter()
                 .filter(|g| {
@@ -2154,6 +2165,21 @@ mod tests {
             .and_then(|m| m.modified())
             .ok();
         run_until(&app, Duration::from_millis(1100), |_| false);
+        // Reinstall shows while the pointer is on the card.
+        let card = ElementHandle::find_by_accessible_label(&app, "Sound stack update cap")
+            .find(|e| {
+                e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::ListItem)
+            })
+            .expect("the soundcap card");
+        let (at, size) = (card.absolute_position(), card.size());
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(
+                    at.x + size.width / 2.0,
+                    at.y + size.height / 2.0,
+                ),
+            });
+        run_until(&app, Duration::from_millis(50), |_| false);
         let reinstall = ElementHandle::find_by_accessible_label(&app, "Reinstall")
             .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button))
             .expect("the Reinstall button");
