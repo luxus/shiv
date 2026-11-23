@@ -4,7 +4,8 @@
 //! enabled-form file names (no `.disabled` suffix) so toggling a mod never
 //! breaks the link.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -460,31 +461,55 @@ pub fn group(addons: &Path) -> Vec<InstalledMod> {
     let Ok(vpks) = addons::list(addons) else {
         return Vec::new();
     };
-    let mut remaining: Vec<(String, InstalledVpk)> = vpks
-        .into_iter()
-        .filter_map(|v| enabled_name(&v).map(|n| (n, v)))
-        .collect();
+    let mut by_name: HashMap<String, (usize, InstalledVpk)> = HashMap::with_capacity(vpks.len());
+    let mut dupes: Vec<(String, usize, InstalledVpk)> = Vec::new();
+    for (idx, v) in vpks.into_iter().enumerate() {
+        if let Some(name) = enabled_name(&v) {
+            match by_name.entry(name) {
+                Entry::Vacant(e) => {
+                    e.insert((idx, v));
+                }
+                Entry::Occupied(e) => {
+                    dupes.push((e.key().clone(), idx, v));
+                }
+            }
+        }
+    }
     let mut out = Vec::new();
     for s in read_all(addons) {
-        let wanted: HashSet<&str> = s.vpks.iter().map(String::as_str).collect();
-        let mut mine = Vec::new();
-        remaining.retain(|(name, v)| {
-            if wanted.contains(name.as_str()) {
-                mine.push(v.clone());
-                false
-            } else {
-                true
+        let mut mine: Vec<(usize, InstalledVpk)> = Vec::new();
+        for name in &s.vpks {
+            if let Some(entry) = by_name.remove(name) {
+                mine.push(entry);
             }
-        });
+        }
+        if !dupes.is_empty() {
+            dupes.retain(|(name, idx, v)| {
+                if s.vpks.iter().any(|w| w == name) {
+                    mine.push((*idx, v.clone()));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         if !mine.is_empty() {
+            if mine.len() > 1 {
+                mine.sort_by_key(|(idx, _)| *idx);
+            }
             out.push(InstalledMod {
                 sidecar: Some(s),
-                vpks: mine,
+                vpks: mine.into_iter().map(|(_, v)| v).collect(),
             });
         }
     }
-    remaining.sort_by(|a, b| a.0.cmp(&b.0));
-    out.extend(remaining.into_iter().map(|(_, v)| InstalledMod {
+    let mut leftover: Vec<(String, usize, InstalledVpk)> = by_name
+        .into_iter()
+        .map(|(name, (idx, v))| (name, idx, v))
+        .chain(dupes)
+        .collect();
+    leftover.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out.extend(leftover.into_iter().map(|(_, _, v)| InstalledMod {
         sidecar: None,
         vpks: vec![v],
     }));
