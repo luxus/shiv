@@ -2838,31 +2838,22 @@ mod tests {
         use std::sync::Arc;
 
         let vpk = b"\x34\x12\xaa\x55\x02\x00\x00\x00registry";
-        let (descriptor, catalog, detail, artifact) = (
-            r#"{"format":"dmm-source","protocolVersion":"1.0",
+        let descriptor = r#"{"format":"dmm-source","protocolVersion":"1.0",
                "sourceId":"my-community","name":"Example Community","gameId":"deadlock",
                "catalog":{"kind":"static","indexUrl":"./catalog.json"},
-               "networkOrigins":{"api":["ORIGIN"],"downloads":["ORIGIN"],"media":["ORIGIN"]}}"#,
-            r#"{"snapshotId":"s1","items":[{"id":"example","availability":"available",
-               "detailUrl":"./mods/example.json"}]}"#,
-            r#"{"id":"example","title":"Harmless Example","availability":"available",
-               "isNsfw":false,"author":"Example Community","description":"One VPK.",
-               "images":["../files/shot.png"],
-               "releaseHistoryUrl":"../history.json",
-               "release":{"id":"release-1","contentRevision":"revision-1","version":"1.0.0",
-               "artifacts":[{"id":"example-vpk","filename":"example.vpk","format":"vpk",
-               "download":{"url":"../files/example.vpk"},"size":141}],
-               "installation":{"mode":"manual"}}}"#,
-            vpk.to_vec(),
-        );
+               "networkOrigins":{"api":["ORIGIN"],"downloads":["ORIGIN"],"media":["ORIGIN"]}}"#;
+        let artifact = vpk.to_vec();
         let api_catalog = r#"[{"id":"catalog","remoteId":"1","name":"Catalog Mod"}]"#;
-        let (d, c, i) = (descriptor.to_owned(), catalog.to_owned(), detail.to_owned());
+        let revision = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+        let revision_for_server = Arc::clone(&revision);
+        let d = descriptor.to_owned();
         let shot = stub_png();
         let server = tiny_http::Server::http("127.0.0.1:0").expect("stub server");
         let url = format!("http://{}", server.server_addr().to_ip().expect("ip"));
         let origin = url.clone();
         std::thread::spawn(move || {
             for req in server.incoming_requests() {
+                let rev = revision_for_server.load(std::sync::atomic::Ordering::SeqCst);
                 if req.url() == "/files/example.vpk" {
                     let _ = req.respond(tiny_http::Response::from_data(artifact.clone()));
                     continue;
@@ -2886,8 +2877,18 @@ mod tests {
                 }
                 let (body, status) = match req.url() {
                     "/d.json" => (d.replace("ORIGIN", &origin), 200),
-                    "/catalog.json" => (c.clone(), 200),
-                    "/mods/example.json" => (i.clone(), 200),
+                    "/catalog.json" => (
+                        format!(
+                            r#"{{"snapshotId":"s{rev}","items":[{{"id":"example","availability":"available","detailUrl":"./mods/example.json"}}]}}"#
+                        ),
+                        200,
+                    ),
+                    "/mods/example.json" => (
+                        format!(
+                            r#"{{"id":"example","title":"Harmless Example","availability":"available","isNsfw":false,"author":"Example Community","description":"One VPK.","images":["../files/shot.png"],"releaseHistoryUrl":"../history.json","release":{{"id":"release-{rev}","contentRevision":"revision-{rev}","version":"1.0.0","artifacts":[{{"id":"example-vpk","filename":"example.vpk","format":"vpk","download":{{"url":"../files/example.vpk"}},"size":141}}],"installation":{{"mode":"manual"}}}}}}"#
+                        ),
+                        200,
+                    ),
                     "/v2/mods" => (api_catalog.to_owned(), 200),
                     _ => (String::new(), 404),
                 };
@@ -3108,6 +3109,11 @@ mod tests {
         assert!(row.managed);
         assert_eq!(row.id.as_str(), "src-my_2dcommunity-example");
         assert!(row.detail.contains("revision-1"), "{}", row.detail);
+        assert_eq!(
+            row.pill.as_str(),
+            "",
+            "the installed revision is the one the registry publishes"
+        );
 
         // The registry mod's page opens too, and its Changelog tab reads
         // the release history its registry publishes.
@@ -3126,6 +3132,22 @@ mod tests {
         assert_eq!(change.title.as_str(), "Version 1.0.0 2026-11-01");
         assert_eq!(change.body.as_str(), "First release.");
         detail.invoke_close_detail();
+
+        // A later snapshot publishes another content revision. Installed
+        // compares the sidecar with the catalog just fetched, not a copy
+        // baked into this build.
+        revision.store(2, std::sync::atomic::Ordering::SeqCst);
+        app.global::<crate::SourcesState>().invoke_refresh();
+        assert!(
+            run_until(&app, Duration::from_secs(10), |a| {
+                let rows = a.global::<crate::InstalledState>().get_rows();
+                rows.row_count() == 1
+                    && rows
+                        .row_data(0)
+                        .is_some_and(|row| row.pill.as_str() == "Update available")
+            }),
+            "a newer registry snapshot shows Update available"
+        );
 
         // The store remembers the source; re-loading it finds the same one.
         let reloaded = Registry::load(&GamePaths::from_root(game_root)).expect("registry");

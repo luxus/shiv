@@ -1291,6 +1291,32 @@ pub(crate) fn reload() {
     with_installed(|i| i.refresh(false));
 }
 
+/// The list may already have been read. Recompute its drift from the
+/// catalogs now in memory.
+pub(crate) fn catalogs_ready() {
+    with_installed(|i| i.note_loaded_catalogs());
+}
+
+fn note_drift(list: &mut [Entry]) -> HashMap<String, ResetPlan> {
+    let catalogs = crate::sources::catalogs();
+    let mut plans = HashMap::new();
+    for entry in list {
+        entry.drift = drift::state(
+            entry.facts.untouched,
+            entry.version.as_deref(),
+            &published(entry, &catalogs),
+        );
+        entry.can_reset = false;
+        if matches!(entry.drift, Drift::Modified | Drift::UpdateAvailable)
+            && let Some(plan) = reset_plan(entry, &catalogs)
+        {
+            entry.can_reset = true;
+            plans.insert(entry.id.clone(), plan);
+        }
+    }
+    plans
+}
+
 /// The Show NSFW switch flipped or the catalog loaded: re-blur or unblur
 /// the Installed thumbnails.
 pub(crate) fn nsfw_changed() {
@@ -1449,22 +1475,10 @@ impl Installed {
             Err(text) => return self.fail(text),
         };
         let mut list = entries(&loaded.mods);
-        let catalogs = crate::sources::catalogs();
-        let mut plans = HashMap::new();
-        for (e, f) in list.iter_mut().zip(loaded.facts) {
-            e.facts = f;
-            e.drift = drift::state(
-                e.facts.untouched,
-                e.version.as_deref(),
-                &published(e, &catalogs),
-            );
-            if matches!(e.drift, Drift::Modified | Drift::UpdateAvailable)
-                && let Some(plan) = reset_plan(e, &catalogs)
-            {
-                e.can_reset = true;
-                plans.insert(e.id.clone(), plan);
-            }
+        for (entry, facts) in list.iter_mut().zip(loaded.facts) {
+            entry.facts = facts;
         }
+        let plans = note_drift(&mut list);
         *self.plans.borrow_mut() = plans;
         self.rows
             .set_vec(list.iter().map(|e| self.build_row(e)).collect::<Vec<_>>());
@@ -1484,6 +1498,18 @@ impl Installed {
         *self.entries.borrow_mut() = list;
         // Dropped files waiting behind the last action or dialog go next.
         self.step();
+    }
+
+    fn note_loaded_catalogs(&self) {
+        if self.generation.get() == 0 {
+            return;
+        }
+        let mut list = self.entries.borrow().clone();
+        let plans = note_drift(&mut list);
+        *self.plans.borrow_mut() = plans;
+        self.rows
+            .set_vec(list.iter().map(|e| self.build_row(e)).collect::<Vec<_>>());
+        *self.entries.borrow_mut() = list;
     }
 
     /// Fetch thumbnails the cache does not hold yet, one worker for the batch.

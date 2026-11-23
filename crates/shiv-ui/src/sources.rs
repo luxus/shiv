@@ -209,6 +209,7 @@ impl Sources {
         }
         *self.catalogs.borrow_mut() = catalogs;
         browse::refresh_sources();
+        crate::installed::catalogs_ready();
     }
 
     fn start_review(&self) {
