@@ -2,9 +2,9 @@
 // the API's perf catalog, review the pending changes, then write them to
 // gameinfo.gi.
 
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Button, TextButton, SearchField, Dropdown, Slider, Switch } from "widgets.slint";
+import { Button, TextButton, SearchField, Dropdown, Slider, Switch, Tooltip } from "widgets.slint";
 import { LoadState, CenteredMessage } from "browse.slint";
 
 // One of the five preset buttons.
@@ -36,7 +36,7 @@ export struct PerfPackRow {
     // The option's id ("soundcap", "hud", "fov"); "" for headings.
     id: string,
     title: string,
-    // "avg +9.7% · low +11.1%", or the group's blurb for a heading.
+    // The group's blurb for a heading, the convar and default for FOV.
     detail: string,
     // One line of the option's description.
     text: string,
@@ -58,6 +58,9 @@ export struct PerfPackRow {
     // The choice titles, when the option has versions.
     choices: [string],
     choice-index: int,
+    // Measured gains, "+9.7%"; "" when the site gives none.
+    avg: string,
+    low: string,
     // The FOV slider's value and range.
     number: float,
     minimum: float,
@@ -167,109 +170,187 @@ export global PerfState {
     callback dismiss-result();
 }
 
-component TierButton inherits Rectangle {
-    in property <PerfTier> tier;
+
+// A preset in the one-line preset strip.
+component PresetChip inherits Rectangle {
+    in property <string> label;
     in property <bool> active;
+    in property <bool> available: true;
+    // Hover text; "" for none.
+    in property <string> tip;
     callback clicked;
 
     accessible-role: button;
-    accessible-label: root.tier.label + " preset";
+    accessible-label: root.label + " preset";
     accessible-action-default => {
-        if (root.tier.available) {
+        if (root.available) {
             root.clicked();
         }
     }
 
-    height: 52px;
+    height: Theme.control-h;
+    min-width: t.preferred-width + 2 * Theme.s2;
     border-radius: Theme.radius;
     border-width: 1px;
-    border-color: root.active ? Theme.accent : (ta.has-hover && root.tier.available ? Theme.border-strong : Theme.border);
-    background: root.active ? Theme.raised : (ta.has-hover && root.tier.available ? Theme.hover : transparent);
-    opacity: root.tier.available ? 1.0 : 0.4;
+    border-color: root.active ? Theme.accent : (ta.has-hover && root.available ? Theme.border-strong : Theme.border);
+    background: root.active ? Theme.accent.with-alpha(0.12) : (ta.has-hover && root.available ? Theme.hover : transparent);
+    opacity: root.available ? 1.0 : 0.4;
 
-    VerticalLayout {
-        padding-left: Theme.s2;
-        padding-right: Theme.s1;
-        alignment: center;
-        spacing: 2px;
-        Text {
-            text: root.tier.label;
-            color: root.active ? Theme.accent : Theme.text;
-            font-size: Theme.text-md;
-            font-weight: 600;
-            overflow: elide;
-        }
-        Text {
-            text: root.tier.available ? root.tier.name : "No preset in the catalog";
-            color: Theme.text-muted;
-            font-size: Theme.text-sm;
-            overflow: elide;
-        }
+    t := Text {
+        text: root.label;
+        color: root.active ? Theme.accent : Theme.text;
+        font-size: Theme.text-md;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 
     ta := TouchArea {
-        enabled: root.tier.available;
-        mouse-cursor: root.tier.available ? pointer : default;
+        enabled: root.available;
+        mouse-cursor: root.available ? pointer : default;
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if (self.has-hover) {
+                Tooltip.show(root.tip, root.absolute-position.x, root.absolute-position.y, root.height);
+            } else {
+                Tooltip.hide(root.tip);
+            }
+        }
     }
 }
 
-component CompLockCard inherits Rectangle {
-    in property <PerfComplock> card;
+// One choice of an option with versions (HUD++ damage numbers, particle sets).
+component ChoiceChip inherits Rectangle {
+    in property <string> label;
     in property <bool> active;
     callback clicked;
 
-    accessible-role: button;
-    accessible-label: "CompLock preset";
-    accessible-action-default => {
-        if (root.card.available) {
-            root.clicked();
-        }
-    }
+    accessible-role: radio-button;
+    accessible-label: root.label;
+    accessible-checked: root.active;
+    accessible-action-default => { root.clicked(); }
 
-    height: 72px;
+    height: 28px;
+    min-width: t.preferred-width + 2 * 12px;
     border-radius: Theme.radius;
     border-width: 1px;
-    border-color: root.active ? Theme.accent : (ta.has-hover && root.card.available ? Theme.border-strong : Theme.border);
-    background: root.active ? Theme.raised : (ta.has-hover && root.card.available ? Theme.hover : transparent);
-    opacity: root.card.available ? 1.0 : 0.4;
+    border-color: root.active ? Theme.accent : (ta.has-hover ? Theme.border-strong : Theme.border);
+    background: root.active ? Theme.accent.with-alpha(0.12) : transparent;
 
-    VerticalLayout {
-        padding-left: Theme.s2;
-        padding-right: Theme.s1;
-        alignment: center;
-        spacing: 2px;
-        Text {
-            text: root.card.title;
-            color: root.active ? Theme.accent : Theme.text;
-            font-size: Theme.text-md;
-            font-weight: 600;
-            overflow: elide;
-        }
-        Text {
-            text: root.card.subtitle;
-            color: Theme.text-muted;
-            font-size: Theme.text-sm;
-            overflow: elide;
-        }
-        Text {
-            text: root.card.note;
-            color: Theme.text-muted;
-            font-size: Theme.text-sm;
-            overflow: elide;
-        }
+    t := Text {
+        text: root.label;
+        color: root.active ? Theme.text : Theme.text-muted;
+        font-size: Theme.text-sm;
+        font-weight: root.active ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 
     ta := TouchArea {
-        enabled: root.card.available;
-        mouse-cursor: root.card.available ? pointer : default;
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 }
 
-// One row of the CompLock options list: a heading, an option (switch,
-// choices and install), the HUD++ base or the FOV slider.
-component PackRow inherits Rectangle {
+// Tab in the page's section switch: text with an accent underline.
+component SectionTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selected: root.active;
+    accessible-action-default => { root.clicked(); }
+
+    height: 36px;
+    min-width: t.preferred-width;
+
+    t := Text {
+        y: 0px;
+        height: parent.height - 2px;
+        text: root.label;
+        color: root.active ? Theme.text : (ta.has-hover ? Theme.text : Theme.text-muted);
+        font-size: Theme.text-md;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: Theme.accent;
+        visible: root.active;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Group heading: small caps title with its blurb on the same line.
+component SectionHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> blurb;
+    spacing: Theme.s1 + 4px;
+    alignment: start;
+    padding-bottom: 2px;
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1.2px;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.blurb;
+        color: Theme.text-muted;
+        font-size: Theme.text-sm;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// The lead mark of a pak-only option: a ring, filled with a check when the
+// pak is installed.
+component InstalledMark inherits Rectangle {
+    in property <bool> installed;
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    border-width: root.installed ? 0px : 1.5px;
+    border-color: Theme.border-strong;
+    background: root.installed ? Theme.success : transparent;
+    if root.installed: Path {
+        width: 12px;
+        height: 12px;
+        x: 4px;
+        y: 4px;
+        commands: "M 2 6.5 L 5 9.5 L 10 3";
+        viewbox-width: 12;
+        viewbox-height: 12;
+        stroke: Theme.on-accent;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+}
+
+// The lead mark of the FOV card: a view cone, so its lead slot is not empty.
+component FovMark inherits Path {
+    width: 20px;
+    height: 20px;
+    viewbox-width: 20;
+    viewbox-height: 20;
+    commands: "M 10 17 L 2.5 5 M 10 17 L 17.5 5 M 4.2 7.6 A 11 11 0 0 1 15.8 7.6";
+    stroke: Theme.text-muted;
+    stroke-width: 1.5px;
+    fill: transparent;
+}
+
+// One CompLock option as its own card: lead control, name and one line,
+// the measured gains, the pak's state, and its choices or the FOV slider
+// inside the card.
+component PackCard inherits Rectangle {
     in property <PerfPackRow> item;
     callback toggled;
     callback picked(int);
@@ -279,146 +360,151 @@ component PackRow inherits Rectangle {
     accessible-role: list-item;
     accessible-label: root.item.title;
 
-    height: root.item.kind == PerfPackKind.heading ? 44px : 64px;
-    background: ta.has-hover && root.item.kind != PerfPackKind.heading ? Theme.hover : transparent;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.border-strong : Theme.border;
+    background: Theme.raised;
 
-    // Behind the row's controls: a later sibling is hit first, and this
-    // one used to sit on top and swallow every click on Install, the
-    // switches and the dropdowns.
+    height: layout.preferred-height;
+
+    // The card's content sits inside its hover area, so pointing at a
+    // control in the card keeps the card hovered (Reinstall stays).
     ta := TouchArea {
-        mouse-cursor: root.item.kind == PerfPackKind.heading ? default : pointer;
-        clicked => {
-            if (root.item.kind == PerfPackKind.option && !root.item.has-toggle && root.item.choices.length == 0 && !root.item.has-pak) {
-                root.toggled();
-            }
-        }
-    }
+        layout := VerticalLayout {
+            padding: Theme.s2;
+            padding-top: 14px;
+            padding-bottom: 14px;
+            spacing: 12px;
 
-    VerticalLayout {
-        padding-left: Theme.s2;
-        padding-right: Theme.s2;
-        padding-top: 4px;
-        padding-bottom: 4px;
-        spacing: 1px;
+            HorizontalLayout {
+                spacing: Theme.s2;
 
-        if root.item.kind == PerfPackKind.heading: HorizontalLayout {
-            spacing: Theme.s1;
-            alignment: start;
-            Text {
-                text: root.item.title;
-                color: Theme.text;
-                font-size: Theme.text-md;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
-            Text {
-                text: root.item.detail;
-                color: Theme.text-muted;
-                font-size: Theme.text-sm;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-        }
+                // Lead: the option's switch, else the pak's installed mark, else the FOV mark.
+                VerticalLayout {
+                    width: 40px;
+                    alignment: center;
+                    if root.item.has-toggle: Switch {
+                        label: root.item.title;
+                        checked: root.item.checked;
+                        toggled => { root.toggled(); }
+                    }
+                    if !root.item.has-toggle && root.item.has-pak: HorizontalLayout {
+                        alignment: center;
+                        InstalledMark { installed: root.item.installed; }
+                    }
+                    if root.item.kind == PerfPackKind.fov: HorizontalLayout {
+                        alignment: center;
+                        FovMark { }
+                    }
+                }
 
-        if root.item.kind != PerfPackKind.heading: HorizontalLayout {
-            spacing: Theme.s2;
-
-            VerticalLayout {
-                horizontal-stretch: 1;
-                alignment: center;
-                spacing: 1px;
-                HorizontalLayout {
-                    spacing: Theme.s1;
-                    alignment: start;
-                    // The name stays whole; the averages elide first.
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 3px;
                     Text {
                         text: root.item.title;
-                        min-width: self.preferred-width;
                         color: Theme.text;
-                        font-size: Theme.text-md;
+                        font-size: Theme.text-lg;
                         font-weight: 600;
+                        overflow: elide;
                     }
-                    Text {
-                        text: root.item.detail;
-                        visible: root.item.detail != "";
+                    if root.item.text != "": Text {
+                        text: root.item.text;
                         color: Theme.text-muted;
                         font-size: Theme.text-sm;
-                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if root.item.kind == PerfPackKind.fov: Text {
+                        text: root.item.detail;
+                        color: Theme.text-muted;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                    }
+                    if root.item.warn != "": Text {
+                        text: root.item.warn;
+                        color: Theme.danger;
+                        font-size: Theme.text-sm;
                         overflow: elide;
                     }
                 }
-                Text {
-                    text: root.item.text;
-                    visible: root.item.text != "";
-                    color: Theme.text-muted;
-                    font-size: Theme.text-sm;
-                    overflow: elide;
+
+                // Measured gains, right-aligned in one column.
+                if root.item.avg != "": VerticalLayout {
+                    width: 156px;
+                    alignment: center;
+                    spacing: 2px;
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 6px;
+                        Text { text: root.item.avg; color: Theme.success; font-size: Theme.text-md; font-weight: 600; }
+                        Text { text: "avg"; color: Theme.text-muted; font-size: Theme.text-sm; vertical-alignment: center; width: 46px; }
+                    }
+                    if root.item.low != "": HorizontalLayout {
+                        alignment: end;
+                        spacing: 6px;
+                        Text { text: root.item.low; color: Theme.success; font-size: Theme.text-md; font-weight: 600; }
+                        Text { text: "1% low"; color: Theme.text-muted; font-size: Theme.text-sm; vertical-alignment: center; width: 46px; }
+                    }
                 }
-                Text {
-                    text: root.item.warn;
-                    visible: root.item.warn != "";
-                    color: Theme.danger;
-                    font-size: Theme.text-sm;
-                    overflow: elide;
+
+                if root.item.kind == PerfPackKind.fov: Slider {
+                    width: 300px;
+                    label: "";
+                    value: root.item.number;
+                    minimum: root.item.minimum;
+                    maximum: root.item.maximum;
+                    step: root.item.step;
+                    value-text: root.item.value-text;
+                    changed(v) => { root.fov-changed(v); }
+                }
+
+                // The pak: Install / Update; once current, the lead check says
+                // so and Reinstall shows on hover.
+                // Always reserved, so the gains line up from card to card.
+                if root.item.kind != PerfPackKind.fov: VerticalLayout {
+                    width: 156px;
+                    alignment: center;
+                    if root.item.has-pak && !root.item.current: Button {
+                        text: root.item.install-label;
+                        disabled: root.item.installing;
+                        clicked => { root.installed(); }
+                    }
+                    if root.item.has-pak && root.item.current: HorizontalLayout {
+                        alignment: end;
+                        height: Theme.control-h;
+                        if ta.has-hover: TextButton {
+                            text: "Reinstall";
+                            clicked => { root.installed(); }
+                        }
+                    }
                 }
             }
 
-            if root.item.choices.length > 0: Dropdown {
-                width: 190px;
-                label: root.item.title;
-                options: root.item.choices;
-                current-index: root.item.choice-index;
-                selected(i) => { root.picked(i); }
-            }
-
-            if root.item.has-toggle: Switch {
-                label: root.item.title;
-                checked: root.item.checked;
-                toggled => { root.toggled(); }
-            }
-
-            if root.item.kind == PerfPackKind.fov: Slider {
-                width: 190px;
-                label: "Field of view";
-                value: root.item.number;
-                minimum: root.item.minimum;
-                maximum: root.item.maximum;
-                step: root.item.step;
-                value-text: root.item.value-text;
-                changed(v) => { root.fov-changed(v); }
-            }
-
-            if root.item.has-pak && !root.item.current: Button {
-                width: 150px;
-                text: root.item.install-label;
-                disabled: root.item.installing;
-                clicked => { root.installed(); }
-            }
-            if root.item.has-pak && root.item.current: HorizontalLayout {
-                width: 150px;
+            // Versions as chips, indented under the name.
+            if root.item.choices.length > 0: HorizontalLayout {
+                padding-left: 40px + Theme.s2;
                 spacing: Theme.s1;
-                alignment: end;
+                alignment: start;
                 Text {
-                    text: root.item.install-label;
+                    text: root.item.kind == PerfPackKind.hud ? "DAMAGE NUMBERS" : "VERSION";
                     color: Theme.text-muted;
-                    font-size: Theme.text-md;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
                     vertical-alignment: center;
                 }
-                TextButton {
-                    text: "Reinstall";
-                    clicked => { root.installed(); }
+                for c[i] in root.item.choices: ChoiceChip {
+                    label: c;
+                    active: i == root.item.choice-index;
+                    clicked => { root.picked(i); }
                 }
             }
+
         }
     }
-
-    Rectangle {
-        y: parent.height - 1px;
-        height: 1px;
-        background: Theme.border;
-    }
-
 }
+
 
 component SettingRow inherits Rectangle {
     in property <PerfRow> item;
@@ -658,7 +744,8 @@ component ChangeRow inherits Rectangle {
 
     HorizontalLayout {
         padding-left: Theme.s2;
-        padding-right: Theme.s1;
+        // Room for the list's scroll bar.
+        padding-right: Theme.s3;
         spacing: Theme.s1;
         VerticalLayout {
             horizontal-stretch: 1;
@@ -692,27 +779,97 @@ component ChangeRow inherits Rectangle {
     }
 }
 
+
 export component PerformancePage inherits Rectangle {
     background: Theme.bg;
 
-    VerticalLayout {
-        padding: Theme.s3;
-        padding-bottom: Theme.s2;
-        spacing: Theme.s2;
+    // The pending-changes list above the footer is open.
+    property <bool> review-open: false;
 
+    VerticalLayout {
         VerticalLayout {
-            spacing: 2px;
-            Text {
-                text: "Performance";
-                color: Theme.text;
-                font-size: Theme.text-xl;
-                font-weight: 600;
+            vertical-stretch: 0;
+            padding: Theme.s3;
+            padding-bottom: 0px;
+            spacing: Theme.s2;
+
+            VerticalLayout {
+                spacing: 2px;
+                Text {
+                    text: "Performance";
+                    color: Theme.text;
+                    font-size: Theme.text-xl;
+                    font-weight: 600;
+                }
+                Text {
+                    text: PerfState.status;
+                    color: Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    overflow: elide;
+                }
             }
-            Text {
-                text: PerfState.status;
-                color: Theme.text-muted;
-                font-size: Theme.text-md;
-                overflow: elide;
+
+            // Presets on one line; the picked one's source below it.
+            if PerfState.load-state == LoadState.ready: VerticalLayout {
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: Theme.s1;
+                    alignment: start;
+                    Text {
+                        text: "PRESET";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                        font-weight: 700;
+                        letter-spacing: 1.2px;
+                        vertical-alignment: center;
+                        width: 64px;
+                    }
+                    for tier[i] in PerfState.tiers: PresetChip {
+                        label: tier.label;
+                        available: tier.available;
+                        active: PerfState.active-tier == i;
+                        clicked => { PerfState.pick-tier(i); }
+                    }
+                    PresetChip {
+                        label: "CompLock";
+                        tip: PerfState.complock.note;
+                        available: PerfState.complock.available;
+                        active: PerfState.complock-staged;
+                        clicked => { PerfState.stage-complock(); }
+                    }
+                }
+                Text {
+                    x: 64px + Theme.s1;
+                    text: PerfState.complock-staged ? PerfState.complock.subtitle
+                        : (PerfState.active-tier >= 0 ? PerfState.tiers[PerfState.active-tier].name
+                        : "A preset stages a whole config. Nothing is written until you apply.");
+                    color: Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    overflow: elide;
+                }
+            }
+
+            if PerfState.load-state == LoadState.ready: Rectangle {
+                height: 36px;
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.border;
+                }
+                HorizontalLayout {
+                    spacing: Theme.s3;
+                    alignment: start;
+                    SectionTab {
+                        label: "CompLock options";
+                        active: PerfState.section == 0;
+                        clicked => { PerfState.section = 0; }
+                    }
+                    SectionTab {
+                        label: "All settings";
+                        active: PerfState.section == 1;
+                        clicked => { PerfState.section = 1; }
+                    }
+                }
             }
         }
 
@@ -740,79 +897,54 @@ export component PerformancePage inherits Rectangle {
             }
         }
 
-        if PerfState.load-state == LoadState.ready: HorizontalLayout {
-            spacing: Theme.s1;
-            for tier[i] in PerfState.tiers: TierButton {
-                horizontal-stretch: 1;
-                tier: tier;
-                active: PerfState.active-tier == i;
-                clicked => { PerfState.pick-tier(i); }
+        // The page's one scroll: group headings and one card per option.
+        if PerfState.load-state == LoadState.ready && PerfState.section == 0: complock-options := ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-left: Theme.s3;
+                padding-right: Theme.s3;
+                padding-top: Theme.s2;
+                padding-bottom: Theme.s3;
+                spacing: 10px;
+                alignment: start;
+                for pack[i] in PerfState.pack-rows: VerticalLayout {
+                    padding-top: pack.kind == PerfPackKind.heading && i > 0 ? Theme.s2 : 0px;
+                    if pack.kind == PerfPackKind.heading: SectionHeader {
+                        title: pack.title.to-uppercase();
+                        blurb: pack.detail;
+                    }
+                    if pack.kind != PerfPackKind.heading: PackCard {
+                        item: pack;
+                        toggled => { PerfState.toggle-pack(pack.id); }
+                        picked(c) => { PerfState.pick-pack-choice(pack.id, c); }
+                        installed => { PerfState.install-pack(pack.id); }
+                        fov-changed(v) => { PerfState.set-fov(v); }
+                    }
+                }
             }
         }
 
-        if PerfState.load-state == LoadState.ready: CompLockCard {
-            card: PerfState.complock;
-            active: PerfState.complock-staged;
-            clicked => { PerfState.stage-complock(); }
-        }
-
-        if PerfState.load-state == LoadState.ready: HorizontalLayout {
+        // Every setting: the searchable list and the selected one's editor.
+        if PerfState.load-state == LoadState.ready && PerfState.section == 1: HorizontalLayout {
             vertical-stretch: 1;
+            padding: Theme.s3;
+            padding-top: Theme.s2;
             spacing: Theme.s3;
-
-            // The left column fills the page height and is its one scroll:
-            // either the site's CompLock options (group headings, convar
-            // switches, choice dropdowns, pak installs, HUD++ base, FOV) or
-            // the searchable list of every setting.
             VerticalLayout {
                 horizontal-stretch: 1;
                 spacing: Theme.s1;
-                HorizontalLayout {
-                    spacing: Theme.s1;
-                    alignment: start;
-                    Button {
-                        text: "CompLock options";
-                        primary: PerfState.section == 0;
-                        clicked => { PerfState.section = 0; }
-                    }
-                    Button {
-                        text: "All settings";
-                        primary: PerfState.section == 1;
-                        clicked => { PerfState.section = 1; }
-                    }
-                }
-                if PerfState.section == 0: complock-options := Rectangle {
-                    vertical-stretch: 1;
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    clip: true;
-                    ListView {
-                        x: 1px;
-                        y: 1px;
-                        width: parent.width - 2px;
-                        height: parent.height - 2px;
-                        for pack[i] in PerfState.pack-rows: PackRow {
-                            item: pack;
-                            toggled => { PerfState.toggle-pack(pack.id); }
-                            picked(c) => { PerfState.pick-pack-choice(pack.id, c); }
-                            installed => { PerfState.install-pack(pack.id); }
-                            fov-changed(v) => { PerfState.set-fov(v); }
-                        }
-                    }
-                }
-                if PerfState.section == 1: SearchField {
+                SearchField {
                     placeholder: "Search settings";
                     edited(t) => { PerfState.search(t); }
                 }
-                if PerfState.section == 1: Text {
+                Text {
                     text: PerfState.list-note;
                     color: Theme.text-muted;
                     font-size: Theme.text-sm;
                 }
-                if PerfState.section == 1: Rectangle {
+                Rectangle {
                     vertical-stretch: 1;
-                    border-radius: Theme.radius;
+                    border-radius: Theme.radius-md;
                     border-width: 1px;
                     border-color: Theme.border;
                     clip: true;
@@ -828,117 +960,89 @@ export component PerformancePage inherits Rectangle {
                     }
                 }
             }
+            EditorPanel {
+                width: 340px;
+                e: PerfState.editor;
+            }
+        }
 
-            // The selected setting, the pending changes and Apply.
-            VerticalLayout {
-                horizontal-stretch: 0;
-                // The CompLock options have no setting editor: the column
-                // narrows to the pending changes and Apply.
-                width: PerfState.section == 0 ? 300px : 340px;
-                spacing: Theme.s2;
-
-                if PerfState.section == 1: EditorPanel {
-                    vertical-stretch: 3;
-                    min-height: 220px;
-                    e: PerfState.editor;
+        // The staged changes, opened from the footer.
+        if PerfState.load-state == LoadState.ready && root.review-open && PerfState.changes.length > 0: Rectangle {
+            height: min(PerfState.changes.length * 40px + 2px, 200px);
+            background: Theme.bg-sunken;
+            Rectangle { y: 0px; height: 1px; background: Theme.border; }
+            ListView {
+                x: Theme.s2;
+                y: 1px;
+                width: parent.width - 2 * Theme.s2;
+                height: parent.height - 1px;
+                for change[i] in PerfState.changes: ChangeRow {
+                    change: change;
+                    remove => { PerfState.remove-change(i); }
                 }
+            }
+        }
 
+        // Sticky footer: what is staged, the outcome, and Apply.
+        if PerfState.load-state == LoadState.ready: footer := Rectangle {
+            height: 76px;
+            background: Theme.sidebar;
+            Rectangle { y: 0px; height: 1px; background: Theme.border; }
+            HorizontalLayout {
+                padding-left: Theme.s3;
+                padding-right: Theme.s3;
+                spacing: Theme.s2;
                 VerticalLayout {
-                    vertical-stretch: 2;
-                    spacing: Theme.s1;
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 4px;
                     HorizontalLayout {
+                        spacing: Theme.s2;
+                        alignment: start;
                         Text {
-                            horizontal-stretch: 1;
-                            text: PerfState.changes.length == 0 ? "No pending changes" : "Pending changes (" + PerfState.changes.length + ")";
-                            color: Theme.text;
+                            text: PerfState.changes.length > 0
+                                ? (PerfState.changes.length == 1 ? "1 pending change" : PerfState.changes.length + " pending changes")
+                                : (PerfState.result-title != "" ? PerfState.result-title : "No pending changes");
+                            color: PerfState.result-error ? Theme.danger
+                                : (PerfState.changes.length > 0 ? Theme.text
+                                : (PerfState.result-title != "" ? Theme.success : Theme.text-muted));
                             font-size: Theme.text-md;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
-                        TextButton {
+                        if PerfState.changes.length > 0: TextButton {
+                            text: root.review-open ? "Hide" : "Review";
+                            clicked => { root.review-open = !root.review-open; }
+                        }
+                        if PerfState.changes.length > 0: TextButton {
                             text: "Discard all";
-                            disabled: PerfState.changes.length == 0 || PerfState.busy;
+                            disabled: PerfState.busy;
                             clicked => { PerfState.discard(); }
                         }
-                    }
-                    Rectangle {
-                        vertical-stretch: 1;
-                        min-height: 80px;
-                        border-radius: Theme.radius;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        clip: true;
-                        if PerfState.changes.length == 0: Text {
-                            x: Theme.s2;
-                            width: parent.width - 2 * Theme.s2;
-                            height: parent.height;
-                            text: "Pick a preset or change a setting. Nothing is written until you apply.";
-                            color: Theme.text-muted;
-                            font-size: Theme.text-sm;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                        ListView {
-                            x: 1px;
-                            y: 1px;
-                            width: parent.width - 2px;
-                            height: parent.height - 2px;
-                            for change[i] in PerfState.changes: ChangeRow {
-                                change: change;
-                                remove => { PerfState.remove-change(i); }
-                            }
-                        }
-                    }
-                }
-
-                if PerfState.game-running: Text {
-                    text: "Deadlock is running. You can keep editing; close the game to apply.";
-                    color: Theme.accent;
-                    font-size: Theme.text-sm;
-                    wrap: word-wrap;
-                }
-
-                if PerfState.result-title != "": Rectangle {
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: PerfState.result-error ? Theme.danger : Theme.border;
-                    background: Theme.raised;
-                    HorizontalLayout {
-                        padding: Theme.s1;
-                        padding-left: Theme.s2;
-                        spacing: Theme.s1;
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            spacing: 2px;
-                            alignment: center;
-                            Text {
-                                text: PerfState.result-title;
-                                color: PerfState.result-error ? Theme.danger : Theme.text;
-                                font-size: Theme.text-md;
-                                font-weight: 600;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: PerfState.result-detail;
-                                visible: PerfState.result-detail != "";
-                                color: Theme.text-muted;
-                                font-size: Theme.text-sm;
-                                wrap: word-wrap;
-                            }
-                        }
-                        TextButton {
+                        if PerfState.changes.length == 0 && PerfState.result-title != "": TextButton {
                             text: "Dismiss";
                             clicked => { PerfState.dismiss-result(); }
                         }
                     }
+                    Text {
+                        text: PerfState.game-running ? "Deadlock is running. Close the game to apply."
+                            : (PerfState.result-title != "" ? PerfState.result-detail
+                            : "Nothing is written to gameinfo.gi until you apply.");
+                        color: PerfState.game-running ? Theme.accent : Theme.text-muted;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                    }
                 }
-
-                Button {
-                    text: PerfState.busy ? "Applying" : PerfState.apply-label;
-                    primary: true;
-                    disabled: PerfState.changes.length == 0 || PerfState.busy;
-                    clicked => { PerfState.apply(); }
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        width: 240px;
+                        height: 44px;
+                        text: PerfState.busy ? "Applying" : (PerfState.changes.length == 0 ? "Up to date" : PerfState.apply-label);
+                        primary: true;
+                        disabled: PerfState.changes.length == 0 || PerfState.busy;
+                        clicked => { PerfState.apply(); }
+                    }
                 }
             }
         }
