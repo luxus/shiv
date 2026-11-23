@@ -371,4 +371,54 @@ mod gamebanana {
         assert!(client.files("../x", false).is_err());
         assert!(client.comments("", false, 1).is_err());
     }
+
+    #[test]
+    fn non_hidden_error_code_is_reported_as_parse_error() {
+        let url = stub(1, |_| {
+            json(r#"{"_sErrorCode":"RATE_LIMITED","_aRecords":null,"_aMetadata":null}"#)
+        });
+        let err = GameBananaClient::new(&url)
+            .comments("1", false, 1)
+            .expect_err("non-hidden error code must fail");
+        assert!(matches!(err, super::ApiError::Parse(msg) if msg.contains("RATE_LIMITED")));
+    }
+}
+
+#[test]
+fn fetch_follows_one_redirect_with_exact_request_count() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_for_server = hits.clone();
+    let url = stub(2, move |req| {
+        hits_for_server.fetch_add(1, Ordering::SeqCst);
+        if req.url() == "/start" {
+            Response::from_string("")
+                .with_status_code(302)
+                .with_header(Header::from_bytes("Location", "/final").unwrap())
+        } else {
+            assert_eq!(req.url(), "/final");
+            Response::from_data(b"payload-bytes".to_vec())
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out.vpk");
+    Client::new(&url)
+        .fetch(&format!("{url}/start"), &dest, |_, _| {})
+        .unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), b"payload-bytes");
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn transport_errors_are_reported_as_network_not_file_io() {
+    let err = Client::new("http://127.0.0.1:1")
+        .list_mods()
+        .expect_err("closed port must fail");
+    assert!(
+        matches!(err, ApiError::Network(_)),
+        "expected ApiError::Network, got {err:?}"
+    );
+    assert!(!err.to_string().contains("file error"), "{err}");
 }

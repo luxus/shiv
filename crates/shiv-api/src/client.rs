@@ -1,63 +1,25 @@
-use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ureq::Agent;
 
-use crate::dto::{DownloadFile, DownloadsResponse, ModDto, Row};
+use crate::dto::{CatalogRows, DownloadFile, DownloadsResponse, ModDto};
 use crate::error::ApiError;
+use crate::http::{READ_TIMEOUT, build_agent, encode_segment, get_with_redirects};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Total time cap for one file download (6 hours). ureq has no per-read
-/// timeout, only a limit on the whole body, so the cap must outlast legitimate
-/// slow downloads of large mods. Trade-off: a stalled connection can hold a
-/// download for up to the cap; the UI is expected to offer cancel. API JSON
-/// calls keep the 30 s budget.
+const API_GLOBAL_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWNLOAD_BODY_TIMEOUT: Duration = Duration::from_hours(6);
-/// Upper bound for buffered JSON bodies (catalog is a few MB).
 const JSON_LIMIT: u64 = 64 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Blocking HTTP client for the Deadlock Mods API and artifact downloads.
 pub struct Client {
     base: String,
     api: Agent,
     download: Agent,
-}
-
-fn agent(body_timeout: Duration) -> Agent {
-    Agent::config_builder()
-        .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_recv_response(Some(READ_TIMEOUT))
-        .timeout_recv_body(Some(body_timeout))
-        .build()
-        .into()
-}
-
-fn map_err(e: ureq::Error, url: &str) -> ApiError {
-    match e {
-        ureq::Error::StatusCode(status) => ApiError::Http {
-            status,
-            url: url.to_string(),
-        },
-        ureq::Error::Io(e) => ApiError::Io(e),
-        other => ApiError::Network(other.to_string()),
-    }
-}
-
-/// Percent-encode everything but RFC 3986 unreserved characters.
-fn encode_segment(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(b));
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-    }
-    out
 }
 
 fn part_path(dest: &Path) -> PathBuf {
@@ -67,29 +29,31 @@ fn part_path(dest: &Path) -> PathBuf {
 }
 
 impl Client {
+    /// Construct a client targeting `base_url`.
     #[must_use]
     pub fn new(base_url: &str) -> Client {
         Client {
             base: base_url.trim_end_matches('/').to_string(),
-            api: agent(READ_TIMEOUT),
-            download: agent(DOWNLOAD_BODY_TIMEOUT),
+            api: build_agent(READ_TIMEOUT, Some(API_GLOBAL_TIMEOUT)),
+            download: build_agent(DOWNLOAD_BODY_TIMEOUT, None),
         }
     }
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, ApiError> {
-        let mut resp = self.api.get(url).call().map_err(|e| map_err(e, url))?;
+        let mut resp = get_with_redirects(&self.api, url, &[], None)?;
         let bytes = resp
             .body_mut()
             .with_config()
             .limit(JSON_LIMIT)
             .read_to_vec()
-            .map_err(|e| map_err(e, url))?;
+            .map_err(|e| ApiError::Network(e.to_string()))?;
         serde_json::from_slice(&bytes).map_err(|e| ApiError::Parse(e.to_string()))
     }
 
     /// The whole catalog (`GET /v2/mods` takes no parameters). Use
     /// [`crate::apply_query`] for search, sort and paging. Rows that fail to
-    /// deserialize (missing id/remoteId/name, null in a required field) are skipped.
+    /// deserialize (missing id/remoteId/name, null in a required field) are skipped
+    /// in a single streaming pass without buffering into an intermediate DOM.
     ///
     /// # Errors
     ///
@@ -97,14 +61,8 @@ impl Client {
     /// [`ApiError::Network`] when the transport fails, [`ApiError::Parse`]
     /// when the body is not the JSON shape expected.
     pub fn list_mods(&self) -> Result<Vec<ModDto>, ApiError> {
-        let rows: Vec<Row> = self.get_json(&format!("{}/v2/mods", self.base))?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|r| match r {
-                Row::Ok(m) => Some(*m),
-                Row::Skip(_) => None,
-            })
-            .collect())
+        let rows: CatalogRows = self.get_json(&format!("{}/v2/mods", self.base))?;
+        Ok(rows.0)
     }
 
     /// Download files for a mod, with URLs exactly as the API returns them
@@ -128,11 +86,9 @@ impl Client {
     /// [`ApiError::Network`] when the transport or body read fails.
     pub fn perf_catalog(&self, etag: Option<&str>) -> Result<Option<(String, Vec<u8>)>, ApiError> {
         let url = format!("{}/v2/perf-catalog", self.base);
-        let mut req = self.api.get(&url);
-        if let Some(etag) = etag {
-            req = req.header("If-None-Match", etag);
-        }
-        let mut resp = req.call().map_err(|e| map_err(e, &url))?;
+        let headers: Vec<(&str, &str)> =
+            etag.map(|e| vec![("If-None-Match", e)]).unwrap_or_default();
+        let mut resp = get_with_redirects(&self.api, &url, &headers, None)?;
         if resp.status().as_u16() == 304 {
             return Ok(None);
         }
@@ -147,7 +103,7 @@ impl Client {
             .with_config()
             .limit(JSON_LIMIT)
             .read_to_vec()
-            .map_err(|e| map_err(e, &url))?;
+            .map_err(|e| ApiError::Network(e.to_string()))?;
         Ok(Some((new_etag, body)))
     }
 
@@ -176,7 +132,7 @@ impl Client {
     /// [`ApiError::Http`] when the server answers a non-2xx status,
     /// [`ApiError::Network`] when the transport or body read fails.
     pub fn fetch_json_bytes(&self, url: &str) -> Result<Vec<u8>, ApiError> {
-        let mut resp = self.api.get(url).call().map_err(|e| map_err(e, url))?;
+        let mut resp = get_with_redirects(&self.api, url, &[], None)?;
         resp.body_mut()
             .with_config()
             .limit(JSON_LIMIT)
@@ -185,17 +141,17 @@ impl Client {
     }
 
     /// [`Client::fetch`] that stops with [`ApiError::Cancelled`] once `cancel`
-    /// is set. The flag is checked between chunks, so a stalled read returns
-    /// only when its next chunk arrives or the body timeout fires; callers
-    /// should stop waiting on the result as soon as they set the flag.
+    /// is set. The flag is checked before each chunk; stalled reads time out
+    /// after the per-read timeout so a dead socket cannot hang indefinitely.
     ///
     /// # Errors
     ///
     /// [`ApiError::Cancelled`] once the flag is seen; [`ApiError::Http`] for
-    /// a non-2xx answer; [`ApiError::Network`] for a transport failure;
-    /// [`ApiError::Io`] when the partial file cannot be written or renamed;
-    /// [`ApiError::EmptyDownload`] and [`ApiError::Incomplete`] when the body
-    /// contradicts its Content-Length. Any error removes the partial file.
+    /// a non-2xx answer; [`ApiError::Network`] for a transport failure or size
+    /// overflow; [`ApiError::Io`] when the partial file cannot be written or
+    /// renamed; [`ApiError::EmptyDownload`] and [`ApiError::Incomplete`] when
+    /// the body contradicts its Content-Length. Any error removes the partial
+    /// file.
     pub fn fetch_cancellable(
         &self,
         url: &str,
@@ -224,12 +180,19 @@ impl Client {
         if cancelled() {
             return Err(ApiError::Cancelled);
         }
-        let mut resp = self.download.get(url).call().map_err(|e| map_err(e, url))?;
+        let mut resp = get_with_redirects(&self.download, url, &[], None)?;
         let total = resp
             .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
+        if let Some(expected) = total
+            && expected > MAX_DOWNLOAD_BYTES
+        {
+            return Err(ApiError::Network(format!(
+                "download exceeds {MAX_DOWNLOAD_BYTES} byte limit ({expected} bytes)"
+            )));
+        }
         let mut reader = resp.body_mut().as_reader();
         let mut file = File::create(part)?;
         let mut buf = [0u8; 64 * 1024];
@@ -241,10 +204,24 @@ impl Client {
             let n = match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(ApiError::Network(e.to_string())),
             };
+            done = done.saturating_add(n as u64);
+            if done > MAX_DOWNLOAD_BYTES {
+                return Err(ApiError::Network(format!(
+                    "download exceeded {MAX_DOWNLOAD_BYTES} byte limit"
+                )));
+            }
+            if let Some(expected) = total
+                && done > expected
+            {
+                return Err(ApiError::Incomplete {
+                    received: done,
+                    expected,
+                });
+            }
             file.write_all(&buf[..n])?;
-            done += n as u64;
             progress(done, total);
         }
         file.sync_all()?;

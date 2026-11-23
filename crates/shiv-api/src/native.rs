@@ -7,21 +7,25 @@
 //! origins it may talk to, catalog pages must complete, and an artifact,
 //! detail or history URL outside the declared origins is rejected.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use ureq::Agent;
 
 use crate::error::ApiError;
+use crate::http::{
+    READ_TIMEOUT, build_agent, deserialize_null_default, encode_segment, get_with_redirects,
+};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const BODY_TIMEOUT: Duration = Duration::from_secs(30);
+const GLOBAL_TIMEOUT: Duration = Duration::from_secs(60);
 const JSON_LIMIT: u64 = 10 * 1024 * 1024;
 const MAX_CATALOG_PAGES: usize = 100;
 const HISTORY_PAGE_LIMIT: usize = 20;
 const HISTORY_RELEASE_LIMIT: usize = 500;
 const API_PAGE_SIZE: u32 = 100;
 
+/// Client for native `dmm-source` (protocol 1.0) mod registries.
 pub struct NativeSourceClient {
     agent: Agent,
 }
@@ -33,15 +37,12 @@ impl Default for NativeSourceClient {
 }
 
 impl NativeSourceClient {
+    /// Construct a client with strict redirect and timeout limits.
     #[must_use]
     pub fn new() -> Self {
-        let agent: Agent = Agent::config_builder()
-            .timeout_connect(Some(CONNECT_TIMEOUT))
-            .timeout_recv_response(Some(BODY_TIMEOUT))
-            .timeout_recv_body(Some(BODY_TIMEOUT))
-            .build()
-            .into();
-        Self { agent }
+        Self {
+            agent: build_agent(READ_TIMEOUT, Some(GLOBAL_TIMEOUT)),
+        }
     }
 
     /// Fetch and validate a registry descriptor: it must parse, and its URLs
@@ -53,20 +54,26 @@ impl NativeSourceClient {
     /// transport failure, [`ApiError::Parse`] when the descriptor is not the
     /// JSON shape expected or declares itself outside its own origins.
     pub fn fetch_descriptor(&self, url: &str) -> Result<SourceDescriptor, ApiError> {
-        let wire: DescriptorWire = self.get_json(url)?;
+        let initial_origin = origin_of(url).ok_or_else(|| {
+            ApiError::Parse(format!("the descriptor URL has no valid origin: {url}"))
+        })?;
+        let pinned = [initial_origin];
+        let wire: DescriptorWire = self.get_json_in(url, &pinned)?;
         let descriptor = wire.into_descriptor(url)?;
         descriptor.descriptor_within_its_origins()?;
         Ok(descriptor)
     }
 
     /// The source's listings, through whichever catalog kind its descriptor
-    /// names.
+    /// names. Entries whose individual documents fail validation are returned
+    /// uninstallable with [`NativeListing::problem`] set; catalog-level errors
+    /// (missing entry id, duplicate id, snapshot mismatch, page overflow)
+    /// fail the whole fetch.
     ///
     /// # Errors
     ///
-    /// [`ApiError::Http`], [`ApiError::Network`] or [`ApiError::Parse`] as
-    /// for [`NativeSourceClient::fetch_descriptor`]; a listing that fails to
-    /// parse is a [`ApiError::Parse`] naming it.
+    /// [`ApiError::Http`], [`ApiError::Network`] or [`ApiError::Parse`] on a
+    /// catalog-level failure.
     pub fn fetch_catalog(&self, source: &SourceDescriptor) -> Result<Vec<NativeListing>, ApiError> {
         match &source.catalog {
             CatalogConfig::Static { index_url } => self.fetch_static_catalog(source, index_url),
@@ -98,7 +105,7 @@ impl NativeSourceClient {
                 "the download resolver is outside the source's API origins: {resolver_url}"
             )));
         }
-        let served: ResolvedUrl = self.get_json(&resolver_url)?;
+        let served: ResolvedUrl = self.get_json_in(&resolver_url, &source.api_origins)?;
         let Some(fresh) = served.url.filter(|u| !u.trim().is_empty()) else {
             return Err(ApiError::Parse(
                 "the download resolver served no URL".into(),
@@ -119,8 +126,8 @@ impl NativeSourceClient {
     /// # Errors
     ///
     /// [`ApiError::Parse`] when a history page sits outside the source's API
-    /// origins, the history exceeds its page or release limit, or a release
-    /// row is not in the shape Shiv can install; [`ApiError::Http`] and
+    /// origins, cycles, exceeds its page or release limit, or a release row
+    /// is not in the shape Shiv can install; [`ApiError::Http`] and
     /// [`ApiError::Network`] when a page request fails.
     pub fn fetch_release_history(
         &self,
@@ -131,19 +138,18 @@ impl NativeSourceClient {
             return Ok(Vec::new());
         };
         let mut releases = Vec::new();
+        let mut seen_pages = HashSet::new();
         let mut next = Some(first.clone());
-        let mut pages = 0;
         while let Some(url) = next {
-            pages += 1;
-            if pages > HISTORY_PAGE_LIMIT {
+            if !seen_pages.insert(url.clone()) {
                 return Err(ApiError::Parse(format!(
-                    "the release history of {} has more than {HISTORY_PAGE_LIMIT} pages",
+                    "the release history of {} cycles through the same pages",
                     listing.title
                 )));
             }
-            if releases.len() >= HISTORY_RELEASE_LIMIT {
+            if seen_pages.len() > HISTORY_PAGE_LIMIT {
                 return Err(ApiError::Parse(format!(
-                    "the release history of {} has more than {HISTORY_RELEASE_LIMIT} releases",
+                    "the release history of {} has more than {HISTORY_PAGE_LIMIT} pages",
                     listing.title
                 )));
             }
@@ -152,11 +158,22 @@ impl NativeSourceClient {
                     "a release-history page is outside the source's API origins: {url}"
                 )));
             }
-            let page: HistoryPage = self.get_json(&url)?;
+            let page: HistoryPage = self.get_json_in(&url, &source.api_origins)?;
             for wire in page.items {
+                if releases.len() >= HISTORY_RELEASE_LIMIT {
+                    return Err(ApiError::Parse(format!(
+                        "the release history of {} has more than {HISTORY_RELEASE_LIMIT} releases",
+                        listing.title
+                    )));
+                }
                 releases.push(wire.into_release(&url, source)?);
             }
-            next = page.next_cursor.filter(|c| !c.is_empty());
+            next = page
+                .next_cursor
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(|c| resolve_history_next(first, &url, c));
         }
         Ok(releases)
     }
@@ -167,8 +184,8 @@ impl NativeSourceClient {
         index_url: &str,
     ) -> Result<Vec<NativeListing>, ApiError> {
         let mut listings = Vec::new();
-        let mut seen_ids = std::collections::HashSet::new();
-        let mut seen_pages = std::collections::HashSet::new();
+        let mut seen_ids = HashSet::new();
+        let mut seen_pages = HashSet::new();
         let mut snapshot = String::new();
         let mut next = Some(index_url.to_owned());
         while let Some(url) = next {
@@ -187,8 +204,8 @@ impl NativeSourceClient {
                     "a catalog page is outside the source's API origins: {url}"
                 )));
             }
-            let page: StaticPage = self.get_json(&url)?;
-            let next_page = page.next_page();
+            let page: StaticPage = self.get_json_in(&url, &source.api_origins)?;
+            let next_page = page.next_page().map(|href| resolve_url(&url, &href));
             let page_snapshot = page.snapshot_id()?.to_owned();
             if snapshot.is_empty() {
                 snapshot = page_snapshot;
@@ -218,12 +235,16 @@ impl NativeSourceClient {
         list_url: &str,
     ) -> Result<Vec<NativeListing>, ApiError> {
         let mut listings = Vec::new();
-        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen_ids = HashSet::new();
+        let mut seen_pages = HashSet::new();
         let mut next = Some(list_url.to_owned());
-        let mut pages = 0;
         while let Some(url) = next {
-            pages += 1;
-            if pages > MAX_CATALOG_PAGES {
+            if !seen_pages.insert(url.clone()) {
+                return Err(ApiError::Parse(
+                    "the API catalog cycles through the same cursor".into(),
+                ));
+            }
+            if seen_pages.len() > MAX_CATALOG_PAGES {
                 return Err(ApiError::Parse(format!(
                     "the catalog has more than {MAX_CATALOG_PAGES} pages"
                 )));
@@ -233,12 +254,13 @@ impl NativeSourceClient {
                     "a catalog page is outside the source's API origins: {url}"
                 )));
             }
-            let page: ApiPage = self.get_json(&url)?;
+            let page: ApiPage = self.get_json_in(&url, &source.api_origins)?;
             let next_cursor = page
                 .next_cursor
-                .clone()
+                .as_deref()
+                .map(str::trim)
                 .filter(|c| !c.is_empty())
-                .map(|c| with_cursor(&url, &c));
+                .map(|c| with_cursor(list_url, c));
             for item in page.items {
                 let id = item.identity()?.to_owned();
                 if !seen_ids.insert(id) {
@@ -254,12 +276,6 @@ impl NativeSourceClient {
         Ok(listings)
     }
 
-    /// One catalog entry as a listing. An entry whose own documents fail
-    /// (a detail that does not load, an artifact off the download origins,
-    /// an unsafe file name) is refused on its own: it comes back
-    /// uninstallable with [`NativeListing::problem`] saying why, so one bad
-    /// entry neither takes the source down nor vanishes without a word.
-    /// Only an entry without an id fails the catalog.
     fn resolve_or_refuse(
         &self,
         item: PageItem,
@@ -269,7 +285,6 @@ impl NativeSourceClient {
         let id = item.identity()?.to_owned();
         let title = item.title.clone().unwrap_or_default();
         let nsfw = item.is_nsfw;
-        // A removed entry stays removed (hidden) even when its documents fail.
         let removed = item.availability.as_deref() == Some("removed");
         Ok(self
             .resolve_listing(item, page_url, source)
@@ -290,7 +305,7 @@ impl NativeSourceClient {
         source: &SourceDescriptor,
     ) -> Result<NativeListing, ApiError> {
         let Some(detail_href) = &item.detail_url else {
-            return item.into_index_listing(page_url, source);
+            return item.into_index_listing();
         };
         let detail_url = resolve_url(page_url, detail_href);
         if !origin_allowed(&detail_url, &source.api_origins) {
@@ -299,7 +314,7 @@ impl NativeSourceClient {
                 item.identity()?
             )));
         }
-        let detail: DetailWire = self.get_json(&detail_url)?;
+        let detail: DetailWire = self.get_json_in(&detail_url, &source.api_origins)?;
         if detail.identity()? != item.identity()? {
             return Err(ApiError::Parse(format!(
                 "the catalog asked for {} but its detail is {}",
@@ -328,12 +343,16 @@ impl NativeSourceClient {
                 "the current release is outside the source's API origins: {release_url}"
             )));
         }
-        let wire: ReleaseWire = self.get_json(&release_url)?;
+        let wire: ReleaseWire = self.get_json_in(&release_url, &source.api_origins)?;
         wire.into_release(&release_url, source)
     }
 
-    fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, ApiError> {
-        let mut resp = self.agent.get(url).call().map_err(|e| map_error(e, url))?;
+    fn get_json_in<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        allowed_origins: &[String],
+    ) -> Result<T, ApiError> {
+        let mut resp = get_with_redirects(&self.agent, url, &[], Some(allowed_origins))?;
         let body = resp
             .body_mut()
             .with_config()
@@ -344,7 +363,19 @@ impl NativeSourceClient {
     }
 }
 
-// ---- descriptor ----
+fn resolve_history_next(base_history_url: &str, current_url: &str, next: &str) -> String {
+    if next.starts_with("http://")
+        || next.starts_with("https://")
+        || next.starts_with('/')
+        || next.starts_with("./")
+        || next.starts_with("../")
+        || next.starts_with('?')
+    {
+        resolve_url(current_url, next)
+    } else {
+        with_cursor(base_history_url, next)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDescriptor {
@@ -397,12 +428,30 @@ struct CatalogWire {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct OriginsWire {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     api: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     downloads: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     media: Vec<String>,
+}
+
+fn validate_origins(kind: &str, raw: Vec<String>) -> Result<Vec<String>, ApiError> {
+    let mut normalized = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let Some(origin) = origin_of(&entry) else {
+            return Err(ApiError::Parse(format!(
+                "the source declares an invalid {kind} origin: {entry}"
+            )));
+        };
+        if !entry.eq_ignore_ascii_case(&origin) || !is_https_or_loopback(&origin) {
+            return Err(ApiError::Parse(format!(
+                "the source declares an unsafe {kind} origin: {entry}"
+            )));
+        }
+        normalized.push(origin);
+    }
+    Ok(normalized)
 }
 
 impl DescriptorWire {
@@ -449,14 +498,17 @@ impl DescriptorWire {
                 "the source declares no API or download origins".into(),
             ));
         }
+        let api_origins = validate_origins("API", origins.api)?;
+        let download_origins = validate_origins("download", origins.downloads)?;
+        let media_origins = validate_origins("media", origins.media)?;
         Ok(SourceDescriptor {
             descriptor_url: url.to_owned(),
             source_id,
             name,
             catalog,
-            api_origins: origins.api,
-            download_origins: origins.downloads,
-            media_origins: origins.media,
+            api_origins,
+            download_origins,
+            media_origins,
         })
     }
 }
@@ -466,8 +518,6 @@ fn required(field: &str, value: Option<String>) -> Result<String, ApiError> {
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| ApiError::Parse(format!("the source descriptor has no {field}")))
 }
-
-// ---- listings and releases ----
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NativeListing {
@@ -552,7 +602,7 @@ impl NativeListing {
 struct StaticPage {
     #[serde(rename = "snapshotId")]
     snapshot_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     items: Vec<PageItem>,
     #[serde(rename = "nextUrl", default)]
     next_url: Option<String>,
@@ -577,7 +627,7 @@ impl StaticPage {
 
 #[derive(Deserialize)]
 struct ApiPage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     items: Vec<PageItem>,
     #[serde(rename = "nextCursor", default)]
     next_cursor: Option<String>,
@@ -604,11 +654,7 @@ impl PageItem {
             .ok_or_else(|| ApiError::Parse("a catalog entry has no id".into()))
     }
 
-    fn into_index_listing(
-        self,
-        page_url: &str,
-        source: &SourceDescriptor,
-    ) -> Result<NativeListing, ApiError> {
+    fn into_index_listing(self) -> Result<NativeListing, ApiError> {
         let id = self.identity()?.to_owned();
         let (available, removed) = availability_of(&id, self.availability.as_deref())?;
         Ok(NativeListing {
@@ -625,10 +671,7 @@ impl PageItem {
             hero: None,
             content_type: None,
             updated_at: None,
-            release: {
-                let _ = (page_url, source);
-                None
-            },
+            release: None,
             problem: None,
         })
     }
@@ -662,9 +705,9 @@ struct DetailWire {
     hero: Option<String>,
     #[serde(default)]
     content_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     tags: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     images: Vec<String>,
     #[serde(default)]
     updated_at: Option<String>,
@@ -694,6 +737,7 @@ impl DetailWire {
         let images: Vec<String> = self
             .images
             .into_iter()
+            .filter(|href| !href.trim().is_empty())
             .take(4)
             .map(|href| resolve_url(detail_url, &href))
             .collect();
@@ -703,6 +747,19 @@ impl DetailWire {
         {
             return Err(ApiError::Parse(format!(
                 "a screenshot of {id} is outside the source's media origins"
+            )));
+        }
+        let release_history_url = self
+            .release_history_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|href| !href.is_empty())
+            .map(|href| resolve_url(detail_url, href));
+        if let Some(history_url) = &release_history_url
+            && !origin_allowed(history_url, &source.api_origins)
+        {
+            return Err(ApiError::Parse(format!(
+                "the release history of {id} is outside the source's API origins: {history_url}"
             )));
         }
         let release = self
@@ -724,9 +781,7 @@ impl DetailWire {
                 images,
                 updated_at: self.updated_at,
                 release,
-                release_history_url: self
-                    .release_history_url
-                    .map(|href| resolve_url(detail_url, &href)),
+                release_history_url,
                 problem: None,
             },
             self.release_url,
@@ -746,7 +801,7 @@ struct ReleaseWire {
     published_at: Option<String>,
     #[serde(default)]
     changelog: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     artifacts: Vec<ArtifactWire>,
     #[serde(default)]
     installation: Option<InstallationWire>,
@@ -790,7 +845,7 @@ struct HashesWire {
 
 #[derive(Deserialize)]
 struct HistoryPage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     items: Vec<ReleaseWire>,
     #[serde(default, rename = "nextCursor")]
     next_cursor: Option<String>,
@@ -833,9 +888,11 @@ impl ReleaseWire {
             .content_revision
             .filter(|r| !r.trim().is_empty())
             .ok_or_else(|| ApiError::Parse(format!("the release {id} has no contentRevision")))?;
-        if self.installation.as_ref().and_then(|i| i.mode.as_deref()) == Some("components") {
+        if let Some(mode) = self.installation.as_ref().and_then(|i| i.mode.as_deref())
+            && mode != "manual"
+        {
             return Err(ApiError::Parse(format!(
-                "the release {id} needs component choices, which Shiv cannot install yet"
+                "the release {id} uses installation mode {mode:?}, which Shiv cannot install yet"
             )));
         }
         let mut artifacts = Vec::new();
@@ -880,25 +937,33 @@ impl ArtifactWire {
                 "the artifact {id} of release {release_id} has no download"
             )));
         };
-        let (url, resolver_url) = match (download.url, download.resolver_url) {
-            (Some(direct), None) => (direct, None),
-            (None, Some(resolver)) => (String::new(), Some(resolver)),
+        let (url, resolver_url) = match (
+            download.url.filter(|u| !u.trim().is_empty()),
+            download.resolver_url.filter(|u| !u.trim().is_empty()),
+        ) {
+            (Some(direct), None) => {
+                let resolved = resolve_url(document_url, direct.trim());
+                if !origin_allowed(&resolved, &source.download_origins) {
+                    return Err(ApiError::Parse(format!(
+                        "the download of artifact {id} is outside the source's download origins: {resolved}"
+                    )));
+                }
+                (resolved, None)
+            }
+            (None, Some(resolver)) => {
+                let resolved = resolve_url(document_url, resolver.trim());
+                if !origin_allowed(&resolved, &source.api_origins) {
+                    return Err(ApiError::Parse(format!(
+                        "the download resolver of artifact {id} is outside the source's API origins: {resolved}"
+                    )));
+                }
+                (String::new(), Some(resolved))
+            }
             _ => {
                 return Err(ApiError::Parse(format!(
                     "the artifact {id} of release {release_id} must have exactly one of a direct download URL or a resolver URL"
                 )));
             }
-        };
-        let url = if url.is_empty() {
-            String::new()
-        } else {
-            let resolved = resolve_url(document_url, &url);
-            if !origin_allowed(&resolved, &source.download_origins) {
-                return Err(ApiError::Parse(format!(
-                    "the download of artifact {id} is outside the source's download origins: {resolved}"
-                )));
-            }
-            resolved
         };
         Ok(NativeArtifact {
             id,
@@ -920,37 +985,58 @@ fn valid_sha256_hex(hex: &str) -> Option<String> {
     (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
 }
 
-// ---- URLs ----
-
+/// Resolve `href` relative to `base`, preserving query strings and fragments.
 #[must_use]
 pub fn resolve_url(base: &str, href: &str) -> String {
-    if href.starts_with("https://") || href.starts_with("http://") {
+    if has_http_scheme(href) {
         return href.to_owned();
     }
     let Some((scheme, rest)) = base.split_once("://") else {
         return href.to_owned();
     };
+    let scheme = scheme.to_ascii_lowercase();
+    if let Some(after_slashes) = href.strip_prefix("//") {
+        return format!("{scheme}://{after_slashes}");
+    }
     let without_fragment = rest.split(['?', '#']).next().unwrap_or(rest);
     let split = without_fragment.find('/');
     let authority = match split {
         Some(i) => &without_fragment[..i],
         None => without_fragment,
     };
-    let path = match split {
+    let base_path = match split {
         Some(i) => &without_fragment[i..],
-        None => "",
+        None => "/",
     };
-    if href.starts_with('/') {
-        return format!("{scheme}://{authority}{}", normalize_path(href));
+    if href.starts_with('?') || href.starts_with('#') {
+        return format!("{scheme}://{authority}{base_path}{href}");
     }
-    let dir = match path.rfind('/') {
-        Some(i) => &path[..i],
-        None => "",
+    let (href_path, suffix) = split_path_suffix(href);
+    let resolved_path = if href_path.starts_with('/') {
+        normalize_path(href_path)
+    } else {
+        let dir = match base_path.rfind('/') {
+            Some(i) => &base_path[..i],
+            None => "",
+        };
+        normalize_path(&format!("{dir}/{href_path}"))
     };
-    format!(
-        "{scheme}://{authority}{}",
-        normalize_path(&format!("{dir}/{href}"))
-    )
+    format!("{scheme}://{authority}{resolved_path}{suffix}")
+}
+
+fn has_http_scheme(url: &str) -> bool {
+    url.get(..8)
+        .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+        || url
+            .get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+}
+
+fn split_path_suffix(href: &str) -> (&str, &str) {
+    match href.find(['?', '#']) {
+        Some(i) => (&href[..i], &href[i..]),
+        None => (href, ""),
+    }
 }
 
 fn normalize_path(path: &str) -> String {
@@ -967,27 +1053,79 @@ fn normalize_path(path: &str) -> String {
             other => segments.push(other),
         }
     }
+    if segments.is_empty() {
+        return "/".to_owned();
+    }
     format!("/{}{trailing}", segments.join("/"))
 }
 
+/// Canonical `scheme://host[:port]` origin of an `http`/`https` URL.
+/// Rejects userinfo (`@`), backslashes, whitespace, control characters, and
+/// malformed host/port authorities.
 #[must_use]
 pub fn origin_of(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
-    if !matches!(scheme, "http" | "https") {
+    let scheme = scheme.to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
         return None;
     }
-    let host_port = rest.split(['/', '?', '#']).next()?;
-    if host_port.is_empty() {
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty()
+        || authority.contains(['@', '\\'])
+        || authority
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
+    {
         return None;
     }
-    Some(format!("{scheme}://{host_port}"))
+    let (host, port) = split_authority(authority)?;
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.to_ascii_lowercase();
+    match port {
+        Some(p) => Some(format!("{scheme}://{host}:{p}")),
+        None => Some(format!("{scheme}://{host}")),
+    }
 }
 
+fn split_authority(authority: &str) -> Option<(&str, Option<&str>)> {
+    if let Some(after_open) = authority.strip_prefix('[') {
+        let close = after_open.find(']')?;
+        let host = &authority[..=close + 1];
+        let rest = &after_open[close + 1..];
+        if rest.is_empty() {
+            return Some((host, None));
+        }
+        let port = rest.strip_prefix(':')?;
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        return Some((host, Some(port)));
+    }
+    match authority.split_once(':') {
+        None => Some((authority, None)),
+        Some((host, port)) => {
+            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((host, Some(port)))
+        }
+    }
+}
+
+/// True when `url`'s canonical origin matches one of `origins`.
 #[must_use]
 pub fn origin_allowed(url: &str, origins: &[String]) -> bool {
-    origin_of(url).is_some_and(|origin| origins.iter().any(|o| o == &origin))
+    origin_of(url).is_some_and(|origin| {
+        origins
+            .iter()
+            .any(|o| origin_of(o).as_deref() == Some(origin.as_str()))
+    })
 }
 
+/// True for any valid `https://` URL, or an `http://` URL pointing strictly at
+/// loopback (`localhost`, `127.0.0.1`, `[::1]`).
 #[must_use]
 pub fn is_https_or_loopback(url: &str) -> bool {
     let Some(origin) = origin_of(url) else {
@@ -996,36 +1134,32 @@ pub fn is_https_or_loopback(url: &str) -> bool {
     if origin.starts_with("https://") {
         return true;
     }
-    let host = origin
-        .strip_prefix("http://")
-        .unwrap_or(&origin)
-        .split(':')
-        .next()
-        .unwrap_or_default();
+    let Some(authority) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let Some((host, _)) = split_authority(authority) else {
+        return false;
+    };
     matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
+/// True for a single safe cross-platform filename without path separators,
+/// control characters, or Windows-illegal characters.
 #[must_use]
 pub fn is_safe_basename(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
-        && !name.contains(['/', '\\', ':', '\0'])
+        && !name.starts_with(' ')
         && !name.ends_with(['.', ' '])
+        && !matches!(name, "." | "..")
+        && !name.contains(['/', '\\', ':', '\0', '<', '>', '"', '|', '?', '*'])
         && name.chars().all(|c| !c.is_control())
 }
 
 fn with_cursor(list_url: &str, cursor: &str) -> String {
     let separator = if list_url.contains('?') { '&' } else { '?' };
-    format!("{list_url}{separator}cursor={cursor}&limit={API_PAGE_SIZE}")
-}
-
-fn map_error(e: ureq::Error, url: &str) -> ApiError {
-    match e {
-        ureq::Error::StatusCode(status) => ApiError::Http {
-            status,
-            url: url.to_owned(),
-        },
-        ureq::Error::Io(e) => ApiError::Io(e),
-        other => ApiError::Network(other.to_string()),
-    }
+    format!(
+        "{list_url}{separator}cursor={}&limit={API_PAGE_SIZE}",
+        encode_segment(cursor)
+    )
 }

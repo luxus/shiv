@@ -57,13 +57,40 @@ pub struct ModPage {
     pub page_count: usize,
 }
 
-fn matches_search(m: &ModDto, needle: &str) -> bool {
-    let hit = |s: &str| s.to_lowercase().contains(needle);
+fn eq_ignore_case(a: &str, lower_b: &str) -> bool {
+    if a.is_ascii() && lower_b.is_ascii() {
+        a.eq_ignore_ascii_case(lower_b)
+    } else {
+        a.to_lowercase() == lower_b
+    }
+}
+
+fn contains_ignore_case(haystack: &str, lower_needle: &str) -> bool {
+    if lower_needle.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && lower_needle.is_ascii() {
+        let h = haystack.as_bytes();
+        let n = lower_needle.as_bytes();
+        if n.len() > h.len() {
+            return false;
+        }
+        return h
+            .windows(n.len())
+            .any(|window| window.eq_ignore_ascii_case(n));
+    }
+    haystack.to_lowercase().contains(lower_needle)
+}
+
+fn matches_search(m: &ModDto, lower_needle: &str) -> bool {
+    let hit = |s: &str| contains_ignore_case(s, lower_needle);
     hit(&m.name)
         || m.author.as_deref().is_some_and(hit)
         || m.description.as_deref().is_some_and(hit)
 }
 
+/// Filter, sort and paginate `mods` according to `q`.
+#[must_use]
 pub fn apply_query(mods: &[ModDto], q: &ModQuery) -> ModPage {
     let needle = q
         .search
@@ -81,7 +108,7 @@ pub fn apply_query(mods: &[ModDto], q: &ModQuery) -> ModPage {
             category.as_deref().is_none_or(|c| {
                 m.category
                     .as_deref()
-                    .is_some_and(|mc| mc.to_lowercase() == c)
+                    .is_some_and(|mc| eq_ignore_case(mc, c))
             })
         })
         .filter(|m| {
@@ -93,18 +120,16 @@ pub fn apply_query(mods: &[ModDto], q: &ModQuery) -> ModPage {
             heroes.is_empty()
                 || m.hero
                     .as_deref()
-                    .is_some_and(|h| heroes.contains(&h.to_lowercase()))
+                    .is_some_and(|h| heroes.iter().any(|wanted| eq_ignore_case(h, wanted)))
         })
         .collect();
 
-    // Stable sorts keep catalog order for ties. ISO dates compare as text;
-    // a missing date sorts last.
     match q.sort {
         SortKey::Newest => hits.sort_by(|a, b| b.remote_added_at.cmp(&a.remote_added_at)),
         SortKey::Updated => hits.sort_by(|a, b| b.last_updated().cmp(&a.last_updated())),
         SortKey::MostDownloaded => hits.sort_by_key(|m| std::cmp::Reverse(m.download_count)),
         SortKey::MostLiked => hits.sort_by_key(|m| std::cmp::Reverse(m.likes)),
-        SortKey::Name => hits.sort_by_key(|m| m.name.to_lowercase()),
+        SortKey::Name => hits.sort_by_cached_key(|m| m.name.to_lowercase()),
     }
 
     let total = hits.len();
