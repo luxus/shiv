@@ -24,6 +24,11 @@
     <binary>shiv</binary>
   </provides>
   <releases>
+    <release version="0.7.0" date="2026-11-25">
+      <description>
+        <p>publish model-leveled CompLock artifacts instead of app releases</p>
+      </description>
+    </release>
     <release version="0.6.1" date="2026-11-25">
       <description>
         <p>CompLock pack data from deadlockconfig.com, gameinfo build 6860.</p>
