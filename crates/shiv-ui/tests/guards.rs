@@ -66,6 +66,7 @@ const MODULES_UNDER_GUARD: &[&str] = &[
     "detail_tabs",
     "dnd",
     "downloads",
+    "frame_probe",
     "installed",
     "launch",
     "performance",

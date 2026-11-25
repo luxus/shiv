@@ -30,6 +30,8 @@ mod describe;
 mod detail_tabs;
 mod dnd;
 mod downloads;
+#[cfg(any(debug_assertions, feature = "dev-probe"))]
+mod frame_probe;
 mod installed;
 mod launch;
 mod link_target;
@@ -175,7 +177,7 @@ fn run() -> Result<(), slint::PlatformError> {
     tune_allocator();
     if let Err(e) = dnd::select_backend() {
         // Slint falls back to its default backend; only file drops are lost.
-        log::line(format_args!("X11 backend unavailable (SHIV_X11): {e}"));
+        log::line(format_args!("custom winit backend unavailable: {e}"));
     }
     let app = App::new()?;
     // Override for testing (e.g. an unreachable URL to see the Retry state).
@@ -195,6 +197,8 @@ fn run() -> Result<(), slint::PlatformError> {
     sources::load();
     downloads::attach(&app);
     dnd::attach(&app);
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    warm_fallback_fonts();
     // Debug builds only: open on another screen (e.g. for screenshots); 0 is Browse.
     #[cfg(debug_assertions)]
     if let Some(n) = std::env::var("SHIV_SCREEN")
@@ -213,7 +217,46 @@ fn run() -> Result<(), slint::PlatformError> {
             _ => {}
         }
     }
-    app.run()
+    let out = app.run();
+    #[cfg(any(debug_assertions, feature = "dev-probe"))]
+    frame_probe::report_if_enabled();
+    out
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn warm_fallback_fonts() {
+    use std::collections::HashSet;
+
+    use slint::fontique_011::fontique::{FallbackKey, FamilyId, GenericFamily, Script};
+
+    let mut collection = slint::fontique_011::shared_collection();
+    // Slint's parley text shaper walks SansSerif/SystemUi/Hani lazily on the
+    // first missing glyph, calling fontconfig + mmap on every uncached family.
+    // Warming them on a worker populates the shared SystemFonts::family_map
+    // while the catalog downloads so scrolling never hits a ~68 ms stall.
+    let _ = spawn_worker(
+        "shiv-font-warm",
+        move || {
+            let mut seen = HashSet::<FamilyId>::new();
+            for generic in [GenericFamily::SansSerif, GenericFamily::SystemUi] {
+                let ids: Vec<FamilyId> = collection.generic_families(generic).collect();
+                for id in ids {
+                    if seen.insert(id) {
+                        let _ = collection.family(id);
+                    }
+                }
+            }
+            let han_ids: Vec<FamilyId> = collection
+                .fallback_families(FallbackKey::new(Script::from_bytes(*b"Hani"), None))
+                .collect();
+            for id in han_ids {
+                if seen.insert(id) {
+                    let _ = collection.family(id);
+                }
+            }
+        },
+        |_| {},
+    );
 }
 
 #[cfg(test)]

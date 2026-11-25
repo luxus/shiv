@@ -621,3 +621,102 @@ written exactly once.
   extraction as the code stands, because extraction has no cancellation.
   Re-scoped to its own issue unless the maintainer prefers to build
   cancellable extraction now.
+
+## Scroll frame budget (lea, 2026-11-25)
+
+Machine: **lea** (NixOS, Linux `7.3.0-rc6-cachyos`, 8 cores, 60 GiB RAM,
+Wayland on Hyprland with focused output `PF-5` `3024x1898 @ 120 Hz` and
+`SHIV_SCROLL_SECS=60` injecting 200 logical px every 8 ms across the live
+10k catalog).
+
+### Instrument (`crates/shiv-ui/src/frame_probe.rs`)
+
+Slint's `SoftwareRenderer` returns `Unsupported` from
+`set_rendering_notifier`, so the rejected notifier callback cannot be
+used. Instead, `frame_probe` attaches a
+`slint::winit_030::CustomApplicationHandler` through
+`BackendSelector::with_winit_custom_application_handler` (over the
+already-enabled `unstable-winit-030` feature — zero new crates, compiled
+only under `debug_assertions` or `--features dev-probe`):
+
+- `draw` / `draw_cpu`: wall time and Linux UI-thread CPU time
+  (`CLOCK_THREAD_CPUTIME_ID`) across `WinitWindowAdapter::draw()`
+  (`RedrawRequested` entry to the next winit handler callback). Separating
+  CPU from wall time is necessary on Wayland because `softbuffer`'s
+  `WaylandImpl::buffer_mut()` calls `event_queue.blocking_dispatch()` while
+  waiting for `wl_buffer.release`.
+- `turn` / `turn_cpu`: wall and UI-thread CPU time across every event-loop
+  turn (`new_events` -> `about_to_wait`) during the scroll window, including
+  turns that do not draw, so timer/layout/text stalls outside `draw()` are
+  also caught.
+- `cadence`: delta between consecutive `RedrawRequested` events.
+
+Commands (each run isolated in a fresh temporary `HOME`/`XDG_*` directory):
+
+```sh
+cargo build --release -p shiv-ui --features dev-probe
+SHIV_SCROLL_SECS=60 SHIV_FRAME_PROBE=verbose ./target/release/shiv
+```
+
+### Results (60 s fling, live catalog)
+
+| Run | Metric | Count | p50 | p95 | p99 | Max | > 16 ms |
+|---|---|---|---|---|---|---|---|
+| Before (no font warm) | `draw` (wall) | 7,207 | 558 µs | 783 µs | 972 µs | 1,251 µs | **0** |
+| | `draw_cpu` | 7,207 | 546 µs | 707 µs | 948 µs | 1,126 µs | **0** |
+| | `turn` (wall) | 29,460 | 70 µs | 622 µs | 926 µs | **69,625 µs** | **1** |
+| | `turn_cpu` | 29,460 | 69 µs | 598 µs | 901 µs | **67,640 µs** | **1** |
+| | `cadence` | 7,206 | 8,331 µs | 8,592 µs | 10,090 µs | **73,566 µs** | — |
+| After (run 1) | `draw` (wall) | 7,416 | 1,747 µs | 2,311 µs | 2,787 µs | 5,005 µs | **0** |
+| | `draw_cpu` | 7,416 | 1,710 µs | 2,258 µs | 2,699 µs | 4,222 µs | **0** |
+| | `turn` (wall) | 30,496 | 118 µs | 1,987 µs | 2,425 µs | 5,008 µs | **0** |
+| | `turn_cpu` | 30,496 | 117 µs | 1,939 µs | 2,351 µs | 4,225 µs | **0** |
+| | `cadence` | 7,415 | 8,331 µs | 8,457 µs | 10,093 µs | 10,914 µs | — |
+| After (run 2) | `draw` (wall) | 7,202 | 566 µs | 777 µs | 984 µs | 2,562 µs | **0** |
+| | `draw_cpu` | 7,202 | 554 µs | 720 µs | 962 µs | 1,140 µs | **0** |
+| | `turn` (wall) | 29,488 | 79 µs | 635 µs | 935 µs | 2,565 µs | **0** |
+| | `turn_cpu` | 29,488 | 78 µs | 610 µs | 909 µs | 1,596 µs | **0** |
+| | `cadence` | 7,201 | 8,331 µs | 8,612 µs | 10,049 µs | 10,533 µs | — |
+| After (run 3) | `draw` (wall) | 7,203 | 561 µs | 788 µs | 988 µs | 2,241 µs | **0** |
+| | `draw_cpu` | 7,203 | 551 µs | 724 µs | 966 µs | 1,126 µs | **0** |
+| | `turn` (wall) | 29,524 | 69 µs | 627 µs | 931 µs | 2,244 µs | **0** |
+| | `turn_cpu` | 29,524 | 68 µs | 604 µs | 909 µs | 1,851 µs | **0** |
+| | `cadence` | 7,202 | 8,331 µs | 8,623 µs | 10,046 µs | 10,804 µs | — |
+
+### The fix the probe forced
+
+Software rendering itself stayed under 1.3 ms per frame in the Before run
+(`draw max = 1,251 µs`), but `slow_turn #1` caught a **69.6 ms wall /
+67.6 ms UI-thread CPU** stall at `t=+423 ms` outside `draw()` (plus a
+10.4 ms turn at `t=+35,936 ms`), causing a 73.6 ms frame-cadence gap.
+Tracing UI-thread syscalls (`strace -tt -T`) pinned a 73.75 ms CPU jump to
+fontique's fontconfig backend (`SystemFonts::family_uncached`): the first
+mod title in the `ListView` with a glyph absent from `Adwaita Sans` caused
+parley/fontique to enumerate and `openat`/`mmap` 2,906 font paths across
+the machine's 2,541 system fonts synchronously on the UI thread.
+
+Fix (`crates/shiv-ui/src/main.rs`, `warm_fallback_fonts`): enable Slint's
+`unstable-fontique-011` feature (no new crates; exposes the already-linked
+shared `fontique::Collection`) and warm `GenericFamily::SansSerif`,
+`GenericFamily::SystemUi`, and `Script::Hani` fallback families in a
+one-shot `shiv-font-warm` background worker at startup while the catalog
+downloads, populating `SystemFonts::family_map` before scrolling begins.
+
+### Verdict
+
+**PASS.** Across all three 60 s post-fix runs (21,821 rendered frames,
+89,508 event-loop turns):
+
+- **0 frames or turns > 16 ms** on wall clock or UI-thread CPU (`max`
+  5.01 ms wall / 4.23 ms CPU in run 1; 2.24–2.57 ms wall / 1.60–1.85 ms
+  CPU in runs 2–3), cutting the 69.6 ms UI-thread stall at `t=+423 ms` to
+  1.61–1.87 ms (~37–43× reduction) and worst inter-frame cadence from
+  73.6 ms to 10.5–10.9 ms.
+- At 144 Hz (6.94 ms frame interval), both `draw` (`p99 = 0.98–2.79 ms`,
+  `max = 2.24–5.01 ms`) and UI-thread `turn` (`max = 2.24–5.01 ms`) stay
+  below a single 144 Hz period as well as the 16 ms gate.
+- Caveat observed in an earlier un-warmed dev run (`2026-11-25`, prior to
+  adding `draw_cpu` / `turn` split): Wayland `softbuffer`
+  `wl_buffer.release` blocking can inflate wall `draw` when the compositor
+  stalls buffer release; separating `draw_cpu` keeps Shiv's own frame
+  production honest on Wayland.
