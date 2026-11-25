@@ -172,6 +172,7 @@ fn sidecar_claiming(id: &str, vpk: &str) -> Sidecar {
         mod_id: id.into(),
         name: format!("Mod {id}"),
         version: Some("1.0".into()),
+        version_label: None,
         thumbnail_url: None,
         vpks: vec![vpk.into()],
         nsfw: None,

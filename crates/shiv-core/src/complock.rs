@@ -175,7 +175,7 @@ where
 }
 
 /// A date the site stamps on a card, as `YYYY-MM-DD`.
-fn updated_date<'de, D>(d: D) -> Result<Option<String>, D::Error>
+fn deserialize_updated_date<'de, D>(d: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -231,7 +231,7 @@ struct RawOption {
     avg: Option<String>,
     #[serde(default)]
     low: Option<String>,
-    #[serde(default, deserialize_with = "updated_date")]
+    #[serde(default, deserialize_with = "deserialize_updated_date")]
     updated: Option<String>,
     #[serde(default)]
     pak: Option<String>,
@@ -285,7 +285,7 @@ struct RawBase {
     avg: Option<String>,
     #[serde(default)]
     low: Option<String>,
-    #[serde(default, deserialize_with = "updated_date")]
+    #[serde(default, deserialize_with = "deserialize_updated_date")]
     updated: Option<String>,
     #[serde(default)]
     pak: Option<String>,
@@ -686,6 +686,31 @@ impl PackLoad {
     #[must_use]
     pub fn entries(&self) -> Vec<ConfigEntry> {
         entries_of(&self.gameinfo_text)
+    }
+
+    /// When the site stamped `mod_id` (`complock-*`) as updated, falling back
+    /// to a dated pack fetch date.
+    #[must_use]
+    pub fn updated_date(&self, mod_id: &str) -> Option<&str> {
+        updated_date_in(
+            self.data.hud.as_ref(),
+            &self.data.options,
+            &self.fetched,
+            mod_id,
+        )
+    }
+
+    /// What this pack publishes for a Shiv-installed CompLock pak.
+    #[must_use]
+    pub fn published(&self, mod_id: &str) -> crate::drift::Published {
+        published_in(self.data.hud.as_ref(), &self.data.options, mod_id)
+    }
+
+    /// The pak this pack installs for `mod_id`, matching `version` when
+    /// still published, else the default pak.
+    #[must_use]
+    pub fn release_for(&self, mod_id: &str, version: Option<&str>) -> Option<&Pak> {
+        release_for_in(self.data.hud.as_ref(), &self.data.options, mod_id, version)
     }
 }
 
@@ -1159,6 +1184,7 @@ pub fn adopt_reused(
             mod_id: meta.mod_id.clone(),
             name: meta.name.clone(),
             version: meta.version.clone(),
+            version_label: meta.version_label.clone(),
             thumbnail_url: meta.thumbnail_url.clone(),
             vpks: names.to_vec(),
             nsfw: Some(meta.nsfw),
@@ -1429,18 +1455,7 @@ pub fn revision(pak: &Pak) -> String {
 /// other id is not CompLock's: [`crate::drift::Published::Unknown`].
 #[must_use]
 pub fn published(mod_id: &str) -> crate::drift::Published {
-    use crate::drift::Published;
-    if crate::generated::is_id(mod_id) {
-        return Published::Unknown;
-    }
-    if !mod_id.starts_with(MOD_PREFIX) {
-        return Published::Unknown;
-    }
-    let paks = releases(mod_id);
-    if paks.is_empty() {
-        return Published::Gone;
-    }
-    Published::Current(paks.into_iter().map(revision).collect())
+    published_in(hud(), options(), mod_id)
 }
 
 /// The pak a reset of `mod_id` reinstalls: the published pak whose
@@ -1449,11 +1464,63 @@ pub fn published(mod_id: &str) -> crate::drift::Published {
 /// when the pack no longer publishes the mod.
 #[must_use]
 pub fn release_for(mod_id: &str, version: Option<&str>) -> Option<&'static Pak> {
-    let paks = releases(mod_id);
+    release_for_in(hud(), options(), mod_id, version)
+}
+
+/// When the site stamped `mod_id` (`complock-*`) as updated, falling back
+/// to the embedded pack's fetch date.
+#[must_use]
+pub fn updated_date(mod_id: &str) -> Option<&'static str> {
+    updated_date_in(hud(), options(), fetched(), mod_id)
+}
+
+fn published_in(
+    hud: Option<&Hud>,
+    options: &[PackOption],
+    mod_id: &str,
+) -> crate::drift::Published {
+    use crate::drift::Published;
+    if crate::generated::is_id(mod_id) || !mod_id.starts_with(MOD_PREFIX) {
+        return Published::Unknown;
+    }
+    let paks = releases_in(hud, options, mod_id);
+    if paks.is_empty() {
+        return Published::Gone;
+    }
+    Published::Current(paks.into_iter().map(revision).collect())
+}
+
+fn release_for_in<'a>(
+    hud: Option<&'a Hud>,
+    options: &'a [PackOption],
+    mod_id: &str,
+    version: Option<&str>,
+) -> Option<&'a Pak> {
+    let paks = releases_in(hud, options, mod_id);
     paks.iter()
         .find(|p| version.is_some_and(|v| revision(p) == v))
         .or_else(|| paks.first())
         .copied()
+}
+
+fn updated_date_in<'a>(
+    hud: Option<&'a Hud>,
+    options: &'a [PackOption],
+    fetched: &'a str,
+    mod_id: &str,
+) -> Option<&'a str> {
+    let id = mod_id.strip_prefix(MOD_PREFIX)?;
+    let card_date = if id == HUD_ID {
+        hud.and_then(|h| h.updated.as_deref())
+    } else {
+        options
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| o.updated.as_deref())
+    };
+    card_date.filter(|d| !d.is_empty()).or_else(|| {
+        (!fetched.is_empty() && !matches!(fetched, "live" | "cached")).then_some(fetched)
+    })
 }
 
 /// The last pak slot the site's pack names: its paks carry their load
@@ -1487,12 +1554,12 @@ pub fn slot_of(name: &str) -> Option<u32> {
     (digits.len() == 2).then(|| digits.parse().ok()).flatten()
 }
 
-fn releases(mod_id: &str) -> Vec<&'static Pak> {
+fn releases_in<'a>(hud: Option<&'a Hud>, options: &'a [PackOption], mod_id: &str) -> Vec<&'a Pak> {
     let Some(id) = mod_id.strip_prefix(MOD_PREFIX) else {
         return Vec::new();
     };
     if id == HUD_ID {
-        hud().map_or_else(Vec::new, |h| {
+        hud.map_or_else(Vec::new, |h| {
             h.default_pak
                 .iter()
                 .chain(h.variants.values())
@@ -1500,7 +1567,7 @@ fn releases(mod_id: &str) -> Vec<&'static Pak> {
                 .collect()
         })
     } else {
-        options()
+        options
             .iter()
             .find(|o| o.id == id)
             .map_or_else(Vec::new, |o| {

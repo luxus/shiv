@@ -1272,6 +1272,7 @@ mod tests {
                 mod_id: "data".into(),
                 name: "Data mod".into(),
                 version: None,
+                version_label: None,
                 thumbnail_url: None,
                 vpks: vec!["pak01_dir.vpk".into()],
                 nsfw: None,

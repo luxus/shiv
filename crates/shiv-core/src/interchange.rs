@@ -933,6 +933,7 @@ fn install_from_bundle(
         mod_id: sidecar::new_local_id(&paths.addons),
         name: name.to_owned(),
         version: None,
+        version_label: None,
         thumbnail_url: m.thumbnail_url.clone().filter(|u| !u.is_empty()),
         nsfw: m.nsfw.unwrap_or(false),
         hero: m.hero.clone(),

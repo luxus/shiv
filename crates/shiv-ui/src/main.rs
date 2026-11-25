@@ -409,6 +409,7 @@ mod tests {
             mod_id: id.into(),
             name: "Sound cap".into(),
             version: Some(complock::revision(pak)),
+            version_label: complock::updated_date(id).map(str::to_owned),
             thumbnail_url: None,
             nsfw: false,
             hero: None,
@@ -525,16 +526,28 @@ mod tests {
         }));
         assert_eq!(std::fs::read(installed()).expect("read"), published);
         assert_eq!(downloads.load(Ordering::Relaxed), pak.parts[0].urls.len());
-        assert_eq!(
-            app.global::<InstalledState>().get_banner_text().as_str(),
-            ""
+        assert!(
+            app.global::<InstalledState>()
+                .get_banner_text()
+                .contains("Reset Sound cap to release"),
+            "{}",
+            app.global::<InstalledState>().get_banner_text()
         );
 
         running.store(true, Ordering::Relaxed);
         click(&app, "Restore previous");
+        assert!(run_until(&app, Duration::from_secs(10), |a| {
+            a.global::<crate::RestoreState>().get_open()
+        }));
+        let restore = app.global::<crate::RestoreState>();
+        assert_eq!(restore.get_mod_name().as_str(), "Sound cap");
+        assert!(!restore.get_backup_version().is_empty());
+        click(&app, "Restore");
         assert!(run_until(&app, Duration::from_secs(20), |a| {
             let s = a.global::<InstalledState>();
-            !s.get_busy() && s.get_banner_text().contains("running")
+            !a.global::<crate::RestoreState>().get_open()
+                && !s.get_busy()
+                && s.get_banner_text().contains("running")
         }));
         assert_eq!(std::fs::read(installed()).expect("read"), published);
         running.store(false, Ordering::Relaxed);
@@ -544,6 +557,10 @@ mod tests {
         }));
 
         click(&app, "Restore previous");
+        assert!(run_until(&app, Duration::from_secs(10), |a| {
+            a.global::<crate::RestoreState>().get_open()
+        }));
+        click(&app, "Restore");
         assert!(run_until(&app, Duration::from_secs(20), move |a| {
             settled(a)
                 && row(a, id).is_some_and(|r| {
@@ -552,7 +569,58 @@ mod tests {
                             == installed::drift_text(shiv_core::drift::Drift::Modified)
                 })
         }));
+        assert!(
+            app.global::<InstalledState>()
+                .get_banner_text()
+                .contains("Restored Sound cap"),
+            "{}",
+            app.global::<InstalledState>().get_banner_text()
+        );
         assert_eq!(std::fs::read(installed()).expect("read"), edited);
+
+        // An outdated (but unmodified) CompLock mod offers "Update to <date>"
+        // instead of "Reset to release" (#70) and never prints CRC32 in detail (#63).
+        std::fs::write(installed(), &published).expect("put published bytes back");
+        let mut outdated = shiv_core::sidecar::read(&paths.addons, id)
+            .expect("sidecar")
+            .expect("present");
+        outdated.version = Some("crc32:00000000".into());
+        outdated.version_label = Some("2026-10-01".into());
+        let ok_stamp = shiv_core::sidecar::Stamp::of_files(std::iter::once(installed().as_path()))
+            .expect("stamp");
+        outdated.stamps = Some(vec![ok_stamp]);
+        shiv_core::sidecar::write(&paths.addons, &outdated).expect("write outdated");
+        app.global::<InstalledState>().invoke_refresh();
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            settled(a)
+                && row(a, id).is_some_and(|r| {
+                    r.pill.as_str() == "Update available" && r.update && !r.can_reset
+                })
+        }));
+        let outdated_row = row(&app, id).expect("outdated row");
+        assert_eq!(outdated_row.source_label.as_str(), "CompLock");
+        assert_eq!(outdated_row.detail.as_str(), "Updated 2026-10-01");
+        assert!(outdated_row.about.contains("crc32:00000000"));
+        assert!(
+            outdated_row.update_label.starts_with("Update to "),
+            "{}",
+            outdated_row.update_label
+        );
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&app, "Reset to release").count(),
+            0
+        );
+        click(&app, &outdated_row.update_label);
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            settled(a) && row(a, id).is_some_and(|r| !r.update && r.drift.as_str() == "")
+        }));
+        assert!(
+            app.global::<InstalledState>()
+                .get_banner_text()
+                .contains("Updated Sound cap"),
+            "{}",
+            app.global::<InstalledState>().get_banner_text()
+        );
         app.hide().expect("hide");
     }
 
@@ -1259,6 +1327,7 @@ mod tests {
                 mod_id: "data".into(),
                 name: "Data mod".into(),
                 version: None,
+                version_label: None,
                 thumbnail_url: None,
                 vpks: vec!["pak01_dir.vpk".into()],
                 nsfw: None,
@@ -3032,13 +3101,23 @@ mod tests {
         let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
         let cache = browse::attach_with(&app, &url, &locate);
         sources::attach_with(&app, locate.clone());
+        let reg_client = shiv_api::Client::new(&url);
         installed::attach_with(
             &app,
             cache,
             installed::Deps {
                 locate,
                 running: Arc::new(|| false),
-                download: Arc::new(|_, _| Err("no network in tests".into())),
+                download: Arc::new(move |dl_url, dest| {
+                    reg_client
+                        .fetch_cancellable(
+                            dl_url,
+                            dest,
+                            &std::sync::atomic::AtomicBool::new(false),
+                            |_, _| {},
+                        )
+                        .map_err(|e| e.to_string())
+                }),
             },
         );
         app.show().expect("show");
@@ -3233,7 +3312,12 @@ mod tests {
         let row = installed.get_rows().row_data(0).expect("row");
         assert!(row.managed);
         assert_eq!(row.id.as_str(), "src-my_2dcommunity-example");
-        assert!(row.detail.contains("revision-1"), "{}", row.detail);
+        assert_eq!(row.source_label.as_str(), "Registry");
+        assert_eq!(row.source_kind, crate::SourceKind::Registry);
+        assert_eq!(row.detail.as_str(), "Version 1.0.0");
+        assert!(!row.detail.contains("revision-1"), "{}", row.detail);
+        assert!(!row.detail.contains("pak01"), "{}", row.detail);
+        assert!(row.about.contains("revision-1") && row.about.contains("pak01"));
         assert_eq!(
             row.pill.as_str(),
             "Unverified",
@@ -3262,17 +3346,38 @@ mod tests {
         // compares the sidecar with the catalog just fetched, not a copy
         // baked into this build.
         revision.store(2, std::sync::atomic::Ordering::SeqCst);
+        app.set_screen(1);
         app.global::<crate::SourcesState>().invoke_refresh();
         assert!(
             run_until(&app, Duration::from_secs(10), |a| {
-                let rows = a.global::<crate::InstalledState>().get_rows();
+                let s = a.global::<crate::InstalledState>();
+                let rows = s.get_rows();
                 rows.row_count() == 1
-                    && rows
-                        .row_data(0)
-                        .is_some_and(|row| row.pill.as_str() == "Update available")
+                    && s.get_update_count() == 1
+                    && rows.row_data(0).is_some_and(|row| {
+                        row.pill.as_str() == "Update available"
+                            && row.update
+                            && row.update_label.as_str() == "Update to 1.0.0"
+                    })
             }),
             "a newer registry snapshot shows Update available"
         );
+        assert!(ElementHandle::find_by_accessible_label(&app, "Check for updates").count() > 0);
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&app, "Refresh").count(),
+            0
+        );
+        click(&app, "Update all (1)");
+        assert!(run_until(&app, Duration::from_secs(10), |a| {
+            let s = a.global::<crate::InstalledState>();
+            !s.get_busy()
+                && s.get_update_count() == 0
+                && s.get_banner_text().as_str() == "Updated 1 mod."
+        }));
+        let updated_sc = shiv_core::sidecar::read(&paths.addons, "src-my_2dcommunity-example")
+            .expect("sidecar")
+            .expect("present");
+        assert_eq!(updated_sc.version.as_deref(), Some("revision-2"));
 
         // The store remembers the source; re-loading it finds the same one.
         let reloaded = Registry::load(&GamePaths::from_root(game_root)).expect("registry");
@@ -3493,6 +3598,7 @@ mod tests {
                 mod_id: "m1".into(),
                 name: "Test Mod".into(),
                 version: Some("1.0".into()),
+                version_label: None,
                 thumbnail_url: None,
                 vpks: vec!["pak01_dir.vpk".into()],
                 nsfw: None,
@@ -3964,7 +4070,13 @@ mod tests {
         assert!(!exists("pak55_dir.vpk"));
         let r = state.get_rows().row_data(0).expect("row");
         assert_eq!(r.id.as_str(), id.as_str());
-        assert!(r.detail.contains("pak40"), "{}", r.detail);
+        assert_eq!(r.source_label.as_str(), "Manual");
+        assert!(
+            !r.detail.contains("pak40") && r.about.contains("pak40"),
+            "{} / {}",
+            r.detail,
+            r.about
+        );
         assert_eq!(
             std::fs::read(addons.join("pak40_dir.vpk")).expect("read"),
             std::fs::read(&v3).expect("read"),
@@ -4800,6 +4912,7 @@ mod tests {
                     mod_id: id.into(),
                     name: name.into(),
                     version: None,
+                    version_label: None,
                     thumbnail_url: Some(thumb.clone()),
                     vpks: vec![vpk],
                     nsfw,

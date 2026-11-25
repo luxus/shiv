@@ -38,6 +38,7 @@ fn meta(id: &str) -> ModMeta {
         mod_id: id.into(),
         name: id.into(),
         version: Some("1".into()),
+        version_label: None,
         thumbnail_url: None,
         nsfw: false,
         hero: None,

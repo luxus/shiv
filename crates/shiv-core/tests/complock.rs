@@ -745,6 +745,7 @@ fn a_pak_with_the_parts_bytes_is_reused_under_any_number() {
         mod_id: "complock-hud".into(),
         name: "HUD++".into(),
         version: Some("1".into()),
+        version_label: None,
         thumbnail_url: None,
         nsfw: false,
         hero: None,
@@ -799,6 +800,7 @@ fn a_pak_with_the_parts_bytes_is_reused_under_any_number() {
             mod_id: "owner".into(),
             name: "Owner".into(),
             version: None,
+            version_label: None,
             thumbnail_url: None,
             vpks: vec!["pak03_dir.vpk".into()],
             nsfw: None,
@@ -885,4 +887,17 @@ fn an_option_without_gameinfo_else_turns_off_by_leaving_its_line_out() {
         )]
     );
     assert!(ragdolls.off_convars.is_empty());
+}
+
+#[test]
+fn pack_load_exposes_card_updated_dates_and_releases() {
+    assert_eq!(complock::updated_date("complock-hud"), Some("2026-11-22"));
+    assert!(complock::updated_date("other").is_none());
+    let loaded = complock::baked_pack();
+    assert_eq!(loaded.updated_date("complock-hud"), Some("2026-11-22"));
+    assert!(loaded.release_for("complock-soundcap", None).is_some());
+    assert!(matches!(
+        loaded.published("complock-soundcap"),
+        shiv_core::drift::Published::Current(_)
+    ));
 }

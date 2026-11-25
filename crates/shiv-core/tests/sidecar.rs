@@ -7,6 +7,7 @@ fn sc(id: &str, vpks: &[&str]) -> Sidecar {
         mod_id: id.into(),
         name: format!("Mod {id}"),
         version: Some("1.0".into()),
+        version_label: None,
         thumbnail_url: None,
         vpks: vpks.iter().map(|s| s.to_string()).collect(),
         nsfw: None,
@@ -1112,4 +1113,27 @@ fn renumber_refuses_bad_duplicate_and_stale_targets() {
         sidecar::renumber(d.path(), &mods, &[(v0, 5)], guard.permit()),
         Err(SidecarError::StalePak(5))
     ));
+}
+
+#[test]
+fn sidecar_version_label_round_trips_and_defaults_to_none_on_legacy_json() {
+    let d = tempdir().unwrap();
+    let mut s = sc("labelled", &["pak01_dir.vpk"]);
+    s.version = Some("crc32:deadbeef".into());
+    s.version_label = Some("2026-11-22".into());
+    sidecar::write(d.path(), &s).unwrap();
+    let read_back = sidecar::read(d.path(), "labelled").unwrap().unwrap();
+    assert_eq!(read_back.version_label.as_deref(), Some("2026-11-22"));
+
+    let legacy = r#"{
+        "mod_id": "legacy",
+        "name": "Legacy",
+        "version": "1.0",
+        "thumbnail_url": null,
+        "vpks": ["pak02_dir.vpk"]
+    }"#;
+    std::fs::create_dir_all(d.path().join(".shiv")).unwrap();
+    std::fs::write(d.path().join(".shiv/legacy.json"), legacy).unwrap();
+    let parsed = sidecar::read(d.path(), "legacy").unwrap().unwrap();
+    assert_eq!(parsed.version_label, None);
 }

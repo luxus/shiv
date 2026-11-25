@@ -52,6 +52,11 @@ pub struct Sidecar {
     pub mod_id: String,
     pub name: String,
     pub version: Option<String>,
+    /// Human-readable version or release date (`YYYY-MM-DD`, `"1.0.0"`), when
+    /// `version` carries an opaque revision id or checksum; omitted from JSON
+    /// when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_label: Option<String>,
     pub thumbnail_url: Option<String>,
     /// VPK file names without the `.disabled` suffix.
     pub vpks: Vec<String>,
@@ -370,6 +375,7 @@ pub fn adopt(
         mod_id: new_local_id(addons),
         name: name.trim().to_owned(),
         version: None,
+        version_label: None,
         thumbnail_url: None,
         vpks,
         nsfw: Some(false),

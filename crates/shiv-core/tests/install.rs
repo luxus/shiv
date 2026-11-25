@@ -38,6 +38,7 @@ fn meta_version(id: &str, version: &str) -> ModMeta {
         mod_id: id.into(),
         name: format!("Mod {id}"),
         version: Some(version.into()),
+        version_label: None,
         thumbnail_url: None,
         nsfw: false,
         hero: None,
@@ -804,6 +805,7 @@ fn sidecar_with_traversal_vpk_name_deletes_nothing_outside_addons() {
         mod_id: "m1".into(),
         name: "x".into(),
         version: None,
+        version_label: None,
         thumbnail_url: None,
         vpks: vec![
             "pak01_dir.vpk".into(),

@@ -264,6 +264,7 @@ fn run_pack_install(
         mod_id: task.mod_id.clone(),
         name: task.name,
         version: Some(complock::revision(&task.pak)),
+        version_label: complock::updated_date(&task.mod_id).map(str::to_owned),
         thumbnail_url: None,
         nsfw: false,
         hero: None,
