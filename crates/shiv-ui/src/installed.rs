@@ -1563,7 +1563,7 @@ pub(crate) fn file_dropped(path: PathBuf) {
 /// Several files were dropped on the window: they are queued and processed
 /// one by one, each opening the dialog it needs.
 #[cfg_attr(
-    target_vendor = "apple",
+    any(target_vendor = "apple", windows),
     allow(dead_code, reason = "called only from the Wayland drop path and tests")
 )]
 pub(crate) fn files_dropped(paths: Vec<PathBuf>) {

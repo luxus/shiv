@@ -58,6 +58,9 @@ enum Target {
 /// The release file an update to a version needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Asset {
+    /// Constructed off Windows: there the release's file is the portable
+    /// `.exe`, and an `AppImage` needs the `APPIMAGE` runtime.
+    #[cfg_attr(windows, allow(dead_code, reason = "constructed off Windows only"))]
     AppImage,
     /// Constructed on Windows only: the release's Linux file is the
     /// `AppImage`, and a bare Linux binary has nothing to swap.
@@ -164,6 +167,9 @@ fn asset_for(target: &Target) -> Option<Asset> {
 }
 
 #[cfg(windows)]
+// Every Windows arm returns Some; the Option keeps the one signature
+// the non-Windows arm needs (a placed binary has no asset).
+#[allow(clippy::unnecessary_wraps, reason = "the non-Windows arm returns None")]
 fn asset_of_swap(_path: &Path) -> Option<Asset> {
     Some(Asset::Portable)
 }
