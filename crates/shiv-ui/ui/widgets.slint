@@ -121,6 +121,7 @@ export component Button inherits Rectangle {
 // Text-only action, for secondary actions that sit inside dense rows.
 export component TextButton inherits Rectangle {
     in property <string> text;
+    in property <string> tip;
     in property <bool> disabled: false;
     callback clicked;
 
@@ -151,6 +152,15 @@ export component TextButton inherits Rectangle {
         enabled: !root.disabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if (root.tip != "") {
+                if (self.has-hover) {
+                    Tooltip.show(root.tip, root.absolute-position.x, root.absolute-position.y, root.height);
+                } else {
+                    Tooltip.hide(root.tip);
+                }
+            }
+        }
     }
 }
 

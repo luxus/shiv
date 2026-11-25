@@ -540,6 +540,7 @@ struct Entry {
     updated: SharedString,
     thumb_url: Option<String>,
     version: Option<String>,
+    version_label: Option<String>,
     downloadable: bool,
     nsfw: bool,
     hero: Option<String>,
@@ -583,6 +584,7 @@ impl Entry {
         Entry {
             thumb_url: thumb_url(&m),
             version: m.version().map(str::to_owned),
+            version_label: m.version().and_then(short_date).map(str::to_owned),
             downloadable: m.downloadable,
             nsfw: m.is_nsfw,
             hero: m.hero.filter(|h| !h.trim().is_empty()),
@@ -823,6 +825,7 @@ struct InstallTask {
     file: DownloadFile,
     name: String,
     version: Option<String>,
+    version_label: Option<String>,
     thumbnail_url: Option<String>,
     nsfw: bool,
     hero: Option<String>,
@@ -853,6 +856,7 @@ impl InstallTask {
             file,
             name: entry.name.clone(),
             version: entry.version.clone(),
+            version_label: entry.version_label.clone(),
             thumbnail_url: entry.thumb_url.clone(),
             nsfw: entry.nsfw,
             hero: entry.hero.clone(),
@@ -882,6 +886,7 @@ impl InstallTask {
             file,
             name: listing.title.clone(),
             version: Some(release.content_revision.clone()),
+            version_label: registry_version_label(listing, release),
             thumbnail_url: listing.thumbnail_url().map(str::to_owned),
             nsfw: listing.nsfw.unwrap_or(false),
             hero: listing.hero.clone(),
@@ -1040,6 +1045,7 @@ fn run_install(
         mod_id: task.mod_id,
         name: task.name,
         version: task.version,
+        version_label: task.version_label,
         thumbnail_url: task.thumbnail_url,
         nsfw: task.nsfw,
         hero: task.hero,
@@ -1128,12 +1134,33 @@ fn unavailable_entry(
         updated: SharedString::default(),
         thumb_url: listing.thumbnail_url().map(str::to_owned),
         version: None,
+        version_label: None,
         downloadable: false,
         nsfw: listing.nsfw.unwrap_or(false),
         hero: listing.hero.clone(),
         category: listing.content_type.clone(),
         registry: None,
     }
+}
+
+fn registry_version_label(
+    listing: &shiv_api::NativeListing,
+    release: &shiv_api::NativeRelease,
+) -> Option<String> {
+    release
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            release
+                .published_at
+                .as_deref()
+                .or(listing.updated_at.as_deref())
+                .and_then(short_date)
+                .map(str::to_owned)
+        })
 }
 
 fn registry_entry(
@@ -1154,6 +1181,7 @@ fn registry_entry(
         .map(|d| format!("Updated {d}"))
         .unwrap_or_default();
     let version = Some(release.content_revision.clone());
+    let version_label = registry_version_label(&listing, &release);
     let nsfw = listing.nsfw.unwrap_or(false);
     let install = RegistryInstall {
         source: source.clone(),
@@ -1180,6 +1208,7 @@ fn registry_entry(
         updated: updated.into(),
         thumb_url: listing.thumbnail_url().map(str::to_owned),
         version,
+        version_label,
         downloadable: true,
         nsfw,
         hero: listing.hero.clone(),
@@ -1212,6 +1241,17 @@ pub(crate) fn catalog_version(id: &str) -> Option<String> {
         out = b
             .catalog_mod(id)
             .and_then(|m| m.version().map(str::to_owned));
+    });
+    out
+}
+
+/// Human-readable release date/version of a GameBanana catalog mod.
+pub(crate) fn catalog_version_label(id: &str) -> Option<String> {
+    let mut out = None;
+    with_browse(|b| {
+        out = b
+            .catalog_mod(id)
+            .and_then(|m| m.version().and_then(short_date).map(str::to_owned));
     });
     out
 }
@@ -1311,6 +1351,15 @@ pub(crate) fn gamebanana_enabled() -> bool {
 /// Start an update of an installed mod (the Installed screen's Update button).
 pub(crate) fn update_mod(id: &str) {
     with_browse(|b| b.install(id));
+}
+
+/// Whether `id` currently has a download lookup, picker, or install job open.
+pub(crate) fn is_updating(id: &str) -> bool {
+    let mut active = false;
+    with_browse(|b| {
+        active = b.busy(id) || b.picker.borrow().as_ref().is_some_and(|(p, _)| p == id);
+    });
+    active
 }
 
 /// Rebuild the list with the registries' current catalogs: the Sources
@@ -1546,7 +1595,9 @@ fn wire_callbacks(state: &BrowseState<'_>) {
     state.on_cancel(|id| with_browse(|b| b.cancel(id.as_str())));
     state.on_pick_download(|i| with_browse(|b| b.pick_download(i)));
     state.on_cancel_pick(handle(|b| {
-        b.close_picker();
+        if let Some((id, _)) = b.close_picker() {
+            crate::installed::transfer_changed(&id);
+        }
     }));
     state.on_dismiss_banner(handle(|b| b.set_banner("")));
     state.on_shown(refresh_installed);

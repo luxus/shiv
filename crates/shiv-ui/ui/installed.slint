@@ -5,10 +5,15 @@ import { Theme } from "theme.slint";
 import { Button, TextButton, Switch, ProgressBar, SearchField, Tooltip } from "widgets.slint";
 import { LoadState, CenteredMessage } from "browse.slint";
 
+export enum SourceKind { none, complock, registry, manual }
+
 export struct InstalledRow {
     id: string,
     name: string,
     detail: string,
+    // Colour-coded tag indicating where the mod came from.
+    source-label: string,
+    source-kind: SourceKind,
     // Subtle label for VPKs Shiv did not install; empty for managed mods.
     tag: string,
     // The catalog's author; "" when unknown.
@@ -24,6 +29,8 @@ export struct InstalledRow {
     managed: bool,
     // The catalog has a newer version than the installed one.
     update: bool,
+    // Button label for an available update ("Update to 2026-11-23" or "Update").
+    update-label: string,
     // An install or update of this mod is downloading or installing.
     transferring: bool,
     // 0..1, negative when the size is unknown.
@@ -62,8 +69,11 @@ export global InstalledState {
     in property <bool> repair-stale;
     // Row waiting for uninstall confirmation, "" when none.
     in-out property <string> confirm-id;
+    // Number of installed mods with an available update.
+    in property <int> update-count: 0;
 
     callback refresh();
+    callback update-all();
     callback toggle(string);
     // Move a mod in the load order: 0 up, 1 down, 2 to the very first place.
     callback move(string, int);
@@ -163,6 +173,31 @@ component Pill inherits Rectangle {
                 Tooltip.hide(root.tip);
             }
         }
+    }
+}
+
+// Compact colour-coded tag showing which source a mod came from.
+component SourceTag inherits Rectangle {
+    in property <string> label;
+    in property <SourceKind> kind;
+
+    property <color> tone: root.kind == SourceKind.complock ? Theme.tag-complock
+        : (root.kind == SourceKind.registry ? Theme.tag-registry : Theme.tag-manual);
+
+    height: 18px;
+    width: tag-text.preferred-width + 2 * 7px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: root.tone.with-alpha(0.5);
+    background: root.tone.with-alpha(0.14);
+
+    tag-text := Text {
+        text: root.label;
+        color: root.tone;
+        font-size: 10px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 }
 
@@ -312,9 +347,23 @@ component InstalledRowView inherits Rectangle {
                             overflow: elide;
                             vertical-alignment: center;
                         }
+                        if root.item.source-label != "": VerticalLayout {
+                            alignment: center;
+                            SourceTag {
+                                label: root.item.source-label;
+                                kind: root.item.source-kind;
+                            }
+                        }
                         if root.item.author != "": Text {
                             text: "by " + root.item.author;
                             color: Theme.text-muted;
+                            font-size: Theme.text-sm;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        if root.item.detail != "" && root.item.blurb != root.item.detail: Text {
+                            text: (root.item.author != "" ? "\u{b7} " : "") + root.item.detail;
+                            color: Theme.text-faint;
                             font-size: Theme.text-sm;
                             overflow: elide;
                             vertical-alignment: center;
@@ -416,7 +465,7 @@ component InstalledRowView inherits Rectangle {
                     if root.item.update && !root.item.transferring: VerticalLayout {
                         alignment: center;
                         Button {
-                            text: "Update";
+                            text: root.item.update-label != "" ? root.item.update-label : "Update";
                             primary: true;
                             disabled: root.frozen;
                             clicked => { InstalledState.update(root.item.id); }
@@ -480,6 +529,12 @@ export component InstalledPage inherits Rectangle {
                 font-size: Theme.text-md;
                 vertical-alignment: center;
             }
+            if InstalledState.update-count > 0: Button {
+                text: "Update all (" + InstalledState.update-count + ")";
+                primary: true;
+                disabled: InstalledState.game-running || InstalledState.busy;
+                clicked => { InstalledState.update-all(); }
+            }
             Button {
                 text: "Install a mod";
                 disabled: InstalledState.game-running || InstalledState.busy;
@@ -496,7 +551,8 @@ export component InstalledPage inherits Rectangle {
                 clicked => { InstalledState.import-library(); }
             }
             TextButton {
-                text: "Refresh";
+                text: "Check for updates";
+                tip: "Rescan the addons folder and check loaded sources for newer versions.";
                 clicked => { InstalledState.refresh(); }
             }
         }
@@ -511,7 +567,7 @@ export component InstalledPage inherits Rectangle {
                 padding-left: Theme.s2;
                 padding-right: Theme.s2;
                 Text {
-                    text: "Deadlock is running. Close it to enable, disable or uninstall mods, then press Refresh.";
+                    text: "Deadlock is running. Close it to enable, disable or uninstall mods, then press Check for updates.";
                     color: Theme.text;
                     font-size: Theme.text-md;
                     vertical-alignment: center;
@@ -1069,6 +1125,51 @@ export component UpdateFileDialog inherits DialogCard {
             primary: true;
             disabled: UpdateFileState.busy || InstalledState.busy || UpdateFileState.path == "";
             clicked => { UpdateFileState.replace(); }
+        }
+    }
+}
+
+// Confirmation before swapping a mod back to the backup stored in
+// addons/.shiv/backup.
+export global RestoreState {
+    in-out property <bool> open;
+    in property <string> mod-name;
+    in property <string> current-version;
+    in property <string> backup-version;
+    in property <string> error-text;
+    in property <bool> busy;
+
+    callback confirm();
+    callback cancel();
+}
+
+export component RestoreDialog inherits DialogCard {
+    title: "Restore previous version of " + RestoreState.mod-name + "?";
+    Text {
+        text: "This swaps the current files (" + RestoreState.current-version + ") back to the backup in addons/.shiv/backup (" + RestoreState.backup-version + "). The current files stay saved as a backup so you can swap back later.";
+        color: Theme.text-muted;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    if RestoreState.error-text != "": Text {
+        text: RestoreState.error-text;
+        color: Theme.danger;
+        font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: Theme.s1;
+        alignment: end;
+        TextButton {
+            text: "Cancel";
+            disabled: RestoreState.busy;
+            clicked => { RestoreState.cancel(); }
+        }
+        Button {
+            text: RestoreState.busy ? "Restoring" : "Restore";
+            primary: true;
+            disabled: RestoreState.busy || InstalledState.busy;
+            clicked => { RestoreState.confirm(); }
         }
     }
 }

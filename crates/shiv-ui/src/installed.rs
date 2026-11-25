@@ -34,7 +34,7 @@ use crate::link_target::{self, LinkTarget};
 use crate::thumbs;
 use crate::{
     App, DropState, InstalledRow, InstalledState, LoadState, LocalInstallState, ModEditState,
-    UpdateFileState,
+    RestoreState, SourceKind, UpdateFileState,
 };
 
 pub(crate) type Locate = Arc<dyn Fn() -> Result<GamePaths, GameError> + Send + Sync>;
@@ -132,6 +132,14 @@ pub(crate) struct Entry {
     pub nsfw: Option<bool>,
     /// The file version recorded at install time.
     pub version: Option<String>,
+    /// Human-readable version or release date recorded at install time.
+    pub version_label: Option<String>,
+    /// File slot summary (`"pak01"`, `"paks 01, 02"`), kept for tooltips only.
+    pub paks_detail: Option<String>,
+    /// Some of the mod's VPKs are enabled while others are disabled.
+    pub partly_enabled: bool,
+    /// Human-readable target release/date when `drift == Drift::UpdateAvailable`.
+    pub target_version: Option<String>,
     /// 1-based place in the load order (1 loads first and wins conflicts);
     /// 0 for a mod that has no pak number and cannot be moved.
     pub position: usize,
@@ -167,6 +175,8 @@ pub(crate) struct Entry {
 pub(crate) struct Facts {
     pub untouched: Option<bool>,
     pub complock_title: Option<String>,
+    pub complock_build_date: Option<String>,
+    pub is_complock_builder: bool,
     pub has_backup: bool,
     /// The revision the stored inputs would build at with the pinned
     /// template. `None` when the row is not a generated mod.
@@ -176,14 +186,17 @@ pub(crate) struct Facts {
 fn facts(addons: &Path, m: &InstalledMod) -> Facts {
     let id = key(m);
     let sourced = id.starts_with(complock::MOD_PREFIX) || registry::split_mod_id(&id).is_some();
+    let complock_id = m.vpks.iter().find_map(|v| complock::identify(&v.file));
+    let complock_build_date = complock_id.as_ref().and_then(|i| i.build_date.clone());
     let complock_title = if sourced {
         None
     } else {
-        m.vpks
-            .iter()
-            .find_map(|v| complock::identify(&v.file))
-            .map(|i| i.title)
+        complock_id.map(|i| i.title)
     };
+    let is_complock_builder = m
+        .vpks
+        .iter()
+        .any(|v| complock::detect_builder_pak(&v.file, m.sidecar.as_ref()).is_some());
     let generated_revision = m.sidecar.as_ref().and_then(|s| {
         s.generated
             .as_ref()
@@ -193,6 +206,8 @@ fn facts(addons: &Path, m: &InstalledMod) -> Facts {
     Facts {
         untouched: drift::files_untouched(m),
         complock_title,
+        complock_build_date,
+        is_complock_builder,
         has_backup: m.sidecar.is_some() && reset::latest_backup(addons, &id).is_some(),
         generated_revision,
     }
@@ -214,6 +229,7 @@ struct RegistryPlan {
     listing_id: String,
     title: String,
     revision: String,
+    version_label: Option<String>,
     url: String,
     sha256: Option<String>,
     filename: String,
@@ -283,11 +299,26 @@ fn reset_plan(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Opti
     if artifact.resolver_url.is_some() || artifact.url.is_empty() {
         return None;
     }
+    let version_label = release
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            release
+                .published_at
+                .as_deref()
+                .or(listing.updated_at.as_deref())
+                .and_then(crate::browse::short_date)
+                .map(str::to_owned)
+        });
     Some(ResetPlan::Registry(Box::new(RegistryPlan {
         source: source.clone(),
         listing_id: listing.id.clone(),
         title: listing.title.clone(),
         revision: release.content_revision.clone(),
+        version_label,
         url: artifact.url.clone(),
         sha256: artifact.sha256.clone(),
         filename: artifact.filename.clone(),
@@ -358,11 +389,22 @@ pub(crate) struct CardText {
 /// (notes, "Installed from a file", not installed by Shiv) and its detail
 /// (version and paks). The line under the name is the description's first
 /// line, else the tag, else the detail; the tooltip holds the rest.
+#[cfg(test)]
 pub(crate) fn card_text(
     author: Option<&str>,
     description: Option<&str>,
     tag: &str,
     detail: &str,
+) -> CardText {
+    card_text_with_about(author, description, tag, detail, detail)
+}
+
+pub(crate) fn card_text_with_about(
+    author: Option<&str>,
+    description: Option<&str>,
+    tag: &str,
+    detail: &str,
+    about_detail: &str,
 ) -> CardText {
     let plain = description
         .map(crate::describe::to_plain_text)
@@ -385,7 +427,7 @@ pub(crate) fn card_text(
             about.push('\u{2026}');
         }
     }
-    for extra in [tag, detail] {
+    for extra in [tag, about_detail] {
         if !extra.is_empty() && extra != blurb && !about.contains(extra) {
             if !about.is_empty() {
                 about.push_str("\n\n");
@@ -400,6 +442,129 @@ pub(crate) fn card_text(
         author: author.map_or("", str::trim).to_string(),
         blurb,
         about,
+    }
+}
+
+fn is_opaque_revision(raw: &str) -> bool {
+    raw.starts_with("crc32:")
+        || raw.starts_with("sha256:")
+        || raw.starts_with("gen:")
+        || (raw.starts_with("sha256-") && raw.len() > 7)
+        || (raw.len() >= 16 && raw.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+pub(crate) fn format_version_label(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() || is_opaque_revision(raw) {
+        return String::new();
+    }
+    if let Some(date) = crate::browse::short_date(raw) {
+        format!("Updated {date}")
+    } else {
+        format!("Version {raw}")
+    }
+}
+
+fn matching_registry_label<'a>(
+    e: &Entry,
+    catalogs: &'a [(AddedSource, Vec<NativeListing>)],
+) -> Option<&'a str> {
+    let (source_id, listing_id) = registry::split_mod_id(&e.id)?;
+    let (_, listings) = catalogs.iter().find(|(s, _)| s.source_id == source_id)?;
+    let listing = listings.iter().find(|l| l.id == listing_id && !l.removed)?;
+    let release = listing.release.as_ref()?;
+    if e.version.as_deref() != Some(release.content_revision.as_str()) {
+        return None;
+    }
+    release
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            release
+                .published_at
+                .as_deref()
+                .or(listing.updated_at.as_deref())
+                .and_then(crate::browse::short_date)
+        })
+}
+
+/// Human-readable version or update date for a card, omitting raw CRC/hash
+/// codes and pak numbers.
+pub(crate) fn display_version(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> String {
+    if !e.managed {
+        return String::new();
+    }
+    let raw = if generated::is_id(&e.id) {
+        e.version_label.as_deref().or_else(|| {
+            (e.drift == Drift::Pristine)
+                .then_some(complock::fetched())
+                .filter(|d| !d.is_empty())
+        })
+    } else if e.id.starts_with(complock::MOD_PREFIX) {
+        e.version_label
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                e.facts
+                    .complock_build_date
+                    .as_deref()
+                    .filter(|d| !d.is_empty())
+            })
+            .or_else(|| (e.drift == Drift::Pristine).then(|| complock::updated_date(&e.id))?)
+    } else if registry::split_mod_id(&e.id).is_some() {
+        e.version_label
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .or_else(|| matching_registry_label(e, catalogs))
+    } else {
+        e.version_label
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .or_else(|| e.version.as_deref().filter(|v| !v.is_empty()))
+    };
+    raw.map(format_version_label).unwrap_or_default()
+}
+
+fn detail_line(ver: &str, partly_enabled: bool) -> String {
+    match (ver.is_empty(), partly_enabled) {
+        (true, false) => String::new(),
+        (false, false) => ver.to_owned(),
+        (true, true) => "Partly enabled".to_owned(),
+        (false, true) => format!("{ver} \u{b7} Partly enabled"),
+    }
+}
+
+fn tooltip_detail(e: &Entry) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if !e.detail.is_empty() {
+        parts.push(&e.detail);
+    }
+    if let Some(raw) = e
+        .version
+        .as_deref()
+        .filter(|v| !v.is_empty() && !e.detail.contains(v))
+    {
+        parts.push(raw);
+    }
+    if let Some(paks) = e.paks_detail.as_deref() {
+        parts.push(paks);
+    }
+    parts.join(" \u{b7} ")
+}
+
+fn source_tag(e: &Entry) -> (SourceKind, &'static str) {
+    if e.id.starts_with(complock::MOD_PREFIX)
+        || generated::is_id(&e.id)
+        || e.facts.complock_title.is_some()
+        || e.facts.is_complock_builder
+    {
+        (SourceKind::Complock, "CompLock")
+    } else if e.local || !e.managed {
+        (SourceKind::Manual, "Manual")
+    } else {
+        (SourceKind::Registry, "Registry")
     }
 }
 
@@ -460,6 +625,10 @@ fn entry(m: &InstalledMod) -> Entry {
             thumb_url: None,
             nsfw: None,
             version: None,
+            version_label: None,
+            paks_detail: None,
+            partly_enabled: false,
+            target_version: None,
             position: 0,
             can_up: false,
             can_down: false,
@@ -471,31 +640,19 @@ fn entry(m: &InstalledMod) -> Entry {
             generated: None,
         };
     };
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(v) = s
-        .version
-        .as_deref()
-        .filter(|v| !v.is_empty() && !v.starts_with("sha256:"))
-    {
-        // Shiv records the mod's update timestamp as its version.
-        let v = crate::browse::short_date(v).unwrap_or(v);
-        parts.push(format!("Version {v}"));
-    }
     let mut paks: Vec<u32> = m.vpks.iter().filter_map(|v| v.pak).collect();
     paks.sort_unstable();
     paks.dedup();
-    match paks.as_slice() {
-        [] => {}
-        [one] => parts.push(format!("pak{one:02}")),
+    let paks_detail = match paks.as_slice() {
+        [] => None,
+        [one] => Some(format!("pak{one:02}")),
         many => {
             let list: Vec<String> = many.iter().map(|p| format!("{p:02}")).collect();
-            parts.push(format!("paks {}", list.join(", ")));
+            Some(format!("paks {}", list.join(", ")))
         }
-    }
-    if any_enabled && !enabled {
-        parts.push("Partly enabled".into());
-    }
-    Entry {
+    };
+    let partly_enabled = any_enabled && !enabled;
+    let mut out = Entry {
         local: sidecar::is_local(&s.mod_id),
         notes: s.notes.clone().filter(|n| !n.is_empty()),
         raw_name: s.name.clone(),
@@ -506,12 +663,16 @@ fn entry(m: &InstalledMod) -> Entry {
         } else {
             s.name.clone()
         },
-        detail: parts.join(" \u{b7} "),
+        detail: String::new(),
         managed: true,
         enabled,
         thumb_url: s.thumbnail_url.clone().filter(|u| !u.is_empty()),
         nsfw: s.nsfw,
         version: s.version.clone(),
+        version_label: s.version_label.clone().filter(|v| !v.is_empty()),
+        paks_detail,
+        partly_enabled,
+        target_version: None,
         position: 0,
         can_up: false,
         can_down: false,
@@ -521,7 +682,9 @@ fn entry(m: &InstalledMod) -> Entry {
         can_reset: false,
         unverified: s.unverified == Some(true),
         generated: s.generated.as_ref().map(ToString::to_string),
-    }
+    };
+    out.detail = detail_line(&display_version(&out, &[]), out.partly_enabled);
+    out
 }
 
 /// Rows for `mods` (a load-ordered `sidecar::group` result), numbering the
@@ -642,6 +805,7 @@ fn run_reset(
                 &r.listing_id,
                 &r.title,
                 &r.revision,
+                r.version_label.as_deref(),
                 r.thumb.as_deref(),
                 r.nsfw,
                 &r.filename,
@@ -680,6 +844,8 @@ fn reset_generated(
             mod_id: id.to_owned(),
             name: name.to_owned(),
             version: Some(version.clone()),
+            version_label: (!complock::fetched().is_empty())
+                .then(|| complock::fetched().to_owned()),
             thumbnail_url: None,
             nsfw: false,
             hero: None,
@@ -715,6 +881,7 @@ fn reset_complock(
         mod_id: id.to_owned(),
         name: name.to_owned(),
         version: Some(complock::revision(pak)),
+        version_label: complock::updated_date(id).map(str::to_owned),
         thumbnail_url: None,
         nsfw: false,
         hero: None,
@@ -799,12 +966,72 @@ fn fetch_release(
     }
 }
 
-fn run_restore(deps: &Deps, id: &str, name: &str) -> Result<(), String> {
+fn plan_result_banner(name: &str, as_update: bool, target: Option<&str>, note: &str) -> String {
+    let base = if as_update {
+        match target.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => format!("Updated {name} to {t}."),
+            None => format!("Updated {name}."),
+        }
+    } else {
+        format!("Reset {name} to release.")
+    };
+    if note.trim().is_empty() {
+        base
+    } else {
+        format!("{base} {note}")
+    }
+}
+
+/// Worker body: read a human-readable version or date for a backup folder.
+fn format_backup_label(sc: &shiv_core::sidecar::Sidecar, dir: &Path) -> String {
+    if let Some(label) = sc
+        .version_label
+        .as_deref()
+        .map(format_version_label)
+        .filter(|s| !s.is_empty())
+    {
+        return label;
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("vpk")
+                && let Some(id) = complock::identify(&path)
+                && let Some(date) = id.build_date.as_deref()
+            {
+                let formatted = format_version_label(date);
+                if !formatted.is_empty() {
+                    return formatted;
+                }
+            }
+        }
+    }
+    if let Some(ver) = sc
+        .version
+        .as_deref()
+        .map(format_version_label)
+        .filter(|s| !s.is_empty())
+    {
+        return ver;
+    }
+    "earlier backup".to_owned()
+}
+
+/// Worker body: inspect the newest backup stored for `id` before opening the
+/// restore confirmation dialog.
+fn inspect_restore(deps: &Deps, id: &str) -> Result<String, String> {
+    let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
+    let backup = reset::latest_backup(&paths.addons, id)
+        .ok_or_else(|| "No previous version backup is kept for this mod.".to_owned())?;
+    Ok(format_backup_label(&backup.sidecar, &backup.dir))
+}
+
+fn run_restore(deps: &Deps, id: &str, name: &str, backup_label: &str) -> Result<String, String> {
     let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
     let running = deps.running.clone();
     let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
     reset::restore_previous(&paths, id, || running(), guard.permit())
-        .map(|_| ())
+        .map(|_| format!("Restored {name} to {backup_label}. Current files were kept as a backup."))
         .map_err(|e| match e {
             ResetError::GameRunning => GAME_RUNNING_TEXT.into(),
             other => format!("Could not restore {name}. {other}"),
@@ -975,6 +1202,24 @@ struct Installed {
     stepping: Cell<bool>,
     /// An OS file/folder dialog is currently open.
     picking: Cell<bool>,
+    /// Mod pending confirmation in `RestoreDialog`: `(id, name, backup_label)`.
+    restore_target: RefCell<Option<(String, String, String)>>,
+    /// Active "Update all" queue and progress counters.
+    batch_updates: RefCell<Option<BatchUpdate>>,
+}
+
+struct BatchUpdate {
+    queue: VecDeque<String>,
+    in_flight: Option<(String, BatchKind, Option<bool>)>,
+    total: usize,
+    succeeded: usize,
+    failed: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BatchKind {
+    Plan,
+    Browse,
 }
 
 /// A link install, addressable from the Downloads screen. `generation`
@@ -1034,6 +1279,8 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
         pending: RefCell::new(VecDeque::new()),
         stepping: Cell::new(false),
         picking: Cell::new(false),
+        restore_target: RefCell::new(None),
+        batch_updates: RefCell::new(None),
     });
     INSTALLED.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<InstalledState>();
@@ -1043,6 +1290,7 @@ pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
 
 fn wire_callbacks(app: &App, state: &InstalledState<'_>) {
     state.on_refresh(|| with_installed(|i| i.refresh(true)));
+    state.on_update_all(|| with_installed(|i| i.start_update_all()));
     state.on_toggle(|id| with_installed(|i| i.toggle(id.as_str())));
     state.on_uninstall(|id| with_installed(|i| i.act(id.as_str(), Action::Uninstall)));
     state.on_move(|id, to| {
@@ -1058,9 +1306,9 @@ fn wire_callbacks(app: &App, state: &InstalledState<'_>) {
         let to = Move::To(usize::try_from(position.max(1) - 1).unwrap_or(0));
         with_installed(|i| i.act(id.as_str(), Action::Move(to)));
     });
-    state.on_update(|id| crate::browse::update_mod(id.as_str()));
+    state.on_update(|id| with_installed(|i| i.update_mod(id.as_str())));
     state.on_reset(|id| with_installed(|i| i.reset_mod(id.as_str())));
-    state.on_restore(|id| with_installed(|i| i.restore_mod(id.as_str())));
+    state.on_restore(|id| with_installed(|i| i.open_restore(id.as_str())));
     state.on_open_detail(|id| {
         with_installed(|i| {
             if !crate::browse::show_detail_from(id.as_str(), 1) {
@@ -1086,6 +1334,10 @@ fn wire_callbacks(app: &App, state: &InstalledState<'_>) {
     state.on_install_file(|| with_installed(|i| i.open_local_install()));
     state.on_export_library(crate::installed::pick_export_folder);
     state.on_import_library(crate::installed::pick_import_folder);
+    wire_dialog_callbacks(app, state);
+}
+
+fn wire_dialog_callbacks(app: &App, state: &InstalledState<'_>) {
     let edit = app.global::<ModEditState>();
     edit.on_save(|| with_installed(|i| i.save_edit()));
     edit.on_cancel(|| with_installed(|i| i.close_edit()));
@@ -1122,6 +1374,9 @@ fn wire_callbacks(app: &App, state: &InstalledState<'_>) {
             i.stop_batch();
         });
     });
+    let restore = app.global::<RestoreState>();
+    restore.on_confirm(|| with_installed(|i| i.confirm_restore()));
+    restore.on_cancel(|| with_installed(|i| i.close_restore()));
 }
 
 /// A path typed or pasted into the install dialog: `~/` is the home folder,
@@ -1216,11 +1471,13 @@ pub(crate) fn enable(id: &str) {
 /// A download or install of `id` moved on: redraw just that row.
 pub(crate) fn transfer_changed(id: &str) {
     with_installed(|i| {
-        let entries = i.entries.borrow();
-        let pos = entries.iter().position(|e| e.id == id);
+        let pos = i.entries.borrow().iter().position(|e| e.id == id);
         if let Some(pos) = pos.filter(|p| *p < i.rows.row_count()) {
-            i.rows.set_row_data(pos, i.build_row(&entries[pos]));
+            let entry = i.entries.borrow()[pos].clone();
+            i.rows.set_row_data(pos, i.build_row(&entry));
+            i.publish_update_count();
         }
+        i.note_browse_transfer_done(id);
     });
 }
 
@@ -1481,6 +1738,16 @@ pub(crate) fn catalogs_ready() {
     with_installed(|i| i.note_loaded_catalogs());
 }
 
+fn plan_target_version(id: &str, plan: &ResetPlan) -> Option<String> {
+    match plan {
+        ResetPlan::CompLock { .. } => complock::updated_date(id).map(str::to_owned),
+        ResetPlan::Registry(r) => r.version_label.clone(),
+        ResetPlan::Generated(_) => {
+            (!complock::fetched().is_empty()).then(|| complock::fetched().to_owned())
+        }
+    }
+}
+
 fn note_drift(list: &mut [Entry]) -> HashMap<String, ResetPlan> {
     let catalogs = crate::sources::catalogs();
     let mut plans = HashMap::new();
@@ -1491,12 +1758,16 @@ fn note_drift(list: &mut [Entry]) -> HashMap<String, ResetPlan> {
             &published(entry, &catalogs),
         );
         entry.can_reset = false;
+        entry.target_version = None;
         if matches!(entry.drift, Drift::Modified | Drift::UpdateAvailable)
             && let Some(plan) = reset_plan(entry, &catalogs)
         {
-            entry.can_reset = true;
+            entry.can_reset = entry.drift == Drift::Modified;
+            entry.target_version = plan_target_version(&entry.id, &plan);
             plans.insert(entry.id.clone(), plan);
         }
+        let ver = display_version(entry, &catalogs);
+        entry.detail = detail_line(&ver, entry.partly_enabled);
     }
     plans
 }
@@ -1532,10 +1803,13 @@ impl Installed {
         reason = "Slint exposes i32 at the row boundary"
     )]
     fn build_row(&self, e: &Entry) -> InstalledRow {
+        let (source_kind, source_label) = source_tag(e);
         let mut row = InstalledRow {
             id: e.id.as_str().into(),
             name: e.name.as_str().into(),
             detail: e.detail.as_str().into(),
+            source_label: source_label.into(),
+            source_kind,
             tag: match (e.managed, &e.notes) {
                 (false, _) => "Not installed by Shiv. Adopt it to give it a name.".into(),
                 (true, Some(notes)) => notes.as_str().into(),
@@ -1559,21 +1833,35 @@ impl Installed {
                 (false, p) => format!("Downloading {:.0}%", p * 100.0).into(),
             };
         }
-        if e.managed
+        let plan_update =
+            e.drift == Drift::UpdateAvailable && self.plans.borrow().contains_key(&e.id);
+        let browse_update = e.managed
             && !e.local
             && update_available(
                 e.version.as_deref(),
                 crate::browse::catalog_version(&e.id).as_deref(),
-            )
-        {
+            );
+        if plan_update || browse_update {
             row.update = true;
+            let target = if plan_update {
+                e.target_version.clone()
+            } else {
+                crate::browse::catalog_version_label(&e.id)
+            };
+            row.update_label = target
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map_or_else(|| "Update".into(), |t| format!("Update to {t}").into());
         }
         let (author, description) = crate::browse::catalog_about(&e.id).unwrap_or_default();
-        let card = card_text(
+        let about_detail = tooltip_detail(e);
+        let card = card_text_with_about(
             author.as_deref(),
             description.as_deref(),
             &row.tag,
             &e.detail,
+            &about_detail,
         );
         row.author = card.author.into();
         row.blurb = card.blurb.into();
@@ -1596,6 +1884,19 @@ impl Installed {
             }
         }
         row
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "Slint exposes i32 for badge counts"
+    )]
+    fn publish_update_count(&self) {
+        let count = (0..self.rows.row_count())
+            .filter_map(|i| self.rows.row_data(i))
+            .filter(|r| r.update && !r.transferring)
+            .count();
+        self.with_state(|s| s.set_update_count(count as i32));
     }
 
     /// Rebuild every row's thumbnail for a changed Show NSFW state or catalog.
@@ -1648,6 +1949,7 @@ impl Installed {
             s.set_error_text(text.into());
             s.set_load_state(LoadState::Failed);
         });
+        self.maybe_advance_batch();
     }
 
     fn loaded(&self, generation: u64, result: Result<Loaded, String>) {
@@ -1666,6 +1968,7 @@ impl Installed {
         *self.plans.borrow_mut() = plans;
         self.rows
             .set_vec(list.iter().map(|e| self.build_row(e)).collect::<Vec<_>>());
+        self.publish_update_count();
         self.set_flags(Some(false), None);
         self.with_state(|s| {
             s.set_game_running(loaded.running);
@@ -1682,6 +1985,7 @@ impl Installed {
         *self.entries.borrow_mut() = list;
         // Dropped files waiting behind the last action or dialog go next.
         self.step();
+        self.maybe_advance_batch();
     }
 
     fn note_loaded_catalogs(&self) {
@@ -1693,6 +1997,7 @@ impl Installed {
         *self.plans.borrow_mut() = plans;
         self.rows
             .set_vec(list.iter().map(|e| self.build_row(e)).collect::<Vec<_>>());
+        self.publish_update_count();
         *self.entries.borrow_mut() = list;
     }
 
@@ -2687,26 +2992,287 @@ impl Installed {
     /// Reinstall the published release over a drifted mod, keeping its files
     /// as a backup that Restore previous puts back.
     fn reset_mod(&self, id: &str) {
+        self.run_plan_mod(id, false);
+    }
+
+    /// Update a mod either via its in-place release plan (CompLock / Registry)
+    /// or through Browse.
+    fn update_mod(&self, id: &str) {
+        if self.plans.borrow().contains_key(id) {
+            self.run_plan_mod(id, true);
+        } else {
+            crate::browse::update_mod(id);
+        }
+    }
+
+    fn run_plan_mod(&self, id: &str, as_update: bool) {
         let Some(plan) = self.plans.borrow().get(id).cloned() else {
             return;
         };
+        let target = self
+            .entries
+            .borrow()
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| e.target_version.clone());
         let deps = self.deps.clone();
         let id = id.to_owned();
         let weak = self.weak.clone();
         self.run_job(&id.clone(), move |name| {
-            run_reset(&deps, &id, name, &plan, |occupants| {
+            let note = run_reset(&deps, &id, name, &plan, |occupants| {
                 crate::conflict::ask_slots(&weak, occupants)
-            })
+            })?;
+            Ok(plan_result_banner(
+                name,
+                as_update,
+                target.as_deref(),
+                &note,
+            ))
         });
     }
 
-    /// Swap a reset mod back to the files its last reset set aside.
-    fn restore_mod(&self, id: &str) {
+    /// Open `RestoreDialog` after inspecting the backup version on a worker.
+    fn open_restore(&self, id: &str) {
+        if self.weak.upgrade().is_none() || self.refreshing.get() || self.acting.get() {
+            return;
+        }
+        let Some((name, current)) = self
+            .entries
+            .borrow()
+            .iter()
+            .find(|e| e.id == id && e.facts.has_backup)
+            .map(|e| {
+                let cur = if !e.detail.is_empty() {
+                    e.detail.clone()
+                } else if let Some(v) = e.version.as_deref().filter(|v| !v.is_empty()) {
+                    v.to_owned()
+                } else {
+                    "current version".to_owned()
+                };
+                (e.name.clone(), cur)
+            })
+        else {
+            return;
+        };
         let deps = self.deps.clone();
-        let id = id.to_owned();
-        self.run_job(&id.clone(), move |name| {
-            run_restore(&deps, &id, name).map(|()| String::new())
+        let mod_id = id.to_owned();
+        let reply_id = mod_id.clone();
+        let weak = self.weak.clone();
+        crate::spawn_worker(
+            "shiv-restore-info",
+            move || inspect_restore(&deps, &mod_id),
+            move |result| {
+                let result = result.and_then(|r| r);
+                let _ = weak.upgrade_in_event_loop(move |_| {
+                    with_installed(|i| i.show_restore_dialog(reply_id, &name, &current, &result));
+                });
+            },
+        );
+    }
+
+    fn show_restore_dialog(
+        &self,
+        id: String,
+        name: &str,
+        current: &str,
+        result: &Result<String, String>,
+    ) {
+        match result {
+            Ok(backup_label) => {
+                *self.restore_target.borrow_mut() =
+                    Some((id, name.to_owned(), backup_label.clone()));
+                self.with_app(|app| {
+                    let r = app.global::<RestoreState>();
+                    r.set_mod_name(name.into());
+                    r.set_current_version(current.into());
+                    r.set_backup_version(backup_label.as_str().into());
+                    r.set_error_text(SharedString::new());
+                    r.set_busy(false);
+                    r.set_open(true);
+                });
+            }
+            Err(text) => {
+                self.with_state(|s| s.set_banner_text(text.as_str().into()));
+            }
+        }
+    }
+
+    fn confirm_restore(&self) {
+        if self.refreshing.get() || self.acting.get() {
+            return;
+        }
+        let Some((id, _name, backup_label)) = self.restore_target.borrow_mut().take() else {
+            self.close_restore();
+            return;
+        };
+        self.with_app(|app| {
+            let r = app.global::<RestoreState>();
+            r.set_busy(false);
+            r.set_open(false);
         });
+        let deps = self.deps.clone();
+        let mod_id = id.clone();
+        self.run_job(&id, move |mod_name| {
+            run_restore(&deps, &mod_id, mod_name, &backup_label)
+        });
+    }
+
+    fn close_restore(&self) {
+        *self.restore_target.borrow_mut() = None;
+        self.with_app(|app| {
+            let r = app.global::<RestoreState>();
+            if !r.get_busy() {
+                r.set_open(false);
+                r.set_error_text(SharedString::new());
+            }
+        });
+    }
+
+    fn start_update_all(&self) {
+        if self.weak.upgrade().is_none()
+            || self.refreshing.get()
+            || self.acting.get()
+            || self.batch_updates.borrow().is_some()
+        {
+            return;
+        }
+        let game_running = self
+            .weak
+            .upgrade()
+            .is_some_and(|a| a.global::<InstalledState>().get_game_running());
+        if game_running {
+            self.with_state(|s| s.set_banner_text(GAME_RUNNING_TEXT.into()));
+            return;
+        }
+        let queue: VecDeque<String> = (0..self.rows.row_count())
+            .filter_map(|i| self.rows.row_data(i))
+            .filter(|r| r.update && !r.transferring)
+            .map(|r| r.id.to_string())
+            .collect();
+        let total = queue.len();
+        if total == 0 {
+            return;
+        }
+        *self.batch_updates.borrow_mut() = Some(BatchUpdate {
+            queue,
+            in_flight: None,
+            total,
+            succeeded: 0,
+            failed: 0,
+        });
+        self.step_update_batch();
+    }
+
+    fn note_browse_transfer_done(&self, id: &str) {
+        let active = crate::downloads::transfer(id).is_some() || crate::browse::is_updating(id);
+        if active {
+            return;
+        }
+        let mut advance = false;
+        if let Some(batch) = self.batch_updates.borrow_mut().as_mut()
+            && let Some((in_id, BatchKind::Browse, outcome)) = batch.in_flight.as_mut()
+            && in_id == id
+        {
+            *outcome = Some(crate::downloads::last_outcome_ok(id).unwrap_or(false));
+            advance = !self.refreshing.get() && !self.acting.get();
+        }
+        if advance {
+            self.maybe_advance_batch();
+        }
+    }
+
+    fn maybe_advance_batch(&self) {
+        if self.refreshing.get() || self.acting.get() {
+            return;
+        }
+        let finished = {
+            let mut borrow = self.batch_updates.borrow_mut();
+            let Some(batch) = borrow.as_mut() else {
+                return;
+            };
+            let Some((_, _, Some(ok))) = batch.in_flight else {
+                return;
+            };
+            batch.in_flight = None;
+            if ok {
+                batch.succeeded += 1;
+            } else {
+                batch.failed += 1;
+            }
+            true
+        };
+        if finished {
+            self.step_update_batch();
+        }
+    }
+
+    fn step_update_batch(&self) {
+        loop {
+            let next = {
+                let mut borrow = self.batch_updates.borrow_mut();
+                let Some(batch) = borrow.as_mut() else {
+                    return;
+                };
+                if batch.in_flight.is_some() {
+                    return;
+                }
+                batch.queue.pop_front()
+            };
+            let Some(id) = next else {
+                let Some(done) = self.batch_updates.borrow_mut().take() else {
+                    return;
+                };
+                let summary = if done.failed == 0 {
+                    if done.succeeded == 1 {
+                        "Updated 1 mod.".to_owned()
+                    } else {
+                        format!("Updated {} mods.", done.succeeded)
+                    }
+                } else {
+                    format!(
+                        "Updated {} of {} mods; {} failed.",
+                        done.succeeded, done.total, done.failed
+                    )
+                };
+                self.with_state(|s| s.set_banner_text(summary.into()));
+                return;
+            };
+            if self.plans.borrow().contains_key(&id) {
+                if let Some(batch) = self.batch_updates.borrow_mut().as_mut() {
+                    batch.in_flight = Some((id.clone(), BatchKind::Plan, None));
+                }
+                self.run_plan_mod(&id, true);
+                return;
+            }
+            if crate::browse::catalog_version(&id).is_some() {
+                if let Some(batch) = self.batch_updates.borrow_mut().as_mut() {
+                    batch.in_flight = Some((id.clone(), BatchKind::Browse, None));
+                }
+                crate::browse::update_mod(&id);
+                let active =
+                    crate::downloads::transfer(&id).is_some() || crate::browse::is_updating(&id);
+                if active {
+                    return;
+                }
+                if let Some(batch) = self.batch_updates.borrow_mut().as_mut() {
+                    let ok = batch
+                        .in_flight
+                        .take()
+                        .and_then(|(_, _, o)| o)
+                        .or_else(|| crate::downloads::last_outcome_ok(&id))
+                        .unwrap_or(false);
+                    if ok {
+                        batch.succeeded += 1;
+                    } else {
+                        batch.failed += 1;
+                    }
+                }
+                continue;
+            }
+            if let Some(batch) = self.batch_updates.borrow_mut().as_mut() {
+                batch.failed += 1;
+            }
+        }
     }
 
     /// An action on one row that is not an [`Action`]: same busy guard,
@@ -2752,6 +3318,11 @@ impl Installed {
         // Installed badges current.
         crate::launch::refresh();
         crate::browse::refresh_installed();
+        if let Some(batch) = self.batch_updates.borrow_mut().as_mut()
+            && let Some((_, BatchKind::Plan, outcome)) = batch.in_flight.as_mut()
+        {
+            *outcome = Some(result.is_ok());
+        }
         self.with_state(|s| {
             let text = match result {
                 Ok(note) if !note.is_empty() => Some(note.as_str()),
@@ -2823,6 +3394,7 @@ mod tests {
             mod_id: id.into(),
             name: name.into(),
             version: Some("1.2".into()),
+            version_label: None,
             thumbnail_url: Some("https://x.test/t.png".into()),
             vpks: Vec::new(),
             nsfw: None,
@@ -2963,14 +3535,16 @@ mod tests {
         assert_eq!(e.id, "m1");
         assert_eq!(e.name, "Neon Hud");
         assert!(e.managed && e.enabled);
-        assert_eq!(e.detail, "Version 1.2 \u{b7} pak03");
+        assert_eq!(e.detail, "Version 1.2");
+        assert_eq!(e.paks_detail.as_deref(), Some("pak03"));
+        assert!(tooltip_detail(e).contains("pak03"));
         let mut dated = sidecar("m2", "Dated");
         dated.version = Some("2026-11-08T10:00:00.000Z".into());
         let m = InstalledMod {
             sidecar: Some(dated),
             vpks: vec![vpk("pak04_dir.vpk", Some(4), true)],
         };
-        assert_eq!(entries(&[m])[0].detail, "Version 2026-11-08 \u{b7} pak04");
+        assert_eq!(entries(&[m])[0].detail, "Updated 2026-11-08");
         assert_eq!(e.thumb_url.as_deref(), Some("https://x.test/t.png"));
     }
 
@@ -3000,7 +3574,7 @@ mod tests {
         let e = &entries(&[m])[0];
         assert_eq!(e.name, "m1", "empty sidecar name falls back to the id");
         assert!(!e.enabled);
-        assert!(e.detail.contains("paks 01, 02"), "{}", e.detail);
+        assert_eq!(e.paks_detail.as_deref(), Some("paks 01, 02"));
         assert!(e.detail.contains("Partly enabled"), "{}", e.detail);
     }
 
@@ -3175,5 +3749,44 @@ mod tests {
         let e = &entries(&[hand])[0];
         assert!(!e.managed && !e.local);
         assert_eq!(e.files, ["pak55_dir.vpk"]);
+    }
+
+    #[test]
+    fn version_display_hides_hashes_and_paks_while_keeping_them_for_tooltips() {
+        let mut comp = sidecar("complock-soundcap", "Sound cap");
+        comp.version = Some("crc32:deadbeef".into());
+        comp.version_label = Some("2026-11-22".into());
+        let mut reg = sidecar("src-my-mod", "My Reg Mod");
+        reg.version = Some("sha256:abcdef0123456789".into());
+        let mut items = entries(&[
+            InstalledMod {
+                sidecar: Some(comp),
+                vpks: vec![vpk("pak03_dir.vpk", Some(3), true)],
+            },
+            InstalledMod {
+                sidecar: Some(reg),
+                vpks: vec![vpk("pak04_dir.vpk", Some(4), true)],
+            },
+        ]);
+        items[0].drift = Drift::Pristine;
+        assert_eq!(display_version(&items[0], &[]), "Updated 2026-11-22");
+        assert!(!items[0].detail.contains("crc32"));
+        assert!(!items[0].detail.contains("pak03"));
+        let tip = tooltip_detail(&items[0]);
+        assert!(
+            tip.contains("crc32:deadbeef") && tip.contains("pak03"),
+            "{tip}"
+        );
+
+        assert_eq!(display_version(&items[1], &[]), "");
+        assert_eq!(source_tag(&items[0]), (SourceKind::Complock, "CompLock"));
+        assert_eq!(source_tag(&items[1]), (SourceKind::Registry, "Registry"));
+        let mut local = entries(&[InstalledMod {
+            sidecar: Some(sidecar("local-1-0", "Manual Mod")),
+            vpks: vec![vpk("pak09_dir.vpk", Some(9), true)],
+        }]);
+        assert_eq!(source_tag(&local[0]), (SourceKind::Manual, "Manual"));
+        local[0].facts.is_complock_builder = true;
+        assert_eq!(source_tag(&local[0]), (SourceKind::Complock, "CompLock"));
     }
 }

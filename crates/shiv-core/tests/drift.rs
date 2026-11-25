@@ -68,6 +68,7 @@ fn install(
         mod_id: id.into(),
         name: id.into(),
         version: Some(version.into()),
+        version_label: None,
         thumbnail_url: None,
         nsfw: false,
         hero: None,

@@ -179,6 +179,25 @@ pub(crate) fn transfer(id: &str) -> Option<(f32, bool)> {
     out
 }
 
+/// Outcome of the most recent finished transfer for `id`, or `None` when
+/// active or absent.
+pub(crate) fn last_outcome_ok(id: &str) -> Option<bool> {
+    let mut out = None;
+    with_downloads(|d| {
+        out = d
+            .items
+            .borrow()
+            .iter()
+            .find(|i| i.id == id)
+            .and_then(|i| match i.phase {
+                DownloadPhase::Done => Some(true),
+                DownloadPhase::Failed | DownloadPhase::Cancelled => Some(false),
+                DownloadPhase::Downloading | DownloadPhase::Installing => None,
+            });
+    });
+    out
+}
+
 pub(crate) enum Outcome {
     Done,
     /// Installed, and the download published no checksum.

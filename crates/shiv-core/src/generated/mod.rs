@@ -454,6 +454,8 @@ fn place(
         mod_id: spec.mod_id().to_owned(),
         name: spec.name().to_owned(),
         version: Some(version.to_owned()),
+        version_label: (!crate::complock::fetched().is_empty())
+            .then(|| crate::complock::fetched().to_owned()),
         thumbnail_url: None,
         nsfw: false,
         hero: None,
