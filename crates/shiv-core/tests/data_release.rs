@@ -139,3 +139,14 @@ fn the_watch_publishes_a_prerelease_artifact_without_releasing_shiv() {
         "read-version gives the app version as x.y.z, got {version:?}"
     );
 }
+
+#[test]
+fn release_tag_has_permission_to_dispatch_release() {
+    let workflow =
+        fs::read_to_string(repo().join(".github/workflows/release-tag.yml")).expect("release-tag");
+    assert!(workflow.contains("gh workflow run release.yml"));
+    assert!(
+        workflow.contains("actions: write"),
+        "release-tag needs actions: write to workflow_dispatch release.yml"
+    );
+}
