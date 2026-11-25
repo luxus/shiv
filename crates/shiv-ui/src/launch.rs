@@ -185,15 +185,16 @@ pub(crate) fn title(kind: FindingKind) -> &'static str {
 }
 
 /// The file relative to `game/citadel`, where every checked file lives.
+/// The file shown relative to the game's root, forward slashes whatever
+/// the platform: the game's own config spells its paths that way, and
+/// the rows read the same everywhere.
 fn display_file(file: Option<&Path>, paths: &GamePaths) -> String {
     let Some(file) = file else {
         return String::new();
     };
     let base = paths.gameinfo.parent().unwrap_or(&paths.root);
-    file.strip_prefix(base)
-        .unwrap_or(file)
-        .to_string_lossy()
-        .into_owned()
+    let shown = file.strip_prefix(base).unwrap_or(file).to_string_lossy();
+    shown.replace(std::path::MAIN_SEPARATOR, "/")
 }
 
 pub(crate) fn rows(findings: &[Finding], paths: &GamePaths) -> Vec<FindingRow> {

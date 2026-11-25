@@ -254,7 +254,9 @@ def _flag(value: str) -> bool:
 def _write_if_changed(path: Path, text: str) -> None:
     if path.is_file() and path.read_text() == text:
         return
-    path.write_text(text)
+    # newline="\n": Cargo.lock is LF on every platform; the default
+    # translation would write CRLF on Windows and corrupt the lock.
+    path.write_text(text, newline="\n")
 
 
 def main(argv: list[str] | None = None) -> int:

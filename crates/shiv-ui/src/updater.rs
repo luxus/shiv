@@ -568,17 +568,22 @@ mod tests {
             target_from(&image),
             Target::Swap(PathBuf::from("/home/u/Applications/Shiv.AppImage"))
         );
-        assert_eq!(
-            asset_for(&Target::Swap(image.exe.clone())),
-            Some(Asset::AppImage)
-        );
-
-        let bare = runtime(Path::new("/home/u/bin/shiv"), None);
-        assert_eq!(
-            target_from(&bare),
-            Target::Swap(PathBuf::from("/home/u/bin/shiv"))
-        );
-        assert_eq!(asset_for(&Target::Swap(bare.exe)), None);
+        // The asset arms are platform: Windows swaps the portable
+        // `.exe` for any file (its twin test below); the AppImage and
+        // the bare binary are the non-Windows arms.
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                asset_for(&Target::Swap(image.exe.clone())),
+                Some(Asset::AppImage)
+            );
+            let bare = runtime(Path::new("/home/u/bin/shiv"), None);
+            assert_eq!(
+                target_from(&bare),
+                Target::Swap(PathBuf::from("/home/u/bin/shiv"))
+            );
+            assert_eq!(asset_for(&Target::Swap(bare.exe)), None);
+        }
     }
 
     #[cfg(windows)]
