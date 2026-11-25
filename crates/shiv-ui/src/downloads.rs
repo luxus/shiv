@@ -1,44 +1,85 @@
-//! Downloads screen: a passive view over the installs Browse runs.
+//! Activity screen: active transfers and persistent history of Shiv's
+//! completed actions (issue #65).
 //!
-//! Browse owns the install machinery (workers, cancellation, the in-flight
-//! guards); it reports four events here: started, progress, installing and
-//! finished. This module keeps the list (newest first, a bounded history for
-//! this session) and turns Cancel and Retry back into Browse calls.
-//!
-//! The rows change, they do not rebuild (docs/proof-plan.md, "Models
-//! change, they do not rebuild"): a progress tick updates the one row it
-//! moved, and the whole model is replaced only when membership changes —
-//! a transfer appears, ends or leaves. Every mutation goes through the
-//! [`TransferRows`] sink, so the storm test can count the two shapes.
+//! Browse, Installed, Performance, and Repair report completed or in-flight
+//! actions here. Active downloads tick O(1) in place without rebuilding the
+//! model or touching disk; ended items and action records persist atomically to
+//! `<settings_dir>/activity.json` on a background worker.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use shiv_core::activity::{self, ActivityEntry, ActivityKind};
 use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
 use crate::browse::fmt_mb;
 use crate::{App, DownloadPhase, DownloadsState, TransferRow};
 
-/// Finished rows kept; older ones drop off.
-const HISTORY: usize = 30;
+/// Completed entries kept in the list and on disk; older ones drop off.
+const HISTORY: usize = activity::MAX_ENTRIES;
 /// Speed is averaged over at least this long, so it does not flicker.
 const SPEED_WINDOW: Duration = Duration::from_millis(750);
 
-/// Where the Downloads rows go. `replace_all` swaps the whole list — a
-/// model reset, every row re-read — and is for membership changes only;
-/// `update_row` changes one row in place, the single `row_changed` a
-/// progress tick must be. `model` is what the screen reads.
+static NEXT_ACTIVITY_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Redirects `activity.json` persistence in unit and UI integration tests.
+#[cfg(test)]
+pub(crate) fn set_dir_for_test(dir: Option<PathBuf>) {
+    TEST_DIR.with(|c| *c.borrow_mut() = dir);
+}
+
+fn persistence_path(allow_default: bool) -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        let _ = allow_default;
+        TEST_DIR.with(|c| c.borrow().as_ref().map(|d| d.join("activity.json")))
+    }
+    #[cfg(not(test))]
+    {
+        allow_default.then(activity::default_path).flatten()
+    }
+}
+
+/// Worker body: load persisted Activity entries from disk.
+fn load_activity(path: &Path) -> Vec<ActivityEntry> {
+    activity::load_from(path)
+}
+
+/// Worker body: save completed Activity entries atomically to disk.
+fn save_activity(path: &Path, entries: &[ActivityEntry], lock: &Mutex<u64>, generation: u64) {
+    let mut last = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if generation < *last {
+        return;
+    }
+    let _ = activity::save_to(path, entries);
+    *last = generation;
+}
+
+/// Where the Activity rows go. `replace_all` swaps the whole list — a model
+/// reset, every row re-read — and is for membership changes only; `update_row`
+/// changes one row in place, the single `row_changed` a progress tick must be.
 pub(crate) trait TransferRows {
     /// Replace the whole list: rows were added or dropped.
     fn replace_all(&self, rows: Vec<TransferRow>);
     /// Update one row in place (its transfer moved on).
     fn update_row(&self, index: usize, row: TransferRow);
-    /// The model the Downloads screen reads.
+    /// The model the Activity screen reads.
     fn model(&self) -> ModelRc<TransferRow>;
 }
 
-/// The rows in the Slint [`VecModel`] the Downloads screen reads.
+/// The rows in the Slint [`VecModel`] the Activity screen reads.
 struct VecModelRows {
     model: Rc<VecModel<TransferRow>>,
 }
@@ -57,6 +98,7 @@ impl TransferRows for VecModelRows {
     }
 }
 
+#[derive(Clone)]
 struct Item {
     id: String,
     name: String,
@@ -67,12 +109,22 @@ struct Item {
     speed: f64,
     sample: (Instant, u64),
     detail: String,
+    kind: ActivityKind,
+    timestamp: u64,
+    from_version: Option<String>,
+    to_version: Option<String>,
+    source: Option<String>,
+    retryable: bool,
 }
 
 struct Downloads {
     weak: Weak<App>,
     rows: Rc<dyn TransferRows>,
     items: RefCell<Vec<Item>>,
+    persist_path: Option<PathBuf>,
+    save_gen: Cell<u64>,
+    save_lock: Arc<Mutex<u64>>,
+    cleared: Cell<bool>,
 }
 
 thread_local! {
@@ -89,20 +141,30 @@ pub fn attach(app: &App) {
     let rows: Rc<dyn TransferRows> = Rc::new(VecModelRows {
         model: Rc::new(VecModel::default()),
     });
-    attach_with(app, &rows);
+    attach_with_path(app, &rows, persistence_path(true));
 }
 
-/// Wire the Downloads screen to `app`, writing its rows through `rows`
+/// Wire the Activity screen to `app`, writing its rows through `rows`
 /// (the storm test passes a counting sink; `attach` passes the Slint model).
+#[cfg(test)]
 pub(crate) fn attach_with(app: &App, rows: &Rc<dyn TransferRows>) {
+    attach_with_path(app, rows, persistence_path(false));
+}
+
+fn attach_with_path(app: &App, rows: &Rc<dyn TransferRows>, persist_path: Option<PathBuf>) {
     let model = rows.model();
     let controller = Rc::new(Downloads {
         weak: app.as_weak(),
         rows: rows.clone(),
         items: RefCell::new(Vec::new()),
+        persist_path: persist_path.clone(),
+        save_gen: Cell::new(0),
+        save_lock: Arc::new(Mutex::new(0)),
+        cleared: Cell::new(false),
     });
     let state = app.global::<DownloadsState>();
     state.set_rows(model);
+    state.set_active_count(0);
     DOWNLOADS.with(|c| *c.borrow_mut() = Some(controller));
     state.on_cancel(|id| {
         let id = id.as_str();
@@ -127,6 +189,20 @@ pub(crate) fn attach_with(app: &App, rows: &Rc<dyn TransferRows>) {
         }
     });
     state.on_clear_finished(|| with_downloads(|d| d.clear_finished()));
+    if let Some(path) = persist_path {
+        let weak = app.as_weak();
+        let _ = crate::spawn_worker(
+            "shiv-activity-load",
+            move || load_activity(&path),
+            move |result| {
+                if let Ok(entries) = result {
+                    let _ = weak.upgrade_in_event_loop(move |_| {
+                        with_downloads(|d| d.loaded_history(entries));
+                    });
+                }
+            },
+        );
+    }
 }
 
 /// An install's download began.
@@ -146,17 +222,75 @@ pub(crate) fn failed_to_start(id: &str, name: &str, reason: &str) {
 }
 
 pub(crate) fn installing(id: &str) {
-    with_downloads(|d| d.set_phase(id, DownloadPhase::Installing, "Installing".into()));
+    with_downloads(|d| d.set_installing(id));
 }
 
 pub(crate) fn finished(id: &str, outcome: Outcome) {
-    with_downloads(|d| match outcome {
-        Outcome::Done => d.set_phase(id, DownloadPhase::Done, "Installed".into()),
-        Outcome::DoneUnverified => {
-            d.set_phase(id, DownloadPhase::Done, "Installed, not verified".into());
-        }
-        Outcome::Cancelled => d.set_phase(id, DownloadPhase::Cancelled, "Cancelled".into()),
-        Outcome::Failed(text) => d.set_phase(id, DownloadPhase::Failed, text),
+    finished_with(id, outcome, None, None, None, None);
+}
+
+pub(crate) fn finished_with(
+    id: &str,
+    outcome: Outcome,
+    kind: Option<ActivityKind>,
+    from_version: Option<&str>,
+    to_version: Option<&str>,
+    source: Option<&str>,
+) {
+    with_downloads(|d| {
+        let (phase, resolved_kind, detail) = match outcome {
+            Outcome::Done => {
+                let resolved = kind.unwrap_or(ActivityKind::Installed);
+                let verb = done_verb(resolved);
+                (
+                    DownloadPhase::Done,
+                    resolved,
+                    format_activity_detail(verb, from_version, to_version, source),
+                )
+            }
+            Outcome::DoneUnverified => {
+                let resolved = kind.unwrap_or(ActivityKind::Installed);
+                let verb = format!("{}, not verified", done_verb(resolved));
+                (
+                    DownloadPhase::Done,
+                    resolved,
+                    format_activity_detail(&verb, from_version, to_version, source),
+                )
+            }
+            Outcome::Cancelled => (
+                DownloadPhase::Cancelled,
+                ActivityKind::Cancelled,
+                "Cancelled".into(),
+            ),
+            Outcome::Failed(text) => (
+                DownloadPhase::Failed,
+                ActivityKind::Failed,
+                format_activity_detail(&text, None, None, source),
+            ),
+        };
+        d.finish_item(
+            id,
+            phase,
+            resolved_kind,
+            detail,
+            from_version.map(str::to_owned),
+            to_version.map(str::to_owned),
+            source.map(str::to_owned),
+        );
+    });
+}
+
+/// Record a non-transfer action directly into the persistent Activity log.
+pub(crate) fn record(
+    kind: ActivityKind,
+    title: &str,
+    detail: &str,
+    from_version: Option<&str>,
+    to_version: Option<&str>,
+    source: Option<&str>,
+) {
+    with_downloads(|d| {
+        d.record_entry(kind, title, detail, from_version, to_version, source);
     });
 }
 
@@ -206,6 +340,45 @@ pub(crate) enum Outcome {
     Failed(String),
 }
 
+fn done_verb(kind: ActivityKind) -> &'static str {
+    match kind {
+        ActivityKind::Updated => "Updated",
+        ActivityKind::Reset => "Reset",
+        ActivityKind::Restored => "Restored",
+        ActivityKind::Replaced => "Replaced",
+        _ => "Installed",
+    }
+}
+
+pub(crate) fn format_activity_detail(
+    detail: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    source: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(src) = source.map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(src.to_owned());
+    }
+    let version = match (
+        from.map(str::trim).filter(|s| !s.is_empty()),
+        to.map(str::trim).filter(|s| !s.is_empty()),
+    ) {
+        (Some(f), Some(t)) if f != t => Some(format!("{f} \u{2192} {t}")),
+        (_, Some(t)) => Some(t.to_owned()),
+        (Some(f), None) => Some(f.to_owned()),
+        (None, None) => None,
+    };
+    if let Some(v) = version {
+        parts.push(v);
+    }
+    let d = detail.trim();
+    if !d.is_empty() {
+        parts.push(d.to_owned());
+    }
+    parts.join(" \u{b7} ")
+}
+
 fn speed_text(bytes_per_sec: f64) -> String {
     format!("{:.1} MB/s", bytes_per_sec / 1_000_000.0)
 }
@@ -223,21 +396,50 @@ fn progress_text(done: u64, total: Option<u64>, speed: f64) -> String {
     text
 }
 
+fn is_active(phase: DownloadPhase) -> bool {
+    matches!(
+        phase,
+        DownloadPhase::Downloading | DownloadPhase::Installing
+    )
+}
+
 fn transfer_row_of(i: &Item) -> TransferRow {
+    let (kind_label, when) = if is_active(i.phase) {
+        (String::new(), String::new())
+    } else {
+        (
+            i.kind.label().to_owned(),
+            activity::format_relative(i.timestamp, activity::now_secs()),
+        )
+    };
     TransferRow {
         id: i.id.as_str().into(),
         name: i.name.as_str().into(),
         phase: i.phase,
         progress: i.progress,
         detail: i.detail.as_str().into(),
+        kind_label: kind_label.into(),
+        when: when.into(),
+        retryable: i.retryable,
     }
+}
+
+fn trim_history(items: &mut Vec<Item>) -> bool {
+    let before = items.len();
+    let mut ended_seen = 0;
+    items.retain(|i| {
+        if is_active(i.phase) {
+            true
+        } else {
+            ended_seen += 1;
+            ended_seen <= HISTORY
+        }
+    });
+    items.len() != before
 }
 
 /// What a phase change did to the list.
 enum PhaseOutcome {
-    /// Nothing to show: unknown id, or a late event for a row that
-    /// already ended.
-    Unchanged,
     /// The row changed in place.
     Row(usize),
     /// The history bound dropped rows: the whole list changed.
@@ -245,6 +447,81 @@ enum PhaseOutcome {
 }
 
 impl Downloads {
+    fn loaded_history(&self, entries: Vec<ActivityEntry>) {
+        if self.cleared.get() {
+            return;
+        }
+        {
+            let mut items = self.items.borrow_mut();
+            let mut existing: HashSet<String> = items.iter().map(|i| i.id.clone()).collect();
+            for entry in entries {
+                if !existing.insert(entry.id.clone()) {
+                    continue;
+                }
+                let phase = match entry.kind {
+                    ActivityKind::Failed => DownloadPhase::Failed,
+                    ActivityKind::Cancelled => DownloadPhase::Cancelled,
+                    _ => DownloadPhase::Done,
+                };
+                items.push(Item {
+                    id: entry.id,
+                    name: entry.title,
+                    phase,
+                    progress: if phase == DownloadPhase::Done {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    done: 0,
+                    total: None,
+                    speed: 0.0,
+                    sample: (Instant::now(), 0),
+                    detail: entry.detail,
+                    kind: entry.kind,
+                    timestamp: entry.timestamp,
+                    from_version: entry.from_version,
+                    to_version: entry.to_version,
+                    source: entry.source,
+                    retryable: false,
+                });
+            }
+            trim_history(&mut items);
+        }
+        self.rows.replace_all(self.transfer_rows());
+        self.set_active_count();
+    }
+
+    fn save_history(&self) {
+        let Some(path) = self.persist_path.clone() else {
+            return;
+        };
+        let generation = self.save_gen.get().wrapping_add(1);
+        self.save_gen.set(generation);
+        let lock = Arc::clone(&self.save_lock);
+        let snapshot: Vec<ActivityEntry> = self
+            .items
+            .borrow()
+            .iter()
+            .filter(|i| !is_active(i.phase))
+            .take(HISTORY)
+            .map(|i| ActivityEntry {
+                id: i.id.clone(),
+                timestamp: i.timestamp,
+                kind: i.kind,
+                title: i.name.clone(),
+                detail: i.detail.clone(),
+                from_version: i.from_version.clone(),
+                to_version: i.to_version.clone(),
+                source: i.source.clone(),
+            })
+            .collect();
+        let _ = crate::spawn_worker(
+            "shiv-activity-save",
+            move || save_activity(&path, &snapshot, &lock, generation),
+            |_| {},
+        );
+    }
+
     fn started(&self, id: &str, name: &str) {
         {
             let mut items = self.items.borrow_mut();
@@ -261,12 +538,68 @@ impl Downloads {
                     speed: 0.0,
                     sample: (Instant::now(), 0),
                     detail: "Starting".into(),
+                    kind: ActivityKind::Installed,
+                    timestamp: activity::now_secs(),
+                    from_version: None,
+                    to_version: None,
+                    source: None,
+                    retryable: true,
                 },
             );
         }
         self.rows.replace_all(self.transfer_rows());
         self.set_active_count();
         crate::installed::transfer_changed(id);
+    }
+
+    fn record_entry(
+        &self,
+        kind: ActivityKind,
+        title: &str,
+        detail: &str,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        source: Option<&str>,
+    ) {
+        let phase = match kind {
+            ActivityKind::Failed => DownloadPhase::Failed,
+            ActivityKind::Cancelled => DownloadPhase::Cancelled,
+            _ => DownloadPhase::Done,
+        };
+        let seq = NEXT_ACTIVITY_ID.fetch_add(1, Ordering::Relaxed);
+        let entry = Item {
+            id: format!("act-{seq}"),
+            name: title.to_owned(),
+            phase,
+            progress: if phase == DownloadPhase::Done {
+                1.0
+            } else {
+                0.0
+            },
+            done: 0,
+            total: None,
+            speed: 0.0,
+            sample: (Instant::now(), 0),
+            detail: format_activity_detail(detail, from_version, to_version, source),
+            kind,
+            timestamp: activity::now_secs(),
+            from_version: from_version.map(str::to_owned),
+            to_version: to_version.map(str::to_owned),
+            source: source.map(str::to_owned),
+            retryable: false,
+        };
+        {
+            let mut items = self.items.borrow_mut();
+            let insert_at = items
+                .iter()
+                .position(|i| !is_active(i.phase))
+                .unwrap_or(items.len());
+            items.insert(insert_at, entry);
+            trim_history(&mut items);
+        }
+        self.rows.replace_all(self.transfer_rows());
+        self.set_active_count();
+        self.save_history();
     }
 
     /// The row index and row view of the downloading item `id` after its
@@ -315,49 +648,70 @@ impl Downloads {
         crate::installed::transfer_changed(id);
     }
 
-    /// Apply a phase change to the item `id`, keeping the finished history
-    /// within [`HISTORY`]: what the rows sink must do to show it.
-    fn phase_applied(&self, id: &str, phase: DownloadPhase, detail: String) -> PhaseOutcome {
-        let mut items = self.items.borrow_mut();
-        let Some(index) = items.iter().position(|i| i.id == id) else {
-            return PhaseOutcome::Unchanged;
-        };
-        let item = &mut items[index];
-        // A late event for a row that already ended (a cancel races the
-        // worker's own finish) must not overwrite the outcome.
-        let ended = matches!(
-            item.phase,
-            DownloadPhase::Done | DownloadPhase::Failed | DownloadPhase::Cancelled
-        );
-        if ended && phase != DownloadPhase::Done {
-            return PhaseOutcome::Unchanged;
-        }
-        item.phase = phase;
-        item.detail = detail;
-        if phase == DownloadPhase::Done {
-            item.progress = 1.0;
-        }
-        let before = items.len();
-        let mut finished = 0;
-        items.retain(|i| {
-            let ended = matches!(
-                i.phase,
-                DownloadPhase::Done | DownloadPhase::Failed | DownloadPhase::Cancelled
-            );
-            if ended {
-                finished += 1;
+    fn set_installing(&self, id: &str) {
+        let outcome = {
+            let mut items = self.items.borrow_mut();
+            let Some(index) = items.iter().position(|i| i.id == id) else {
+                return;
+            };
+            let item = &mut items[index];
+            if !is_active(item.phase) {
+                return;
             }
-            !ended || finished <= HISTORY
-        });
-        match items.len() {
-            len if len != before => PhaseOutcome::List,
-            _ => PhaseOutcome::Row(index),
+            item.phase = DownloadPhase::Installing;
+            item.detail = "Installing".into();
+            PhaseOutcome::Row(index)
+        };
+        if let PhaseOutcome::Row(index) = outcome {
+            self.rows.update_row(index, self.transfer_row(index));
         }
+        self.set_active_count();
+        crate::installed::transfer_changed(id);
     }
 
-    fn set_phase(&self, id: &str, phase: DownloadPhase, detail: String) {
-        match self.phase_applied(id, phase, detail) {
-            PhaseOutcome::Unchanged => {}
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "updates one item with outcome metadata and persists"
+    )]
+    fn finish_item(
+        &self,
+        id: &str,
+        phase: DownloadPhase,
+        kind: ActivityKind,
+        detail: String,
+        from_version: Option<String>,
+        to_version: Option<String>,
+        source: Option<String>,
+    ) {
+        let outcome = {
+            let mut items = self.items.borrow_mut();
+            let Some(index) = items.iter().position(|i| i.id == id) else {
+                return;
+            };
+            let item = &mut items[index];
+            // A late event for a row that already ended (a cancel races the
+            // worker's own finish) must not overwrite the outcome.
+            if !is_active(item.phase) && phase != DownloadPhase::Done {
+                return;
+            }
+            item.phase = phase;
+            item.kind = kind;
+            item.detail = detail;
+            item.timestamp = activity::now_secs();
+            item.from_version = from_version;
+            item.to_version = to_version;
+            item.source = source;
+            if phase == DownloadPhase::Done {
+                item.progress = 1.0;
+                item.retryable = false;
+            }
+            if trim_history(&mut items) {
+                PhaseOutcome::List
+            } else {
+                PhaseOutcome::Row(index)
+            }
+        };
+        match outcome {
             PhaseOutcome::Row(index) => {
                 self.rows.update_row(index, self.transfer_row(index));
             }
@@ -365,17 +719,15 @@ impl Downloads {
         }
         self.set_active_count();
         crate::installed::transfer_changed(id);
+        self.save_history();
     }
 
     fn clear_finished(&self) {
-        self.items.borrow_mut().retain(|i| {
-            matches!(
-                i.phase,
-                DownloadPhase::Downloading | DownloadPhase::Installing
-            )
-        });
+        self.cleared.set(true);
+        self.items.borrow_mut().retain(|i| is_active(i.phase));
         self.rows.replace_all(self.transfer_rows());
         self.set_active_count();
+        self.save_history();
     }
 
     fn transfer_rows(&self) -> Vec<TransferRow> {
@@ -396,12 +748,7 @@ impl Downloads {
             .items
             .borrow()
             .iter()
-            .filter(|i| {
-                matches!(
-                    i.phase,
-                    DownloadPhase::Downloading | DownloadPhase::Installing
-                )
-            })
+            .filter(|i| is_active(i.phase))
             .count();
         if let Some(app) = self.weak.upgrade() {
             app.global::<DownloadsState>()
@@ -420,6 +767,22 @@ mod tests {
         assert_eq!(
             progress_text(12_300_000, Some(52_000_000), 4_200_000.0),
             "12.3 MB of 52.0 MB \u{b7} 4.2 MB/s"
+        );
+    }
+
+    #[test]
+    fn activity_detail_formats_source_and_version_transition() {
+        assert_eq!(
+            format_activity_detail("Updated", Some("1.0.0"), Some("1.1.0"), Some("Registry")),
+            "Registry \u{b7} 1.0.0 \u{2192} 1.1.0 \u{b7} Updated"
+        );
+        assert_eq!(
+            format_activity_detail("Installed", Some("1.0.0"), Some("1.0.0"), Some("CompLock")),
+            "CompLock \u{b7} 1.0.0 \u{b7} Installed"
+        );
+        assert_eq!(
+            format_activity_detail("Applied 3 changes to gameinfo.gi", None, None, None),
+            "Applied 3 changes to gameinfo.gi"
         );
     }
 }

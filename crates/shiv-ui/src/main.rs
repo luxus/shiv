@@ -335,6 +335,10 @@ mod tests {
         assert_eq!(state.get_load_state(), LoadState::Loading);
         assert!(run_until(&app, Duration::from_secs(20), failed));
 
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&app, "Downloads").count(),
+            0
+        );
         for (i, screen) in [
             "Installed",
             "Sources",
@@ -342,13 +346,14 @@ mod tests {
             "Performance",
             "Repair",
             "Profiles",
+            "Activity",
             "Browse",
         ]
         .iter()
         .enumerate()
         {
             click(&app, screen);
-            assert_eq!(app.get_screen(), ((i + 1) % 7) as i32, "{screen}");
+            assert_eq!(app.get_screen(), ((i + 1) % 8) as i32, "{screen}");
         }
         let api = stub_api();
         install_cancel_and_failure(&api);
@@ -368,6 +373,7 @@ mod tests {
         complock_options_flow();
         drift_reset_flow();
         downloads::storm::progress_storm_flow(&app);
+        activity_flow();
     }
 
     /// Drift on the Installed screen (issue #21) over a temp game: a
@@ -5354,5 +5360,138 @@ mod tests {
                 .contains("Deadlock is running")
         }));
         assert_eq!(state.get_active_index(), 1);
+    }
+
+    /// Persistent Activity screen (#65): records finished installs/updates/
+    /// replacements/restores, formats source and version transitions, reloads
+    /// persisted history across restarts, and clears persisted history.
+    fn activity_flow() {
+        use i_slint_backend_testing::AccessibleRole;
+        use shiv_core::activity::ActivityKind;
+        use slint::Model;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        downloads::set_dir_for_test(Some(dir.path().to_path_buf()));
+
+        let app = App::new().expect("app");
+        app.window()
+            .set_size(slint::LogicalSize::new(1120.0, 760.0));
+        downloads::attach(&app);
+        app.show().expect("show");
+
+        let tab = ElementHandle::find_by_accessible_label(&app, "Activity")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::Tab))
+            .expect("Activity tab");
+        tab.invoke_accessible_default_action();
+        assert_eq!(app.get_screen(), 7);
+        run_until(&app, Duration::from_millis(100), |_| false);
+        assert_eq!(app.global::<DownloadsState>().get_rows().row_count(), 0);
+        assert!(
+            ElementHandle::find_by_accessible_label(&app, "No activity yet")
+                .next()
+                .is_some()
+        );
+
+        downloads::record(
+            ActivityKind::Installed,
+            "Sound Pack",
+            "Installed",
+            None,
+            Some("2026-10-01"),
+            Some("CompLock"),
+        );
+        downloads::record(
+            ActivityKind::Updated,
+            "Mini HUD",
+            "Updated",
+            Some("1.0.0"),
+            Some("1.1.0"),
+            Some("Registry"),
+        );
+        downloads::record(
+            ActivityKind::Replaced,
+            "Custom Skin",
+            "Replaced (backup in addons/old.vpk)",
+            Some("0.9"),
+            Some("1.0"),
+            Some("Manual"),
+        );
+        downloads::record(
+            ActivityKind::Restored,
+            "Menu Audio",
+            "Restored",
+            Some("2026-11-22"),
+            Some("2026-10-01"),
+            Some("CompLock"),
+        );
+
+        let rows = app.global::<DownloadsState>().get_rows();
+        assert_eq!(rows.row_count(), 4);
+        let row0 = rows.row_data(0).expect("row0");
+        assert_eq!(row0.name, "Menu Audio");
+        assert_eq!(row0.kind_label, "Restored");
+        assert!(!row0.when.is_empty());
+        assert_eq!(
+            row0.detail,
+            "CompLock \u{b7} 2026-11-22 \u{2192} 2026-10-01 \u{b7} Restored"
+        );
+        let row2 = rows.row_data(2).expect("row2");
+        assert_eq!(row2.name, "Mini HUD");
+        assert_eq!(row2.kind_label, "Updated");
+        assert_eq!(
+            row2.detail,
+            "Registry \u{b7} 1.0.0 \u{2192} 1.1.0 \u{b7} Updated"
+        );
+
+        run_until(&app, Duration::from_millis(100), |_| false);
+        assert!(
+            ElementHandle::find_by_accessible_label(&app, "No activity yet")
+                .next()
+                .is_none()
+        );
+        assert!(
+            ElementHandle::find_by_accessible_label(&app, "Clear history")
+                .find(|e| e.accessible_role() == Some(AccessibleRole::Button))
+                .is_some()
+        );
+
+        let history_path = dir.path().join("activity.json");
+        let check_saved = history_path.clone();
+        assert!(run_until(&app, Duration::from_secs(5), move |_| {
+            std::fs::read_to_string(&check_saved)
+                .is_ok_and(|s| s.contains("Sound Pack") && s.contains("Menu Audio"))
+        }));
+
+        // Restarting with a fresh App reloads persisted activity entries.
+        let app2 = App::new().expect("app2");
+        app2.window()
+            .set_size(slint::LogicalSize::new(1120.0, 760.0));
+        downloads::attach(&app2);
+        app2.show().expect("show2");
+        assert!(run_until(&app2, Duration::from_secs(5), |a| {
+            a.global::<DownloadsState>().get_rows().row_count() == 4
+        }));
+        let reloaded = app2.global::<DownloadsState>().get_rows();
+        assert_eq!(reloaded.row_data(0).expect("row0").name, "Menu Audio");
+        assert_eq!(
+            reloaded.row_data(2).expect("row2").detail,
+            "Registry \u{b7} 1.0.0 \u{2192} 1.1.0 \u{b7} Updated"
+        );
+
+        let tab2 = ElementHandle::find_by_accessible_label(&app2, "Activity")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::Tab))
+            .expect("Activity tab 2");
+        tab2.invoke_accessible_default_action();
+        let clear = ElementHandle::find_by_accessible_label(&app2, "Clear history")
+            .find(|e| e.accessible_role() == Some(AccessibleRole::Button))
+            .expect("Clear history button");
+        clear.invoke_accessible_default_action();
+        assert_eq!(app2.global::<DownloadsState>().get_rows().row_count(), 0);
+        let check_cleared = history_path.clone();
+        assert!(run_until(&app2, Duration::from_secs(5), move |_| {
+            std::fs::read_to_string(&check_cleared).is_ok_and(|s| s.trim() == "[]")
+        }));
+
+        downloads::set_dir_for_test(None);
     }
 }

@@ -1,4 +1,4 @@
-// Downloads: installs in progress and recently finished ones.
+// Activity: active transfers and persistent history of Shiv's actions.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -13,8 +13,14 @@ export struct TransferRow {
     phase: DownloadPhase,
     // 0..1, negative when the size is unknown.
     progress: float,
-    // "12.3 MB of 52.0 MB · 4.2 MB/s", "Installing", "Finished 2 minutes ago", an error.
+    // "12.3 MB of 52.0 MB · 4.2 MB/s", "Installing", or a recorded action summary.
     detail: string,
+    // Short action tag ("Installed", "Updated", "Replaced", "Settings", ...).
+    kind-label: string,
+    // Relative timestamp ("Just now", "5m ago"); "" while active.
+    when: string,
+    // True when Retry triggers an actual retryable transfer.
+    retryable: bool,
 }
 
 export global DownloadsState {
@@ -39,12 +45,42 @@ component DownloadRowView inherits Rectangle {
             alignment: center;
             spacing: Theme.s1;
             horizontal-stretch: 1;
-            Text {
-                text: root.item.name;
-                color: Theme.text;
-                font-size: Theme.text-lg;
-                font-weight: 600;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: Theme.s1;
+                alignment: start;
+                Text {
+                    text: root.item.name;
+                    color: Theme.text;
+                    font-size: Theme.text-lg;
+                    font-weight: 600;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if root.item.kind-label != "": VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 18px;
+                        width: kind-text.preferred-width + 12px;
+                        border-radius: 9px;
+                        border-width: 1px;
+                        border-color: root.item.phase == DownloadPhase.failed ? Theme.danger.with-alpha(0.5) : Theme.border-strong;
+                        background: Theme.raised;
+                        kind-text := Text {
+                            text: root.item.kind-label;
+                            color: root.item.phase == DownloadPhase.failed ? Theme.danger : Theme.text-muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                if root.item.when != "": Text {
+                    text: root.item.when;
+                    color: Theme.text-faint;
+                    font-size: Theme.text-sm;
+                    vertical-alignment: center;
+                }
             }
             if root.item.phase == DownloadPhase.downloading: ProgressBar {
                 progress: root.item.progress;
@@ -64,7 +100,7 @@ component DownloadRowView inherits Rectangle {
                 text: "Cancel";
                 clicked => { DownloadsState.cancel(root.item.id); }
             }
-            if root.item.phase == DownloadPhase.failed || root.item.phase == DownloadPhase.cancelled: Button {
+            if (root.item.phase == DownloadPhase.failed || root.item.phase == DownloadPhase.cancelled) && root.item.retryable: Button {
                 text: "Retry";
                 clicked => { DownloadsState.retry(root.item.id); }
             }
@@ -91,14 +127,14 @@ export component DownloadsPage inherits Rectangle {
         HorizontalLayout {
             spacing: Theme.s2;
             Text {
-                text: "Downloads";
+                text: "Activity";
                 color: Theme.text;
                 font-size: Theme.text-xl;
                 font-weight: 600;
                 horizontal-stretch: 1;
             }
             TextButton {
-                text: "Clear finished";
+                text: "Clear history";
                 clicked => { DownloadsState.clear-finished(); }
             }
         }
@@ -107,8 +143,8 @@ export component DownloadsPage inherits Rectangle {
             vertical-stretch: 1;
 
             if DownloadsState.rows.length == 0: CenteredMessage {
-                title: "No downloads yet";
-                detail: "Mods you install from Browse show their progress here.";
+                title: "No activity yet";
+                detail: "Installs, updates, replacements and repairs show up here.";
             }
 
             ListView {

@@ -480,10 +480,13 @@ impl Repair {
             s.set_busy_text(text.into());
         });
         self.show_result(None);
-        let failed_title = match action {
-            Action::Apply(_) => "Repair failed",
-            Action::Undo => "Undo failed",
-            Action::Remove => "Removing the repair package failed",
+        let (failed_title, activity_kind) = match action {
+            Action::Apply(_) => ("Repair failed", shiv_core::activity::ActivityKind::Repaired),
+            Action::Undo => ("Undo failed", shiv_core::activity::ActivityKind::Restored),
+            Action::Remove => (
+                "Removing the repair package failed",
+                shiv_core::activity::ActivityKind::Removed,
+            ),
         };
         let deps = self.deps.clone();
         let weak = self.weak.clone();
@@ -494,19 +497,35 @@ impl Repair {
                 crate::release_freed_memory();
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_repair(|r| r.acted(failed_title, result));
+                    with_repair(|r| r.acted(failed_title, activity_kind, result));
                 });
             },
         );
         if !started {
             self.acted(
                 failed_title,
+                activity_kind,
                 Err("Could not start a background thread.".into()),
             );
         }
     }
 
-    fn acted(&self, failed_title: &str, result: Outcome) {
+    fn acted(
+        &self,
+        failed_title: &str,
+        activity_kind: shiv_core::activity::ActivityKind,
+        result: Outcome,
+    ) {
+        if let Ok((title, _)) = &result {
+            crate::downloads::record(
+                activity_kind,
+                "Mod repair",
+                title,
+                None,
+                None,
+                Some("Repair"),
+            );
+        }
         self.show_result(Some(match result {
             Ok((title, lines)) => (title, lines, false),
             Err(text) => (failed_title.to_owned(), vec![text], true),

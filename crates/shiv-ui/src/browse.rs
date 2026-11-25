@@ -6,6 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::rc::{Rc, Weak as RcWeak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -824,6 +825,7 @@ struct InstallTask {
     mod_id: String,
     file: DownloadFile,
     name: String,
+    source_name: String,
     version: Option<String>,
     version_label: Option<String>,
     thumbnail_url: Option<String>,
@@ -855,6 +857,7 @@ impl InstallTask {
             mod_id,
             file,
             name: entry.name.clone(),
+            source_name: "GameBanana".to_owned(),
             version: entry.version.clone(),
             version_label: entry.version_label.clone(),
             thumbnail_url: entry.thumb_url.clone(),
@@ -885,6 +888,7 @@ impl InstallTask {
             mod_id: source.mod_id_of(&listing.id),
             file,
             name: listing.title.clone(),
+            source_name: source.name.clone(),
             version: Some(release.content_revision.clone()),
             version_label: registry_version_label(listing, release),
             thumbnail_url: listing.thumbnail_url().map(str::to_owned),
@@ -935,6 +939,14 @@ fn resolve_registry_download(
     Ok(download_url)
 }
 
+struct InstalledDone {
+    trust: shiv_core::registry::DownloadTrust,
+    updated: bool,
+    from_version: Option<String>,
+    to_version: Option<String>,
+    source: String,
+}
+
 enum Update {
     Progress {
         progress: f32,
@@ -949,7 +961,7 @@ enum Update {
         new_name: String,
         with: Vec<(String, String)>,
     },
-    Done(Result<shiv_core::registry::DownloadTrust, Failure>),
+    Done(Result<InstalledDone, Failure>),
 }
 
 enum Failure {
@@ -970,7 +982,7 @@ fn run_install(
     mut task: InstallTask,
     cancel: &AtomicBool,
     mut post: impl FnMut(Update),
-) -> Result<shiv_core::registry::DownloadTrust, Failure> {
+) -> Result<InstalledDone, Failure> {
     let msg = Failure::Message;
     let paths = locate().map_err(|e| msg(game_error_text(&e)))?;
     // Checked before downloading too, so a long download is not wasted.
@@ -1030,6 +1042,20 @@ fn run_install(
         task.file.md5_checksum.as_deref(),
     )
     .map_err(|e| msg(e.to_string()))?;
+    install_downloaded_archive(&dest, &paths, task, trust, cancel, post)
+}
+
+/// Worker body: install a downloaded archive under the install lock, check for
+/// sidecar conflicts on fresh installs, and return Activity metadata.
+fn install_downloaded_archive(
+    dest: &Path,
+    paths: &GamePaths,
+    mut task: InstallTask,
+    trust: shiv_core::registry::DownloadTrust,
+    cancel: &AtomicBool,
+    mut post: impl FnMut(Update),
+) -> Result<InstalledDone, Failure> {
+    let msg = Failure::Message;
     post(Update::Installing);
     let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| msg(e.to_string()))?;
     // Cancel may have been pressed while waiting for another install.
@@ -1038,7 +1064,12 @@ fn run_install(
     }
     // Only a first install asks about conflicts: an update of a mod the user
     // already chose to keep next to another must not ask again.
-    let fresh = matches!(sidecar::read(&paths.addons, &task.mod_id), Ok(None));
+    let prior = sidecar::read(&paths.addons, &task.mod_id).ok().flatten();
+    let updated = prior.is_some();
+    let from_version = prior.and_then(|s| s.version_label.or(s.version));
+    let to_version = task.version_label.clone().or_else(|| task.version.clone());
+    let source = task.source_name;
+    let fresh = !updated;
     let kinds = std::mem::take(&mut task.kinds);
     let (mod_id, name) = (task.mod_id.clone(), task.name.clone());
     let meta = ModMeta {
@@ -1051,7 +1082,7 @@ fn run_install(
         hero: task.hero,
         category: task.category,
     };
-    install::install_with(&dest, meta, &paths, crate::game_running, guard.permit())
+    install::install_with(dest, meta, paths, crate::game_running, guard.permit())
         .map_err(|e| msg(install_error_text(&e)))?;
     if trust == shiv_core::registry::DownloadTrust::Unverified {
         let _ = sidecar::mark_unverified(&paths.addons, &mod_id);
@@ -1066,7 +1097,13 @@ fn run_install(
             });
         }
     }
-    Ok(trust)
+    Ok(InstalledDone {
+        trust,
+        updated,
+        from_version,
+        to_version,
+        source,
+    })
 }
 
 /// Mod ids with a sidecar in `addons`; empty when the game is not found.
@@ -2351,11 +2388,28 @@ impl Browse {
             Update::Done(result) => {
                 self.list.jobs.borrow_mut().remove(id);
                 match result {
-                    Ok(shiv_core::registry::DownloadTrust::Verified) => {
-                        crate::downloads::finished(id, crate::downloads::Outcome::Done);
-                    }
-                    Ok(shiv_core::registry::DownloadTrust::Unverified) => {
-                        crate::downloads::finished(id, crate::downloads::Outcome::DoneUnverified);
+                    Ok(done) => {
+                        let outcome = match done.trust {
+                            shiv_core::registry::DownloadTrust::Verified => {
+                                crate::downloads::Outcome::Done
+                            }
+                            shiv_core::registry::DownloadTrust::Unverified => {
+                                crate::downloads::Outcome::DoneUnverified
+                            }
+                        };
+                        let kind = Some(if done.updated {
+                            shiv_core::activity::ActivityKind::Updated
+                        } else {
+                            shiv_core::activity::ActivityKind::Installed
+                        });
+                        crate::downloads::finished_with(
+                            id,
+                            outcome,
+                            kind,
+                            done.from_version.as_deref(),
+                            done.to_version.as_deref(),
+                            Some(&done.source),
+                        );
                     }
                     Err(Failure::Cancelled) => {
                         crate::downloads::finished(id, crate::downloads::Outcome::Cancelled);

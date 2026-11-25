@@ -195,6 +195,15 @@ impl PackTask {
     }
 }
 
+/// Result of a completed CompLock pak install/update for Activity logging.
+#[derive(Debug)]
+struct PackDone {
+    note: String,
+    was_installed: bool,
+    from_version: Option<String>,
+    to_version: Option<String>,
+}
+
 /// What a pack-install worker reports while it runs.
 enum PackUpdate {
     Progress {
@@ -202,8 +211,8 @@ enum PackUpdate {
         total: Option<u64>,
     },
     Installing,
-    /// `Ok` is the moved/replaced note, empty when nothing else changed.
-    Done(Result<String, (String, bool)>),
+    /// `Ok` carries the install summary and whether an earlier revision was replaced.
+    Done(Result<PackDone, (String, bool)>),
 }
 
 /// A pack install stopped before it finished; matches what the Downloads
@@ -229,7 +238,7 @@ fn run_pack_install(
     cancel: &AtomicBool,
     mut report: impl FnMut(PackUpdate),
     ask: impl Fn(&[install::SlotOccupant]) -> Option<install::SlotChoice>,
-) -> Result<String, (String, bool)> {
+) -> Result<PackDone, (String, bool)> {
     let fail = |text: String| (text, false);
     let paths = (deps.locate)().map_err(|e| fail(game_error_text(&e)))?;
     if (deps.running)() {
@@ -238,6 +247,12 @@ fn run_pack_install(
             true,
         ));
     }
+    let prior = shiv_core::sidecar::read(&paths.addons, &task.mod_id)
+        .ok()
+        .flatten();
+    let was_installed = prior.is_some();
+    let from_version = prior.and_then(|s| s.version_label);
+    let to_version = complock::updated_date(&task.mod_id).map(str::to_owned);
     let dir = tempfile::Builder::new()
         .prefix("shiv-pack-")
         .tempdir()
@@ -285,10 +300,15 @@ fn run_pack_install(
                 .map_err(|e| fail(e.to_string()))?;
         }
         drop(guard);
-        return Ok(move_note(&reused_moves));
+        return Ok(PackDone {
+            note: move_note(&reused_moves),
+            was_installed,
+            from_version,
+            to_version,
+        });
     }
     report(PackUpdate::Installing);
-    install_staged_pack(
+    let note = install_staged_pack(
         deps,
         &paths,
         &mut prepared,
@@ -298,7 +318,13 @@ fn run_pack_install(
         cancel,
         &ask,
         guard.permit(),
-    )
+    )?;
+    Ok(PackDone {
+        note,
+        was_installed,
+        from_version,
+        to_version,
+    })
 }
 
 fn claim_free_reused(
@@ -2419,17 +2445,29 @@ impl Perf {
                     }
                 }
                 match result {
-                    Ok(note) => {
+                    Ok(done) => {
                         if current {
-                            crate::downloads::finished(id, crate::downloads::Outcome::Done);
+                            let kind = Some(if done.was_installed {
+                                shiv_core::activity::ActivityKind::Updated
+                            } else {
+                                shiv_core::activity::ActivityKind::Installed
+                            });
+                            crate::downloads::finished_with(
+                                id,
+                                crate::downloads::Outcome::Done,
+                                kind,
+                                done.from_version.as_deref(),
+                                done.to_version.as_deref(),
+                                Some("CompLock"),
+                            );
                         }
                         self.pack_installed
                             .borrow_mut()
                             .insert(id.to_owned(), revision);
                         crate::installed::reload();
                         crate::launch::refresh();
-                        if !note.is_empty() {
-                            self.show_result(&name, &note, false);
+                        if !done.note.is_empty() {
+                            self.show_result(&name, &done.note, false);
                         }
                     }
                     Err((text, running)) => {
@@ -2636,6 +2674,14 @@ impl Perf {
                         original.display()
                     ),
                     false,
+                );
+                crate::downloads::record(
+                    shiv_core::activity::ActivityKind::SettingsApplied,
+                    "Performance settings",
+                    &format!("Applied {what} to gameinfo.gi"),
+                    None,
+                    None,
+                    Some("Performance"),
                 );
             }
             Err((text, running)) => {
