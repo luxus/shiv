@@ -39,6 +39,67 @@ def bump_patch(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def bump_minor(version: str) -> str:
+    major, minor, _patch = (int(part) for part in parse_version(version).split("."))
+    return f"{major}.{minor + 1}.0"
+
+
+def bump_major(version: str) -> str:
+    major, _minor, _patch = (int(part) for part in parse_version(version).split("."))
+    return f"{major + 1}.0.0"
+
+
+def next_version(*, current: str, subjects: list[str]) -> str:
+    """One line: `none`, or the next version for the unreleased subjects.
+
+    A breaking line (a `!` before the colon, or a `BREAKING CHANGE:`
+    line) bumps the major, any `feat` the minor, any `fix` or `perf` the
+    patch. Subjects without a type before the colon (a `release 0.7.0`,
+    prose) and the internal types (chore, ci, test, docs) release
+    nothing. The workflow may feed body lines beside subjects; a prose
+    line can only ever be misread as a feat or a breaking note, which
+    over-bumps — the release PR names the version it picked, so a human
+    sees it.
+    """
+    parse_version(current)
+    breaking = False
+    feat = False
+    fixish = False
+    for subject in subjects:
+        if subject.startswith("BREAKING CHANGE"):
+            breaking = True
+            continue
+        head, sep, _tail = subject.partition(":")
+        if not sep:
+            continue
+        head = head.strip()
+        if head.endswith("!"):
+            breaking = True
+            head = head[:-1]
+        kind = head.split("(", 1)[0].strip()
+        if kind == "feat":
+            feat = True
+        elif kind in ("fix", "perf"):
+            fixish = True
+    if breaking:
+        return bump_major(current)
+    if feat:
+        return bump_minor(current)
+    if fixish:
+        return bump_patch(current)
+    return "none"
+
+
+def cmp_version(*, current: str, tag: str) -> str:
+    """One line: `same`, `ahead`, or `behind`. `ahead` means the version
+    files name a release no tag has claimed yet."""
+    cur = tuple(int(part) for part in parse_version(current).split("."))
+    tagged = tuple(int(part) for part in parse_version(tag.removeprefix("v")).split("."))
+    if cur == tagged:
+        return "same"
+    return "ahead" if cur > tagged else "behind"
+
+
 def marker(version: str) -> str:
     return f"{MARKER}: {parse_version(version)}"
 
@@ -287,6 +348,14 @@ def main(argv: list[str] | None = None) -> int:
     applied.add_argument("--lock", required=True)
     applied.add_argument("--metainfo", required=True)
 
+    upcoming = commands.add_parser("next-version")
+    upcoming.add_argument("--current", required=True)
+    upcoming.add_argument("--subjects-file", required=True)
+
+    compare = commands.add_parser("cmp-version")
+    compare.add_argument("--current", required=True)
+    compare.add_argument("--tag", required=True)
+
     args = parser.parse_args(argv)
     try:
         if args.cmd == "read-version":
@@ -321,6 +390,11 @@ def main(argv: list[str] | None = None) -> int:
             _write_if_changed(cargo_path, cargo)
             _write_if_changed(lock_path, lock)
             _write_if_changed(meta_path, meta)
+        elif args.cmd == "next-version":
+            subjects = Path(args.subjects_file).read_text().splitlines()
+            print(next_version(current=args.current, subjects=subjects))
+        elif args.cmd == "cmp-version":
+            print(cmp_version(current=args.current, tag=args.tag))
         else:
             parser.error(f"unknown command {args.cmd}")
     except (OSError, ReleaseError) as error:

@@ -1,0 +1,140 @@
+name: release-prep
+
+# Every push to main that leaves something unreleased keeps one
+# ready-to-merge release PR open: scripts/data_release.py picks the
+# version (a breaking subject the major, a feat the minor, a fix or perf
+# the patch), apply writes the version files, and the PR body is the
+# changelog git-cliff will publish — merge after reviewing exactly that.
+# Merging lands the release commit; release-tag.yml waits for the CI of
+# that commit to go green, then tags and dispatches release.yml, which
+# builds and publishes. A GITHUB_TOKEN-opened PR runs no checks; the
+# merge runs them all — no tag lands on red.
+on:
+  push:
+    branches: [main]
+    # Prose moves no version.
+    paths-ignore: ["**.md", "docs/**"]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned and verified below. Bump together when updating the tools.
+  GIT_CLIFF_URL: https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz
+  GIT_CLIFF_SHA256: 24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pick the next version
+        id: next
+        run: |
+          set -euo pipefail
+          current=$(python3 scripts/data_release.py read-version crates/shiv-ui/Cargo.toml)
+          latest=$(git tag --list 'v*' --sort=-v:refname | sed -n 1p)
+          state=$(python3 scripts/data_release.py cmp-version \
+            --current "$current" --tag "${latest:-v0.0.0}")
+          if [ "$state" = "ahead" ]; then
+            echo "release $current is waiting for its tag; release-tag.yml owns it."
+            echo "next=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$latest" ]; then range="${latest}..HEAD"; else range="HEAD"; fi
+          git log "$range" --pretty=%s > "$RUNNER_TEMP/subjects"
+          next=$(python3 scripts/data_release.py next-version \
+            --current "$current" --subjects-file "$RUNNER_TEMP/subjects")
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          if [ "$next" = "none" ]; then
+            echo "nothing unreleased picks a version."
+          fi
+      - name: Install git-cliff
+        if: steps.next.outputs.next != 'none' && steps.next.outputs.next != ''
+        run: |
+          mkdir -p "$RUNNER_TEMP/git-cliff"
+          curl -fsSL -o "$RUNNER_TEMP/git-cliff.tar.gz" "$GIT_CLIFF_URL"
+          echo "$GIT_CLIFF_SHA256  $RUNNER_TEMP/git-cliff.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/git-cliff.tar.gz" -C "$RUNNER_TEMP/git-cliff" --strip-components=1
+          "$RUNNER_TEMP/git-cliff/git-cliff" --version
+      - name: Write the version files and the notes
+        if: steps.next.outputs.next != 'none' && steps.next.outputs.next != ''
+        env:
+          CURRENT: ${{ steps.next.outputs.current }}
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          set -euo pipefail
+          summary=$(grep -m1 '^feat' "$RUNNER_TEMP/subjects" | cut -d: -f2- | sed 's/^ *//')
+          if [ -z "$summary" ]; then
+            summary="Fixes and performance work."
+          fi
+          python3 scripts/data_release.py apply \
+            --from "$CURRENT" --to "$NEXT" --date "$(date +%F)" \
+            --summary "$summary" \
+            --cargo crates/shiv-ui/Cargo.toml \
+            --lock Cargo.lock \
+            --metainfo packaging/flatpak/io.github.Siebe_Uy.shiv.metainfo.xml
+          # The notes as they will publish: the unreleased commits under
+          # the tag they would get. <REPO> is replaced here because the
+          # tag checkout carries no branch tracking config for
+          # git-cliff's remote detection (see release.yml's publish job).
+          "$RUNNER_TEMP/git-cliff/git-cliff" --unreleased --strip header --tag "v$NEXT" \
+            | sed "s|<REPO>|$GITHUB_REPOSITORY|g" > "$RUNNER_TEMP/notes.md"
+          grep -q '^## ' "$RUNNER_TEMP/notes.md"
+      - name: Open or refresh the release PR
+        if: steps.next.outputs.next != 'none' && steps.next.outputs.next != ''
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "shiv-release-prep"
+          git config user.email "actions@users.noreply.github.com"
+          branch="release-v$NEXT"
+          git checkout -b "$branch"
+          git add crates/shiv-ui/Cargo.toml Cargo.lock \
+            packaging/flatpak/io.github.Siebe_Uy.shiv.metainfo.xml
+          git commit -m "release $NEXT"
+          git push -f origin "$branch"
+
+          # Close the release PRs for other versions; this version's is
+          # updated in place.
+          for pr in $(gh pr list --state open --json number,headRefName \
+              --jq '.[] | select(.headRefName | startswith("release-v")) | .number'); do
+            head=$(gh pr view "$pr" --json headRefName -q .headRefName)
+            if [ "$head" != "$branch" ]; then
+              gh pr close "$pr" \
+                --comment "Superseded: newer unreleased commits picked $NEXT."
+              git push origin --delete "$head"
+            fi
+          done
+
+          {
+            echo "Merging this PR **is** the release: it lands the version files,"
+            echo "and release-tag.yml tags the commit once its CI is green;"
+            echo "release.yml then builds and publishes with the changelog below."
+            echo
+            echo "- This PR runs no checks (a GITHUB_TOKEN-opened PR cannot); the merge runs them all."
+            echo "- Editable like any PR: adjust the metainfo summary here first."
+            echo "- Before tagging, refresh the lea baselines if you want them current"
+            echo "  (the proof plan checklist; docs/perf-results.md)."
+            echo
+            cat "$RUNNER_TEMP/notes.md"
+          } > "$RUNNER_TEMP/body.md"
+          existing=$(gh pr list --head "$branch" --state open --json number -q '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "release $NEXT" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base main --head "$branch" \
+              --title "release $NEXT" --body-file "$RUNNER_TEMP/body.md"
+          fi
