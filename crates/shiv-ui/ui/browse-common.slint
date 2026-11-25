@@ -104,6 +104,7 @@ export global BrowseState {
     // The source filter includes the GameBanana catalog: its loading and
     // failure states only stand in for the list then.
     in property <bool> catalog-shown: true;
+    in property <bool> gamebanana-enabled: true;
     // The list's scroll offset, kept while the detail page is open.
     in-out property <length> list-scroll;
     // NSFW thumbnails shown unblurred; off at every start.

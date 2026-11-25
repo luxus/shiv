@@ -172,6 +172,9 @@ struct PackRowInfo<'a> {
     id: &'a str,
     title: &'a str,
     detail: String,
+    by: Option<&'a str>,
+    link: Option<&'a str>,
+    link_text: Option<&'a str>,
     /// Measured gains, "+9.7%".
     avg: Option<&'a str>,
     low: Option<&'a str>,
@@ -717,10 +720,20 @@ fn paths_equal(a: &[String], b: &[String]) -> bool {
 /// it. Without a catalog, or with nothing left after admission, the card is
 /// unavailable and the subtitle says why.
 fn complock_card(catalog: Option<&Catalog>, pack: &complock::PackLoad) -> PerfComplock {
+    let by = pack
+        .hud()
+        .and_then(|h| h.by.as_deref())
+        .or_else(|| pack.gameinfo_card().and_then(|c| c.by.as_deref()))
+        .unwrap_or("By HoppCX and jcStani");
+    let link_url = complock::SITE;
+    let link_text = "deadlockconfig.com";
     let unavailable = |subtitle: &str| PerfComplock {
         title: COMPLOCK_TITLE.into(),
         subtitle: subtitle.into(),
         note: COMPLOCK_NOTE.into(),
+        by: by.into(),
+        link_url: link_url.into(),
+        link_text: link_text.into(),
         available: false,
     };
     if pack.too_old() {
@@ -748,8 +761,18 @@ fn complock_card(catalog: Option<&Catalog>, pack: &complock::PackLoad) -> PerfCo
         )
         .into(),
         note: COMPLOCK_NOTE.into(),
+        by: by.into(),
+        link_url: link_url.into(),
+        link_text: link_text.into(),
         available: true,
     }
+}
+
+/// Installed CompLock web-builder paks detected in `addons/`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BuilderStatus {
+    hpbars_custom: Option<bool>,
+    hitsound: bool,
 }
 
 /// Where the catalog came from.
@@ -762,12 +785,13 @@ enum Origin {
 
 type CatalogLoad = Result<(Arc<Catalog>, Origin), String>;
 /// The file's `ConVars` (`lowercase name -> (name, value)`), whether the
-/// game runs, and which CompLock pak mods have a sidecar — or why the file
-/// could not be read, with the other two still filled in as far as known.
+/// game runs, which CompLock pak mods have a sidecar, and detected web-builder
+/// paks — or why the file could not be read, with the rest filled as known.
 type FileLoad = (
     Result<HashMap<String, (String, String)>, String>,
     bool,
     BTreeMap<String, Option<String>>,
+    BuilderStatus,
 );
 
 fn load_catalog(deps: &Deps) -> CatalogLoad {
@@ -818,18 +842,34 @@ fn load_file(deps: &Deps) -> FileLoad {
         .map_err(game_error_text)
         .and_then(|paths| perf::read_current(paths).map_err(|e| sentence(&e.to_string())))
         .map(convars_of);
-    let packs = located
+    let (packs, builders) = located
         .as_ref()
         .map(|paths| {
-            shiv_core::sidecar::group(&paths.addons)
-                .into_iter()
-                .filter_map(|m| m.sidecar)
-                .filter(|s| is_pack_id(&s.mod_id))
-                .map(|s| (s.mod_id, s.version))
-                .collect::<BTreeMap<_, _>>()
+            let mut packs = BTreeMap::new();
+            let mut builders = BuilderStatus::default();
+            for m in shiv_core::sidecar::group(&paths.addons) {
+                if let Some(sc) = m.sidecar.as_ref()
+                    && is_pack_id(&sc.mod_id)
+                {
+                    packs.insert(sc.mod_id.clone(), sc.version.clone());
+                }
+                for vpk in &m.vpks {
+                    if let Some(found) = complock::detect_builder_pak(&vpk.file, m.sidecar.as_ref())
+                    {
+                        match found {
+                            complock::BuilderPak::HpBars { custom } => {
+                                builders.hpbars_custom =
+                                    Some(builders.hpbars_custom.unwrap_or(false) || custom);
+                            }
+                            complock::BuilderPak::Hitsound => builders.hitsound = true,
+                        }
+                    }
+                }
+            }
+            (packs, builders)
         })
         .unwrap_or_default();
-    (current, running, packs)
+    (current, running, packs, builders)
 }
 
 /// `Err((text, game_running))`.
@@ -853,6 +893,8 @@ struct Item {
     lc: String,
     meta: Option<usize>,
 }
+
+type Opener = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 struct Perf {
     weak: Weak<App>,
@@ -885,6 +927,8 @@ struct Perf {
     /// (`complock::revision` of the pak installed), `None` when it records
     /// none.
     pack_installed: RefCell<BTreeMap<String, Option<String>>>,
+    /// Detected CompLock web-builder paks (HP bars, hitsound).
+    builders: Cell<BuilderStatus>,
     /// The choice each option with versions has picked, by option id.
     pack_choices: RefCell<BTreeMap<String, usize>>,
     /// Pack installs by Downloads-screen id.
@@ -894,6 +938,12 @@ struct Perf {
     pack_at: Cell<Option<std::time::Instant>>,
     pack_busy: Cell<bool>,
     pack_timer: RefCell<Option<slint::Timer>>,
+    opener: RefCell<Opener>,
+}
+
+#[cfg(test)]
+pub(crate) fn set_opener(f: impl Fn(&str) -> Result<(), String> + Send + Sync + 'static) {
+    with_perf(|p| *p.opener.borrow_mut() = Arc::new(f));
 }
 
 /// A pak row's install button.
@@ -924,7 +974,6 @@ pub fn attach(app: &App, api_url: &str) {
 }
 
 pub(crate) fn attach_with(app: &App, deps: Deps) {
-    crate::builders::wire(app, &deps);
     let controller = Rc::new(Perf {
         weak: app.as_weak(),
         deps,
@@ -946,6 +995,7 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
         pack_rows: Rc::new(VecModel::default()),
         pack_ids: RefCell::new(Vec::new()),
         pack_installed: RefCell::new(BTreeMap::new()),
+        builders: Cell::new(BuilderStatus::default()),
         pack_choices: RefCell::new(BTreeMap::new()),
         pack_jobs: RefCell::new(HashMap::new()),
         pack_generation: Cell::new(0),
@@ -953,9 +1003,14 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
         pack_at: Cell::new(None),
         pack_busy: Cell::new(false),
         pack_timer: RefCell::new(None),
+        opener: RefCell::new(Arc::new(|url: &str| {
+            shiv_core::link::open_web_link(url).map_err(|e| e.to_string())
+        })),
     });
     PERF.with(|p| *p.borrow_mut() = Some(controller.clone()));
     let state = app.global::<PerfState>();
+    state.set_hpbar_builder_url(complock::HPBAR_BUILDER_URL.into());
+    state.set_hitsound_builder_url(complock::HITSOUND_BUILDER_URL.into());
     state.set_rows(ModelRc::from(controller.rows.clone()));
     state.set_changes(ModelRc::from(controller.changes.clone()));
     state.set_pack_rows(ModelRc::from(controller.pack_rows.clone()));
@@ -1015,6 +1070,7 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
     });
     state.on_apply(|| with_perf(|p| p.apply()));
     state.on_dismiss_result(|| with_perf(|p| p.show_result("", "", false)));
+    state.on_open_link(|url| with_perf(|p| p.open_link(url.as_str())));
     controller.publish_tiers();
     controller.publish_complock();
     controller.publish_changes();
@@ -1039,13 +1095,40 @@ impl Perf {
 
     fn shown(&self) {
         self.on_screen.set(true);
-        crate::builders::refresh(self.weak.clone(), self.deps.locate.clone());
         self.arm_pack_timer();
         self.refresh_pack();
         if self.catalog.borrow().is_none() {
             self.load();
         } else {
             self.reload_file();
+        }
+    }
+
+    fn open_link(&self, raw: &str) {
+        let Some(url) = complock::site_url(raw) else {
+            return;
+        };
+        let opener = self.opener.borrow().clone();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-perf-link",
+            move || opener(&url),
+            move |result| {
+                if let Err(text) = result.and_then(|r| r) {
+                    let _ = weak.upgrade_in_event_loop(move |_| {
+                        with_perf(|p| {
+                            p.show_result("Could not open link", &text, true);
+                        });
+                    });
+                }
+            },
+        );
+        if !started {
+            self.show_result(
+                "Could not open link",
+                "Could not start a background thread.",
+                true,
+            );
         }
     }
 
@@ -1106,7 +1189,15 @@ impl Perf {
             move || (load_catalog(&deps), load_file(&deps)),
             move |result| {
                 let (catalog, file) = result.unwrap_or_else(|text| {
-                    (Err(text), (Err(String::new()), false, BTreeMap::new()))
+                    (
+                        Err(text),
+                        (
+                            Err(String::new()),
+                            false,
+                            BTreeMap::new(),
+                            BuilderStatus::default(),
+                        ),
+                    )
                 });
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     with_perf(|p| p.loaded(catalog, file));
@@ -1116,7 +1207,12 @@ impl Perf {
         if !started {
             self.loaded(
                 Err("Could not start a background thread.".into()),
-                (Err(String::new()), false, BTreeMap::new()),
+                (
+                    Err(String::new()),
+                    false,
+                    BTreeMap::new(),
+                    BuilderStatus::default(),
+                ),
             );
         }
     }
@@ -1157,7 +1253,9 @@ impl Perf {
             "shiv-perf-read",
             move || load_file(&deps),
             move |result| {
-                let file = result.unwrap_or_else(|text| (Err(text), false, BTreeMap::new()));
+                let file = result.unwrap_or_else(|text| {
+                    (Err(text), false, BTreeMap::new(), BuilderStatus::default())
+                });
                 let _ = weak.upgrade_in_event_loop(move |_| {
                     with_perf(|p| {
                         p.loading.set(false);
@@ -1172,8 +1270,12 @@ impl Perf {
         }
     }
 
-    fn file_loaded(&self, (current, running, packs): FileLoad) {
-        self.with_state(|s| s.set_game_running(running));
+    fn file_loaded(&self, (current, running, packs, builders): FileLoad) {
+        self.builders.set(builders);
+        self.with_state(|s| {
+            s.set_game_running(running);
+            s.set_hitsound_detected(builders.hitsound);
+        });
         match current {
             Ok(current) => {
                 *self.current.borrow_mut() = current;
@@ -1336,7 +1438,7 @@ impl Perf {
                     .position(|c| c.default)
                     .unwrap_or_default()
             });
-        let button = info.pak.map_or(
+        let mut button = info.pak.map_or(
             InstallButton {
                 label: String::new(),
                 installing: false,
@@ -1345,12 +1447,38 @@ impl Perf {
             },
             |pak| self.install_label(&pack_mod_id(info.id), pak),
         );
+        let builder_hp = self.builders.get().hpbars_custom;
+        let detected_badge = if info.id == "hpbars" {
+            let badge = match builder_hp {
+                Some(true) => "Custom build",
+                Some(false) if !button.installed => "Installed",
+                _ => "",
+            };
+            if !button.installed && !button.installing && builder_hp.is_some() {
+                button.installed = true;
+                button.current = true;
+                button.label = "Installed".into();
+            }
+            badge
+        } else {
+            ""
+        };
+        let link_url = info.link.and_then(complock::site_url).unwrap_or_default();
+        let link_text = if link_url.is_empty() {
+            ""
+        } else {
+            info.link_text.unwrap_or(link_url.as_str())
+        };
         PerfPackRow {
             kind: info.kind,
             id: info.id.into(),
             title: info.title.into(),
             detail: info.detail.into(),
             text: first_line(info.text.unwrap_or_default()).into(),
+            by: info.by.unwrap_or_default().into(),
+            link_url: link_url.as_str().into(),
+            link_text: link_text.into(),
+            detected_badge: detected_badge.into(),
             warn: info.warn.unwrap_or_default().into(),
             has_toggle: !info.convars.is_empty(),
             checked: !info.convars.is_empty() && self.pack_option_is_on(info.convars),
@@ -1391,6 +1519,9 @@ impl Perf {
             id: &option.id,
             title: &option.title,
             detail: String::new(),
+            by: option.by.as_deref(),
+            link: option.link.as_deref(),
+            link_text: option.link_text.as_deref(),
             avg: avg.as_deref(),
             low: low.as_deref(),
             text: choice
@@ -1440,6 +1571,9 @@ impl Perf {
             id: PACK_HUD_ID,
             title: &hud.title,
             detail: String::new(),
+            by: hud.by.as_deref(),
+            link: hud.link.as_deref(),
+            link_text: hud.link_text.as_deref(),
             avg: hud.avg.as_deref(),
             low: hud.low.as_deref(),
             text: hud.text.as_deref(),
@@ -1457,6 +1591,9 @@ impl Perf {
             id: "",
             title,
             detail: blurb.to_string(),
+            by: None,
+            link: None,
+            link_text: None,
             avg: None,
             low: None,
             text: None,
@@ -1480,6 +1617,9 @@ impl Perf {
             id: PACK_FOV_ID,
             title: "Field of view",
             detail: format!("{} · default {}", fov.cvar, fov.default),
+            by: None,
+            link: None,
+            link_text: None,
             avg: None,
             low: None,
             text: None,
@@ -2477,7 +2617,8 @@ impl Perf {
                     s.set_game_running(false);
                 });
                 let packs = self.pack_installed.borrow().clone();
-                self.file_loaded((Ok(current), false, packs));
+                let builders = self.builders.get();
+                self.file_loaded((Ok(current), false, packs, builders));
                 crate::launch::refresh();
                 let what = if count == 1 {
                     "1 change".to_string()

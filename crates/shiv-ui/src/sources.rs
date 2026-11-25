@@ -86,6 +86,8 @@ struct Catalog {
     listings: Vec<NativeListing>,
 }
 
+type Opener = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 struct Sources {
     weak: Weak<App>,
     locate: Locate,
@@ -94,6 +96,8 @@ struct Sources {
     /// A descriptor the user reviewed, waiting for the Add button.
     pending: RefCell<Option<SourceDescriptor>>,
     generation: Cell<u64>,
+    gamebanana_toggled: Cell<bool>,
+    opener: RefCell<Opener>,
 }
 
 pub fn attach(app: &App) {
@@ -109,6 +113,10 @@ pub(crate) fn attach_with(app: &App, locate: Locate) {
         catalogs: RefCell::new(Vec::new()),
         pending: RefCell::new(None),
         generation: Cell::new(0),
+        gamebanana_toggled: Cell::new(false),
+        opener: RefCell::new(Arc::new(|url: &str| {
+            shiv_core::link::open_web_link(url).map_err(|e| e.to_string())
+        })),
     });
     SOURCES.with(|c| *c.borrow_mut() = Some(controller));
     let state = app.global::<SourcesState>();
@@ -120,11 +128,18 @@ pub(crate) fn attach_with(app: &App, locate: Locate) {
     state.on_remove(|origin, id| {
         with_sources(|s| s.remove(origin.as_str(), id.as_str()));
     });
+    state.on_toggle_gamebanana(|enabled| with_sources(|s| s.toggle_gamebanana(enabled)));
+    state.on_open_link(|url| with_sources(|s| s.open_link(url.as_str())));
     state.on_dismiss_banner(|| {
         with_sources(|s| {
             s.with_state(|s| s.set_banner_text("".into()));
         });
     });
+}
+
+#[cfg(test)]
+pub(crate) fn set_opener(f: impl Fn(&str) -> Result<(), String> + Send + Sync + 'static) {
+    with_sources(|s| *s.opener.borrow_mut() = Arc::new(f));
 }
 
 /// Load the saved sources and their catalogs (at startup).
@@ -139,6 +154,46 @@ impl Sources {
         }
     }
 
+    fn toggle_gamebanana(&self, enabled: bool) {
+        self.gamebanana_toggled.set(true);
+        self.with_state(|s| s.set_gamebanana_enabled(enabled));
+        browse::set_gamebanana_enabled(enabled);
+        crate::spawn_worker(
+            "shiv-save-gamebanana",
+            move || crate::source_filter::save_gamebanana_enabled(enabled),
+            |_| {},
+        );
+    }
+
+    fn open_link(&self, url: &str) {
+        if !shiv_core::link::is_web_link(url) {
+            return;
+        }
+        let opener = self.opener.borrow().clone();
+        let url = url.to_owned();
+        let weak = self.weak.clone();
+        let started = crate::spawn_worker(
+            "shiv-sources-link",
+            move || opener(&url),
+            move |result| {
+                if let Err(text) = result.and_then(|r| r) {
+                    let _ = weak.upgrade_in_event_loop(move |_| {
+                        with_sources(|s| {
+                            s.with_state(|st| {
+                                st.set_banner_text(format!("Could not open link: {text}").into());
+                            });
+                        });
+                    });
+                }
+            },
+        );
+        if !started {
+            self.with_state(|s| {
+                s.set_banner_text("Could not start a background thread.".into());
+            });
+        }
+    }
+
     /// Show the saved sources and load every registry's catalog.
     fn refresh(&self) {
         let generation = self.generation.get() + 1;
@@ -147,12 +202,13 @@ impl Sources {
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
             "shiv-load-sources",
-            move || -> Result<(Vec<AddedSource>, Vec<CatalogOutcome>), String> {
+            move || -> Result<(Vec<AddedSource>, Vec<CatalogOutcome>, bool), String> {
                 let saved = load_registry(&locate)
                     .map(|r| r.sources().to_vec())
                     .unwrap_or_default();
                 let loaded = fetch_catalogs(&saved);
-                Ok((saved, loaded))
+                let gb_enabled = crate::source_filter::load_gamebanana_enabled();
+                Ok((saved, loaded, gb_enabled))
             },
             move |result| {
                 let result = result.and_then(|r| r);
@@ -171,7 +227,7 @@ impl Sources {
     fn catalogs_loaded(
         &self,
         generation: u64,
-        result: Result<(Vec<AddedSource>, Vec<CatalogOutcome>), String>,
+        result: Result<(Vec<AddedSource>, Vec<CatalogOutcome>, bool), String>,
     ) {
         if generation != self.generation.get() {
             return;
@@ -180,7 +236,10 @@ impl Sources {
         let mut catalogs = Vec::new();
         let mut saved = Vec::new();
         match result {
-            Ok((sources, loaded)) => {
+            Ok((sources, loaded, gb_enabled)) => {
+                if !self.gamebanana_toggled.get() {
+                    self.with_state(|s| s.set_gamebanana_enabled(gb_enabled));
+                }
                 saved = sources;
                 for (source, outcome) in loaded {
                     match outcome {

@@ -1296,6 +1296,18 @@ pub(crate) fn catalog_loaded() -> bool {
     loaded
 }
 
+/// Notify Browse that the built-in GameBanana source was toggled on or off.
+pub(crate) fn set_gamebanana_enabled(enabled: bool) {
+    with_browse(|b| b.set_gamebanana_enabled(enabled));
+}
+
+/// Whether the built-in GameBanana catalog is enabled.
+pub(crate) fn gamebanana_enabled() -> bool {
+    let mut enabled = true;
+    with_browse(|b| enabled = b.gamebanana_enabled.get());
+    enabled
+}
+
 /// Start an update of an installed mod (the Installed screen's Update button).
 pub(crate) fn update_mod(id: &str) {
     with_browse(|b| b.install(id));
@@ -1340,6 +1352,10 @@ pub struct Browse {
     /// The user picked a source this run: the remembered one, read in the
     /// background, no longer applies.
     source_chosen: Cell<bool>,
+    /// Whether the built-in GameBanana catalog is enabled.
+    gamebanana_enabled: Cell<bool>,
+    /// The user toggled GameBanana this session: startup read no longer applies.
+    gamebanana_toggled: Cell<bool>,
     /// The source dropdown's keys, index-aligned with its labels.
     source_keys: RefCell<Vec<source_filter::SourceKey>>,
     /// Heroes in the catalog, in the order of `hero_model`.
@@ -1447,6 +1463,8 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
         }),
         source: RefCell::new(source_filter::SourceKey::All),
         source_chosen: Cell::new(false),
+        gamebanana_enabled: Cell::new(true),
+        gamebanana_toggled: Cell::new(false),
         source_keys: RefCell::new(Vec::new()),
         load_generation: Cell::new(0),
         installed_generation: Cell::new(0),
@@ -1483,14 +1501,26 @@ pub(crate) fn attach_with(app: &App, api_url: &str, locate: &Locate) -> Arc<thum
     state.set_detail_row(ModelRc::new(DetailRow(list)));
     wire_callbacks(&state);
 
-    browse.load();
-    let loaded = weak.clone();
-    crate::spawn_worker("shiv-load-source", source_filter::load, move |key| {
-        if let Ok(key) = key {
-            let _ = loaded.upgrade_in_event_loop(move |_| with_browse(|b| b.source_loaded(key)));
-        }
-    });
+    spawn_source_load(weak);
     cache
+}
+
+fn spawn_source_load(weak: Weak<App>) {
+    crate::spawn_worker(
+        "shiv-load-source",
+        || {
+            (
+                source_filter::load(),
+                source_filter::load_gamebanana_enabled(),
+            )
+        },
+        move |res| {
+            let (key, gb_enabled) = res.unwrap_or((source_filter::SourceKey::All, true));
+            let _ = weak.upgrade_in_event_loop(move |_| {
+                with_browse(|b| b.source_loaded(key, gb_enabled));
+            });
+        },
+    );
 }
 
 fn wire_callbacks(state: &BrowseState<'_>) {
@@ -1504,7 +1534,14 @@ fn wire_callbacks(state: &BrowseState<'_>) {
     state.on_open_donation(|| with_browse(|b| b.open_donation()));
     state.on_hero_toggled(|i| with_browse(|b| b.hero_toggled(i)));
     state.on_heroes_cleared(|| with_browse(|b| b.heroes_cleared()));
-    state.on_retry(handle(|b| b.load()));
+    state.on_retry(handle(|b| {
+        if b.gamebanana_enabled.get() {
+            b.load();
+        } else {
+            b.refresh_installed();
+            b.refresh();
+        }
+    }));
     state.on_install(|id| with_browse(|b| b.install(id.as_str())));
     state.on_cancel(|id| with_browse(|b| b.cancel(id.as_str())));
     state.on_pick_download(|i| with_browse(|b| b.pick_download(i)));
@@ -1643,7 +1680,7 @@ impl Browse {
         result: Result<Vec<ModDto>, String>,
         installed: HashSet<String>,
     ) {
-        if generation != self.load_generation.get() {
+        if generation != self.load_generation.get() || !self.gamebanana_enabled.get() {
             return;
         }
         let mods = match result {
@@ -1709,9 +1746,13 @@ impl Browse {
 
     /// Re-run the query over the catalog and replace the list.
     fn refresh(&self) {
+        let gb_enabled = self.gamebanana_enabled.get();
         let catalog = self.catalog.borrow().clone();
         let page = apply_query(&catalog, &self.query.borrow());
-        let key = self.source.borrow().clone();
+        let mut key = self.source.borrow().clone();
+        if !gb_enabled && key == source_filter::SourceKey::Catalog {
+            key = source_filter::SourceKey::All;
+        }
         let registry = registry_entries();
         let options = source_filter::Options::new(
             catalog.len(),
@@ -1720,10 +1761,11 @@ impl Browse {
                 .map(|(s, e)| (s.clone(), e.len()))
                 .collect::<Vec<_>>(),
             &key,
+            gb_enabled,
         );
         let now = now_epoch();
-        let mut total = catalog.len();
-        let mut entries: Vec<Entry> = if key.shows_catalog() {
+        let mut total = if gb_enabled { catalog.len() } else { 0 };
+        let mut entries: Vec<Entry> = if gb_enabled && key.shows_catalog() {
             page.items
                 .into_iter()
                 .map(|m| Entry::from_dto_at(m, now))
@@ -1751,7 +1793,8 @@ impl Browse {
         self.with_state(|s| {
             s.set_sources(ModelRc::new(VecModel::from(labels)));
             s.set_source_index(i32::try_from(index).unwrap_or(0));
-            s.set_catalog_shown(key.shows_catalog());
+            s.set_catalog_shown(gb_enabled && key.shows_catalog());
+            s.set_gamebanana_enabled(gb_enabled);
         });
         let summary = if shown == total {
             format!(
@@ -1859,13 +1902,64 @@ impl Browse {
         self.refresh();
     }
 
-    /// The remembered source filter, read at start.
-    fn source_loaded(&self, key: source_filter::SourceKey) {
-        if self.source_chosen.get() || *self.source.borrow() == key {
+    fn set_gamebanana_enabled(&self, enabled: bool) {
+        self.gamebanana_toggled.set(true);
+        if self.gamebanana_enabled.get() == enabled {
             return;
         }
-        *self.source.borrow_mut() = key;
+        self.gamebanana_enabled.set(enabled);
+        self.with_state(|s| s.set_gamebanana_enabled(enabled));
+        if enabled {
+            self.load();
+            return;
+        }
+        self.load_generation.set(self.load_generation.get() + 1);
+        *self.catalog.borrow_mut() = Rc::new(Vec::new());
+        self.catalog_index.borrow_mut().clear();
+        self.categories.borrow_mut().clear();
+        self.heroes.borrow_mut().clear();
+        *self.nsfw_ids.borrow_mut() = Some(HashSet::new());
+        if *self.source.borrow() == source_filter::SourceKey::Catalog {
+            *self.source.borrow_mut() = source_filter::SourceKey::All;
+        }
+        crate::installed::nsfw_changed();
+        self.with_state(|s| {
+            s.set_categories(ModelRc::new(VecModel::from(vec![SharedString::from(
+                ALL_CATEGORIES,
+            )])));
+            s.set_category_index(0);
+            s.set_error_text("".into());
+            s.set_load_state(LoadState::Ready);
+        });
+        self.refresh_installed();
         self.refresh();
+    }
+
+    /// The remembered source filter and GameBanana toggle, read at start.
+    fn source_loaded(&self, key: source_filter::SourceKey, gb_enabled: bool) {
+        let already_toggled = self.gamebanana_toggled.get();
+        if !already_toggled {
+            self.gamebanana_enabled.set(gb_enabled);
+            self.with_state(|s| s.set_gamebanana_enabled(gb_enabled));
+        }
+        if !self.source_chosen.get() && *self.source.borrow() != key {
+            *self.source.borrow_mut() = key;
+        }
+        if already_toggled {
+            self.refresh();
+            return;
+        }
+        if gb_enabled {
+            self.load();
+        } else {
+            *self.nsfw_ids.borrow_mut() = Some(HashSet::new());
+            self.with_state(|s| {
+                s.set_error_text("".into());
+                s.set_load_state(LoadState::Ready);
+            });
+            self.refresh_installed();
+            self.refresh();
+        }
     }
 
     fn category_selected(&self, index: i32) {
