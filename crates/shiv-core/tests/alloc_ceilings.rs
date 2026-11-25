@@ -55,7 +55,17 @@ const INSTALL_LOCAL_ZIP_CEILING: u64 = 620_288;
 /// Ceiling: 80,000 = 57,957 observed 2026-11-21 (Apple M1 Pro, macOS,
 /// debug profile) + slack for fixture variance (temp-path lengths differ
 /// between machines; run-to-run totals drift a few bytes).
+///
+/// Windows: 165,000 = 122,825 observed 2026-11-25 (windows-2022 CI
+/// runner, debug profile) + the same slack. set_pak is the most
+/// path-touched flow — 25 mods, every VPK rename and sidecar rewrite
+/// hands the OS a path — and the platform's paths cost more bytes
+/// there: the longer temp root, canonicalize's verbatim `\\?\`
+/// prefixes. The unix ceiling keeps its recorded tightness.
+#[cfg(not(windows))]
 const SET_PAK_25_MODS_CEILING: u64 = 80_000;
+#[cfg(windows)]
+const SET_PAK_25_MODS_CEILING: u64 = 165_000;
 
 /// Ceiling: 36,000 = 26,162 observed 2026-11-21 (Apple M1 Pro, macOS,
 /// debug profile) + slack for fixture variance (temp-path lengths differ
