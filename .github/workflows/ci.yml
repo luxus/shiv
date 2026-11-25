@@ -68,6 +68,4 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        # --no-fail-fast: while the Windows suite is young, one round
-        # must reveal every platform gap, not the first.
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace
