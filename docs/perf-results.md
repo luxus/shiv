@@ -1,5 +1,42 @@
 # Release performance results
 
+## Baselines — lea, 2026-11-25 (Nix package, main @ b4f4a23, before 0.6.0)
+
+Machine: lea (NixOS, Linux 7.3.0-rc6-cachyos, 8 cores, 60 GiB RAM,
+Wayland on Hyprland), the reference machine. Binary: the Nix flake
+package, 49 MB store path — was 45 MB: the app binary grew with the
+0.5.x features and #71 added `dbus.lib` to the runtime closure; the
+store binary keeps its `.symtab` under nixpkgs' fixup, so the AppImage
+stays the size gate (21.4 MB at v0.5.1; the 0.6.0 row follows the
+release build). Gates from [the proof plan](proof-plan.md). The scroll
+frame-budget gate was re-proved the same day in its own section below.
+
+| Dimension | Measured | Gate | Holds |
+|---|---|---|---|
+| Idle RSS, catalog loaded (15 s) | 103.1 MB | < 150 MB | yes (was 114.5 MB on 11-20) |
+| Idle RSS after 60 s more | 103.1 MB — no growth | leak gate: ±10 % | yes |
+| Idle CPU over 60 s | 0 ticks | 0 ticks | yes |
+| Process start → first activity | warm 164–299 ms, cold 458–641 ms (3 runs each) | < 1.5 s cold, < 600 ms warm | yes |
+| 60 s full-list scroll (injected 25,000 px/s) | VmRSS 141.2 MB settled → VmHWM 150.3 MB peak (+6.4 %) | post-scroll within 10 % of loaded | yes (was +9.4 %) |
+| Search keystroke → list rebuilt | first letter 9.7 ms, letters 2–3 6.2–6.4 ms, steady 5.1–5.4 ms (11 letters, `hazeskinmod`) | < 16 ms per keystroke | yes, ~1.6× margin |
+| AppImage size | 21.4 MB at v0.5.1 | < 25 MB | 0.6.0 row follows the release build |
+
+Commands as the 2026-11-20 baseline below, with one addition: the raw
+dev-probe binary now needs `libxkbcommon` **and `dbus.lib`** on
+`LD_LIBRARY_PATH` (wayland alone no longer runs it — since #71 the app
+dlopens libdbus-1 at runtime; the flake's rpath covers the Nix package,
+a raw cargo build has none). Probes need a quiet machine: a first pass
+launched while the release builds were still settling read cold starts
+of 1.5–2.7 s; the quiet-machine pass above, same method minutes later,
+matches the recorded baseline.
+
+Search steady-state moved from 3.3–3.4 ms (11-20) to 5.1–5.4 ms: the
+rebuild carries more per-row work since #72–74 (versions, source tags,
+the Activity history). Under the gate with margin; recorded so the next
+refresh can tell drift from regression. The dev-probe build also warns
+`constant DOWNLOADS is never used` — #74 replaced the screen the
+dev-probe id names; dev-probe only, CI's clippy gate is unaffected.
+
 ## Baselines — lea, 2026-11-20 (Nix package, main @ 81ea837)
 
 Machine: NixOS, Linux 7.3.0-rc6-cachyos, 8 cores, 60 GiB RAM, Wayland.
