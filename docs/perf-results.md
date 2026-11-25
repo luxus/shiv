@@ -7,8 +7,7 @@ Wayland on Hyprland), the reference machine. Binary: the Nix flake
 package, 49 MB store path — was 45 MB: the app binary grew with the
 0.5.x features and #71 added `dbus.lib` to the runtime closure; the
 store binary keeps its `.symtab` under nixpkgs' fixup, so the AppImage
-stays the size gate (21.4 MB at v0.5.1; the 0.6.0 row follows the
-release build). Gates from [the proof plan](proof-plan.md). The scroll
+stays the size gate (21.15 MB at v0.6.0). Gates from [the proof plan](proof-plan.md). The scroll
 frame-budget gate was re-proved the same day in its own section below.
 
 | Dimension | Measured | Gate | Holds |
@@ -19,7 +18,7 @@ frame-budget gate was re-proved the same day in its own section below.
 | Process start → first activity | warm 164–299 ms, cold 458–641 ms (3 runs each) | < 1.5 s cold, < 600 ms warm | yes |
 | 60 s full-list scroll (injected 25,000 px/s) | VmRSS 141.2 MB settled → VmHWM 150.3 MB peak (+6.4 %) | post-scroll within 10 % of loaded | yes (was +9.4 %) |
 | Search keystroke → list rebuilt | first letter 9.7 ms, letters 2–3 6.2–6.4 ms, steady 5.1–5.4 ms (11 letters, `hazeskinmod`) | < 16 ms per keystroke | yes, ~1.6× margin |
-| AppImage size | 21.4 MB at v0.5.1 | < 25 MB | 0.6.0 row follows the release build |
+| AppImage size | 21.15 MB at v0.6.0 | < 25 MB | yes (was 21.4 MB at v0.5.1) |
 
 Commands as the 2026-11-20 baseline below, with one addition: the raw
 dev-probe binary now needs `libxkbcommon` **and `dbus.lib`** on
