@@ -845,7 +845,22 @@ fn sidecar_with_traversal_vpk_name_deletes_nothing_outside_addons() {
 
 fn set_age(path: &Path, secs: u64) {
     let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    #[cfg(unix)]
     fs::File::open(path).unwrap().set_modified(t).unwrap();
+    #[cfg(windows)]
+    {
+        // Windows refuses a plain open on a directory; the backup
+        // flag is the documented way to open one for its metadata.
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        fs::OpenOptions::new()
+            .attributes(FILE_FLAG_BACKUP_SEMANTICS)
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
 }
 
 fn plant_staging(e: &Env, name: &str, age_secs: u64) -> PathBuf {

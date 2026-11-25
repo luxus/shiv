@@ -1,7 +1,13 @@
 # Windows release builds carry the C runtime, so the portable exe runs without
-# the Visual C++ redistributable.
+# the Visual C++ redistributable. advapi32: unrar's bundled C++ calls WinCrypt
+# (CryptAcquireContextW and friends) for its randomness; the release binary
+# culls that call path under fat LTO, debug test binaries do not, and the
+# symbols stay unresolved unless the library is named on the link line.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = [
+  "-C", "target-feature=+crt-static",
+  "-C", "link-args=advapi32.lib",
+]
 
 # Local macOS builds. Apple's cc (`/usr/bin/cc`) must drive the final link:
 # a GCC on PATH (nix, homebrew) links its own libstdc++ runtime, which the SDK

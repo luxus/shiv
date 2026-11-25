@@ -82,7 +82,7 @@ impl Deps {
             cache: CatalogCache::default_dir().map(CatalogCache::new),
             pack_download: Arc::new(move |url, dest, cancel, progress| {
                 download
-                    .fetch_cancellable(url, dest, cancel, progress)
+                    .fetch_cancellable(url, dest, cancel, progress, None)
                     .map_err(|e| e.to_string())
             }),
             pack_page: system_pack_page(),

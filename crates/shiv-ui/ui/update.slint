@@ -1,0 +1,25 @@
+// The self-updater strip state: nothing is shown unless a check ran or
+// an update is in flight. The sidebar strip in app.slint renders it.
+
+export global UpdateState {
+    // The newer release's version ("0.6.1"); "" while nothing is known.
+    in-out property <string> version;
+    // The transient line: checking, downloading with a step, up to date,
+    // or the short text of a failure.
+    in-out property <string> status;
+    // A check or download is in flight; the strip shows the status line.
+    in-out property <bool> busy;
+    // The swap succeeded; the strip offers Restart.
+    in-out property <bool> ready;
+    // Set when this install cannot replace itself: how to update instead.
+    in-out property <string> managed;
+
+    // The Check-for-updates row, and the launch check.
+    callback check();
+    // Download, verify and apply the newer release.
+    callback apply();
+    // Restart into the file the swap moved in.
+    callback restart();
+    // Open the release page (the only path when managed).
+    callback open-release();
+}

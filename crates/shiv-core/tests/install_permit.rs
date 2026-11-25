@@ -44,11 +44,14 @@ fn forgotten_pak_change_does_not_compile() {
     let src = root.path().join("src");
     std::fs::create_dir_all(&src).expect("src");
     let core = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Forward slashes: a Windows path in a TOML basic string is one
+    // invalid escape after another, and cargo takes them either way.
+    let core_path = core.display().to_string().replace('\\', "/");
     std::fs::write(
         &manifest,
         format!(
             "[package]\nname = \"forgotten-lock\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\nshiv-core = {{ path = \"{}\" }}\n",
-            core.display()
+            core_path
         ),
     )
     .expect("manifest");

@@ -31,7 +31,9 @@ static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 /// The counter is process-global, so the measured tests take turns: while
 /// one holds this, the others are parked on it, not allocating into the
-/// run being measured.
+/// run being measured. A panic while holding the turn poisons the lock;
+/// the later tests take it anyway, so each fails on its own number
+/// instead of on the poison.
 static FLOW_TURN: Mutex<()> = Mutex::new(());
 
 /// Measured runs per flow; the worst one is compared against the ceiling,
@@ -53,7 +55,17 @@ const INSTALL_LOCAL_ZIP_CEILING: u64 = 620_288;
 /// Ceiling: 80,000 = 57,957 observed 2026-11-21 (Apple M1 Pro, macOS,
 /// debug profile) + slack for fixture variance (temp-path lengths differ
 /// between machines; run-to-run totals drift a few bytes).
+///
+/// Windows: 165,000 = 122,825 observed 2026-11-25 (windows-2022 CI
+/// runner, debug profile) + the same slack. set_pak is the most
+/// path-touched flow — 25 mods, every VPK rename and sidecar rewrite
+/// hands the OS a path — and the platform's paths cost more bytes
+/// there: the longer temp root, canonicalize's verbatim `\\?\`
+/// prefixes. The unix ceiling keeps its recorded tightness.
+#[cfg(not(windows))]
 const SET_PAK_25_MODS_CEILING: u64 = 80_000;
+#[cfg(windows)]
+const SET_PAK_25_MODS_CEILING: u64 = 165_000;
 
 /// Ceiling: 36,000 = 26,162 observed 2026-11-21 (Apple M1 Pro, macOS,
 /// debug profile) + slack for fixture variance (temp-path lengths differ
@@ -63,7 +75,18 @@ const INTERCHANGE_EXPORT_3_MODS_CEILING: u64 = 36_000;
 /// Ceiling: 72,000 = 53,464 observed 2026-11-21 (Apple M1 Pro, macOS,
 /// debug profile) + slack for fixture variance (temp-path lengths differ
 /// between machines; run-to-run totals drift a few bytes).
+///
+/// Windows: 130,000 = 97,365 observed 2026-11-25 (windows-2022 CI
+/// runner, debug profile) + the same slack. The flow's work is the same;
+/// every path it hands the OS costs more bytes there — the temp root is
+/// longer, and `canonicalize` returns verbatim `\\?\`-prefixed paths
+/// that every later join and compare carries. The unix ceilings keep
+/// their recorded tightness; this is the platform's price, not a
+/// regression.
+#[cfg(not(windows))]
 const INTERCHANGE_IMPORT_3_MODS_CEILING: u64 = 72_000;
+#[cfg(windows)]
+const INTERCHANGE_IMPORT_3_MODS_CEILING: u64 = 130_000;
 
 struct Env {
     _root: TempDir,
@@ -249,7 +272,9 @@ fn interchange_round_trip_flow() -> [u64; 2] {
 
 #[test]
 fn install_local_with_of_a_small_zip_stays_under_its_ceiling() {
-    let _turn = FLOW_TURN.lock().unwrap();
+    let _turn = FLOW_TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let [worst] = worst_bytes(install_local_zip_flow);
     assert_under_ceiling(
         worst,
@@ -260,7 +285,9 @@ fn install_local_with_of_a_small_zip_stays_under_its_ceiling() {
 
 #[test]
 fn set_pak_on_a_25_mod_library_stays_under_its_ceiling() {
-    let _turn = FLOW_TURN.lock().unwrap();
+    let _turn = FLOW_TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let [worst] = worst_bytes(set_pak_flow);
     assert_under_ceiling(
         worst,
@@ -271,7 +298,9 @@ fn set_pak_on_a_25_mod_library_stays_under_its_ceiling() {
 
 #[test]
 fn interchange_export_and_import_stay_under_their_ceilings() {
-    let _turn = FLOW_TURN.lock().unwrap();
+    let _turn = FLOW_TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let [export, import] = worst_bytes(interchange_round_trip_flow);
     assert_under_ceiling(
         export,

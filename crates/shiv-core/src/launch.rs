@@ -168,6 +168,7 @@ pub fn run_opener_cancellable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::cell::RefCell;
 
     fn game() -> (tempfile::TempDir, GamePaths) {

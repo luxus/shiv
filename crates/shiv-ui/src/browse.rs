@@ -1007,27 +1007,33 @@ fn run_install(
                 .map_err(msg)?;
         task.file.url.clone_from(&download_url);
     }
-    let fetched = client.fetch_cancellable(&download_url, &dest, cancel, |done, total| {
-        let total = total.or(size_hint).filter(|t| *t > 0);
-        let step = match total {
-            Some(t) => done.saturating_mul(100) / t,
-            None => done / 1_000_000,
-        };
-        if step == last_step {
-            return;
-        }
-        last_step = step;
-        let (progress, text) = match total {
-            Some(_) => (step.min(100) as f32 / 100.0, format!("{}%", step.min(100))),
-            None => (-1.0, fmt_mb(done)),
-        };
-        post(Update::Progress {
-            progress,
-            text,
-            done,
-            total,
-        });
-    });
+    let fetched = client.fetch_cancellable(
+        &download_url,
+        &dest,
+        cancel,
+        |done, total| {
+            let total = total.or(size_hint).filter(|t| *t > 0);
+            let step = match total {
+                Some(t) => done.saturating_mul(100) / t,
+                None => done / 1_000_000,
+            };
+            if step == last_step {
+                return;
+            }
+            last_step = step;
+            let (progress, text) = match total {
+                Some(_) => (step.min(100) as f32 / 100.0, format!("{}%", step.min(100))),
+                None => (-1.0, fmt_mb(done)),
+            };
+            post(Update::Progress {
+                progress,
+                text,
+                done,
+                total,
+            });
+        },
+        None,
+    );
     match fetched {
         Err(ApiError::Cancelled) => return Err(Failure::Cancelled),
         Err(e) => return Err(msg(format!("Download failed: {e}"))),

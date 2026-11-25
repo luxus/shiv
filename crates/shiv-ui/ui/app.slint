@@ -11,8 +11,9 @@ import { DownloadsPage, DownloadsState, TransferRow, DownloadPhase } from "downl
 import { ProfilesPage, ProfilesState, ProfileRow } from "profiles.slint";
 import { Dropdown, TooltipLayer } from "widgets.slint";
 import { PerformancePage, PerfState, PerfTier, PerfComplock, PerfPackRow, PerfPackKind, PerfRow, PerfControl, PerfEditor, PerfChange } from "performance.slint";
+import { UpdateState } from "update.slint";
 
-export { BrowseState, ModRow, LoadState, InstallState, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow, InstalledState, InstalledRow, SourceKind, ConflictState, ModEditState, LocalInstallState, UpdateFileState, RestoreState, DropState, SourcesState, SourceRow, LaunchState, FindingRow, RepairState, RepairRow, RepairTone, CrosshairState, CrosshairValues, CrosshairField, PerfState, PerfTier, PerfComplock, PerfRow, PerfControl, PerfEditor, PerfChange, ProfilesState, ProfileRow, DownloadsState, DownloadPhase, TransferRow }
+export { BrowseState, ModRow, LoadState, InstallState, DownloadRow, ModDetail, GalleryThumb, HeroOption, ImageState, TabLoad, TextRow, InstalledState, InstalledRow, SourceKind, ConflictState, ModEditState, LocalInstallState, UpdateFileState, RestoreState, DropState, SourcesState, SourceRow, LaunchState, FindingRow, RepairState, RepairRow, RepairTone, CrosshairState, CrosshairValues, CrosshairField, PerfState, PerfTier, PerfComplock, PerfRow, PerfControl, PerfEditor, PerfChange, ProfilesState, ProfileRow, DownloadsState, DownloadPhase, TransferRow, UpdateState }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -58,6 +59,33 @@ component NavItem inherits Rectangle {
         font-size: Theme.text-sm;
         font-weight: 600;
         vertical-alignment: center;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component UpdateRow inherits Rectangle {
+    in property <string> label;
+    // Accent text for actions; muted for the quiet check row.
+    in property <bool> strong;
+    callback clicked;
+
+    height: Theme.control-h;
+    border-radius: Theme.radius;
+    background: ta.has-hover ? Theme.hover : transparent;
+
+    Text {
+        x: Theme.s2;
+        width: parent.width - 2 * Theme.s2;
+        height: parent.height;
+        text: root.label;
+        color: root.strong ? Theme.accent : Theme.text-muted;
+        font-size: Theme.text-sm;
+        vertical-alignment: center;
+        overflow: elide;
     }
 
     ta := TouchArea {
@@ -148,6 +176,41 @@ export component App inherits Window {
                 }
 
                 Rectangle { vertical-stretch: 1; }
+
+                // One row: quiet check button, progress line, or the
+                // update action. A managed install opens the release
+                // page instead of applying anything.
+                if !UpdateState.busy && !UpdateState.ready && UpdateState.version == "": UpdateRow {
+                    label: UpdateState.status == "" ? "Check for updates" : UpdateState.status;
+                    strong: false;
+                    clicked => { UpdateState.check(); }
+                }
+                if UpdateState.busy: Text {
+                    height: Theme.control-h;
+                    text: UpdateState.status;
+                    color: Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if !UpdateState.busy && !UpdateState.ready && UpdateState.version != "": UpdateRow {
+                    label: UpdateState.managed != ""
+                        ? "Shiv " + UpdateState.version + " — see the release"
+                        : "Update to " + UpdateState.version;
+                    strong: true;
+                    clicked => {
+                        if (UpdateState.managed != "") {
+                            UpdateState.open-release();
+                        } else {
+                            UpdateState.apply();
+                        }
+                    }
+                }
+                if !UpdateState.busy && UpdateState.ready: UpdateRow {
+                    label: "Restart into " + UpdateState.version;
+                    strong: true;
+                    clicked => { UpdateState.restart(); }
+                }
 
                 LaunchPanel { }
             }

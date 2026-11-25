@@ -59,7 +59,7 @@ impl Deps {
             running: Arc::new(game::running_here),
             download: Arc::new(|url, dest| {
                 Client::new(crate::DEFAULT_API_URL)
-                    .fetch_cancellable(url, dest, &AtomicBool::new(false), |_, _| {})
+                    .fetch_cancellable(url, dest, &AtomicBool::new(false), |_, _| {}, None)
                     .map_err(|e| format!("The download failed. {e}"))
             }),
         }
@@ -1158,14 +1158,20 @@ fn run_link_install(
     // download is recognised as an update.
     let dest = dir.path().join(file);
     let mut last_step = u64::MAX;
-    let fetched = client.fetch_cancellable(url, &dest, cancel, |done, total| {
-        let step = progress_step(done, total);
-        if step == last_step {
-            return;
-        }
-        last_step = step;
-        report(LinkUpdate::Progress { done, total });
-    });
+    let fetched = client.fetch_cancellable(
+        url,
+        &dest,
+        cancel,
+        |done, total| {
+            let step = progress_step(done, total);
+            if step == last_step {
+                return;
+            }
+            last_step = step;
+            report(LinkUpdate::Progress { done, total });
+        },
+        None,
+    );
     match fetched {
         Err(ApiError::Cancelled) => return Err(LinkFailure::Cancelled),
         Err(e) => return Err(link_fail(format!("Download failed: {e}"))),
@@ -1557,7 +1563,7 @@ pub(crate) fn file_dropped(path: PathBuf) {
 /// Several files were dropped on the window: they are queued and processed
 /// one by one, each opening the dialog it needs.
 #[cfg_attr(
-    target_vendor = "apple",
+    any(target_vendor = "apple", windows),
     allow(dead_code, reason = "called only from the Wayland drop path and tests")
 )]
 pub(crate) fn files_dropped(paths: Vec<PathBuf>) {

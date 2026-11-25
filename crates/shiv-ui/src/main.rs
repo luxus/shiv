@@ -42,6 +42,7 @@ mod repair;
 mod source_filter;
 mod sources;
 mod thumbs;
+mod updater;
 
 /// The API serves its routes under `/api` (`/api/v2/mods`, ...).
 pub(crate) const DEFAULT_API_URL: &str = "https://api.deadlockmods.app/api";
@@ -201,6 +202,7 @@ fn run() -> Result<(), slint::PlatformError> {
     sources::load();
     downloads::attach(&app);
     dnd::attach(&app);
+    updater::attach(&app);
     #[cfg(all(unix, not(target_vendor = "apple")))]
     warm_fallback_fonts();
     // Debug builds only: open on another screen (e.g. for screenshots); 0 is Browse.
@@ -966,6 +968,7 @@ mod tests {
                             dest,
                             &std::sync::atomic::AtomicBool::new(false),
                             |_, _| {},
+                            None,
                         )
                         .map_err(|e| e.to_string())
                 }),
@@ -3168,6 +3171,7 @@ mod tests {
                             dest,
                             &std::sync::atomic::AtomicBool::new(false),
                             |_, _| {},
+                            None,
                         )
                         .map_err(|e| e.to_string())
                 }),

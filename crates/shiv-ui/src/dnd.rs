@@ -19,7 +19,7 @@ use crate::{App, installed};
 
 /// Whether to ask winit for X11: only when requested with `SHIV_X11`.
 #[cfg_attr(
-    target_vendor = "apple",
+    any(target_vendor = "apple", windows),
     allow(
         dead_code,
         reason = "called only from Linux backend selection and tests"
@@ -49,6 +49,15 @@ pub fn select_backend() -> Result<(), slint::PlatformError> {
     let selector: Option<slint::BackendSelector> = None;
 
     #[cfg(any(debug_assertions, feature = "dev-probe"))]
+    // Off the X11 platforms `selector` is the None literal, so the
+    // unwrap_or_else reads as redundant; the Option is the X11 arm's.
+    #[cfg_attr(
+        not(all(unix, not(target_vendor = "apple"))),
+        allow(
+            clippy::unnecessary_literal_unwrap,
+            reason = "the None literal is the non-X11 selector; the Option is the X11 arm's"
+        )
+    )]
     let selector = if let Some(handler) = crate::frame_probe::make_handler() {
         let base =
             selector.unwrap_or_else(|| slint::BackendSelector::new().backend_name("winit".into()));

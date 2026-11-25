@@ -180,7 +180,7 @@ fn lock_exclusive(file: &File) -> io::Result<()> {
             0,
             u32::MAX,
             u32::MAX,
-            &mut overlapped,
+            &raw mut overlapped,
         )
     };
     if ok == 0 {
@@ -195,7 +195,15 @@ fn unlock(file: &File) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     let mut overlapped = Overlapped::default();
     // SAFETY: `handle` is the file `lock_exclusive` locked; the range matches.
-    let ok = unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) };
+    let ok = unsafe {
+        UnlockFileEx(
+            file.as_raw_handle(),
+            0,
+            u32::MAX,
+            u32::MAX,
+            &raw mut overlapped,
+        )
+    };
     if ok == 0 {
         Err(io::Error::last_os_error())
     } else {

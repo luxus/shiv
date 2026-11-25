@@ -61,12 +61,15 @@ mod file {
             .truncate(oversized)
             .open(&path)
             .ok();
-        *LOG.lock().unwrap_or_else(|e| e.into_inner()) = file;
+        *LOG.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = file;
         append(format_args!("shiv {} started", env!("CARGO_PKG_VERSION")));
     }
 
     pub(super) fn append(message: std::fmt::Arguments<'_>) {
-        let mut guard = LOG.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = LOG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(file) = guard.as_mut() {
             let secs = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
