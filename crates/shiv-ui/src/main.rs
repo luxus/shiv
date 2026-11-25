@@ -124,7 +124,11 @@ pub(crate) mod screen {
     pub(crate) const PERFORMANCE: i32 = 4;
     pub(crate) const REPAIR: i32 = 5;
     pub(crate) const PROFILES: i32 = 6;
-    pub(crate) const DOWNLOADS: i32 = 7;
+    #[cfg_attr(
+        not(debug_assertions),
+        allow(dead_code, reason = "read only by the debug SHIV_SCREEN block")
+    )]
+    pub(crate) const ACTIVITY: i32 = 7;
 }
 
 /// Show the Repair screen (from a stale-package notice elsewhere).
@@ -205,7 +209,7 @@ fn run() -> Result<(), slint::PlatformError> {
         .ok()
         .and_then(|v| v.parse::<i32>().ok())
     {
-        app.set_screen(n.clamp(screen::BROWSE, screen::DOWNLOADS));
+        app.set_screen(n.clamp(screen::BROWSE, screen::ACTIVITY));
         // Setting the screen from Rust does not run `changed screen`.
         match app.get_screen() {
             screen::INSTALLED => app.global::<InstalledState>().invoke_refresh(),
