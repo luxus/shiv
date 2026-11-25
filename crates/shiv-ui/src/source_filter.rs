@@ -74,19 +74,30 @@ pub(crate) struct Options {
 
 impl Options {
     /// `catalog` mods from GameBanana and `(source, mods)` per added source.
+    /// When `gamebanana_enabled` is false, GameBanana is omitted from the
+    /// filter and a remembered `Catalog` selection falls back to `All`.
     /// A remembered source that is not (yet) loaded stays in the list, so
     /// the choice survives a slow or failed fetch.
     pub(crate) fn new(
         catalog: usize,
         sources: &[(AddedSource, usize)],
         current: &SourceKey,
+        gamebanana_enabled: bool,
     ) -> Self {
-        let total = catalog + sources.iter().map(|(_, n)| n).sum::<usize>();
-        let mut keys = vec![SourceKey::All, SourceKey::Catalog];
-        let mut labels = vec![
-            format!("All sources ({})", crate::browse::fmt_count(total as u64)),
-            format!("GameBanana ({})", crate::browse::fmt_count(catalog as u64)),
-        ];
+        let shown_catalog = if gamebanana_enabled { catalog } else { 0 };
+        let total = shown_catalog + sources.iter().map(|(_, n)| n).sum::<usize>();
+        let mut keys = vec![SourceKey::All];
+        let mut labels = vec![format!(
+            "All sources ({})",
+            crate::browse::fmt_count(total as u64)
+        )];
+        if gamebanana_enabled {
+            keys.push(SourceKey::Catalog);
+            labels.push(format!(
+                "GameBanana ({})",
+                crate::browse::fmt_count(catalog as u64)
+            ));
+        }
         for (source, n) in sources {
             let key = SourceKey::of(source);
             if keys.contains(&key) {
@@ -126,19 +137,27 @@ pub(crate) fn set_dir_for_test(dir: Option<PathBuf>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = dir;
 }
 
-fn file() -> Option<PathBuf> {
+fn settings_file(name: &str) -> Option<PathBuf> {
     #[cfg(test)]
     {
         TEST_DIR
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-            .map(|d| d.join("browse-source"))
+            .map(|d| d.join(name))
     }
     #[cfg(not(test))]
     {
-        shiv_core::settings_dir().map(|d| d.join("browse-source"))
+        shiv_core::settings_dir().map(|d| d.join(name))
     }
+}
+
+fn file() -> Option<PathBuf> {
+    settings_file("browse-source")
+}
+
+fn gamebanana_file() -> Option<PathBuf> {
+    settings_file("gamebanana-enabled")
 }
 
 /// Worker body: the remembered choice; `All` when none was saved or it
@@ -155,13 +174,39 @@ pub(crate) fn save(key: &SourceKey) {
     }
 }
 
+/// Worker body: whether the built-in GameBanana catalog is enabled; defaults
+/// to `true` when never saved or unreadable.
+pub(crate) fn load_gamebanana_enabled() -> bool {
+    gamebanana_file().is_none_or(|f| load_gamebanana_from(&f))
+}
+
+/// Worker body: persist whether GameBanana is enabled.
+pub(crate) fn save_gamebanana_enabled(enabled: bool) {
+    if let Some(f) = gamebanana_file() {
+        save_text_to(&f, if enabled { "true\n" } else { "false\n" });
+    }
+}
+
 /// Worker body: [`load`] from `file`.
 fn load_from(file: &Path) -> SourceKey {
     fs::read_to_string(file).map_or(SourceKey::All, |t| SourceKey::decode(&t))
 }
 
+/// Worker body: read the GameBanana enabled flag from `file`.
+fn load_gamebanana_from(file: &Path) -> bool {
+    fs::read_to_string(file).ok().is_none_or(|t| {
+        let trimmed = t.trim();
+        !trimmed.eq_ignore_ascii_case("false") && trimmed != "0"
+    })
+}
+
 /// Worker body: [`save`] to `file`, atomically.
 fn save_to(file: &Path, key: &SourceKey) {
+    save_text_to(file, &(key.encode() + "\n"));
+}
+
+/// Worker body: write `content` to `file`, atomically.
+fn save_text_to(file: &Path, content: &str) {
     static NEXT_TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(dir) = file.parent()
         && fs::create_dir_all(dir).is_err()
@@ -170,7 +215,7 @@ fn save_to(file: &Path, key: &SourceKey) {
     }
     let seq = NEXT_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = file.with_extension(format!("tmp.{}.{seq}", std::process::id()));
-    if fs::write(&tmp, key.encode() + "\n").is_ok() && fs::rename(&tmp, file).is_err() {
+    if fs::write(&tmp, content).is_ok() && fs::rename(&tmp, file).is_err() {
         let _ = fs::remove_file(&tmp);
     }
 }
@@ -213,7 +258,7 @@ mod tests {
             origin: "https://gone.example".into(),
             source_id: "gone".into(),
         };
-        let o = Options::new(1234, &[(mine.clone(), 3), (other, 2)], &gone);
+        let o = Options::new(1234, &[(mine.clone(), 3), (other.clone(), 2)], &gone, true);
         assert_eq!(
             o.labels,
             [
@@ -229,6 +274,13 @@ mod tests {
         assert!(SourceKey::of(&mine).shows_source(&mine));
         assert!(!SourceKey::of(&mine).shows_catalog());
         assert!(!SourceKey::Catalog.shows_source(&mine));
+
+        let without_gb = Options::new(1234, &[(mine, 3), (other, 2)], &SourceKey::Catalog, false);
+        assert_eq!(
+            without_gb.labels,
+            ["All sources (5)", "luxus Deadlock Mods (3)", "Other (2)"]
+        );
+        assert_eq!(without_gb.index_of(&SourceKey::Catalog), 0);
     }
 
     #[test]
@@ -244,5 +296,16 @@ mod tests {
         assert_eq!(load_from(&file), key);
         save_to(&file, &SourceKey::Catalog);
         assert_eq!(load_from(&file), SourceKey::Catalog);
+    }
+
+    #[test]
+    fn gamebanana_enabled_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("nested").join("gamebanana-enabled");
+        assert!(load_gamebanana_from(&file));
+        save_text_to(&file, "false\n");
+        assert!(!load_gamebanana_from(&file));
+        save_text_to(&file, "true\n");
+        assert!(load_gamebanana_from(&file));
     }
 }

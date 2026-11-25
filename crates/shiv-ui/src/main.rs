@@ -23,7 +23,6 @@ pub use generated::*;
 use shiv_core::game::{self, GameError, GamePaths};
 
 mod browse;
-mod builders;
 mod cli;
 mod conflict;
 mod crosshair;
@@ -290,6 +289,26 @@ mod tests {
             .next()
             .unwrap_or_else(|| panic!("no element labelled {label:?}"));
         el.invoke_accessible_default_action();
+    }
+
+    fn scroll_to_button(
+        app: &App,
+        scroll_id: &str,
+        label: &str,
+    ) -> i_slint_backend_testing::ElementHandle {
+        let sv = ElementHandle::find_by_element_id(app, scroll_id)
+            .next()
+            .unwrap_or_else(|| panic!("no scroll container {scroll_id:?}"));
+        for _ in 0..35 {
+            if let Some(el) = ElementHandle::find_by_accessible_label(app, label).find(|e| {
+                e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
+            }) {
+                return el;
+            }
+            sv.scroll(0.0, -240.0);
+            run_until(app, Duration::from_millis(20), |_| false);
+        }
+        panic!("no button labelled {label:?} inside {scroll_id:?} after scrolling");
     }
 
     /// Review focus: API unreachable on startup shows an error with Retry,
@@ -756,59 +775,6 @@ mod tests {
             s.get_load_state() == LoadState::Ready && s.get_pack_rows().row_count() > 0
         }));
         run_until(&app, Duration::from_millis(300), |_| false);
-        let shot = app.window().take_snapshot().expect("snapshot");
-        image::RgbaImage::from_raw(shot.width(), shot.height(), shot.as_bytes().to_vec())
-            .expect("image")
-            .save(&out)
-            .expect("png");
-        eprintln!("rendered {}x{} to {out}", shot.width(), shot.height());
-        app.hide().expect("hide");
-    }
-
-    /// Renders the CompLock builders with the software renderer to
-    /// `SHIV_RENDER_OUT`. Initialises the Slint platform: run it alone.
-    #[test]
-    #[ignore = "renders a screenshot; run alone with SHIV_RENDER_OUT"]
-    fn render_complock_builders() {
-        use i_slint_backend_testing::{TestingBackend, TestingBackendOptions};
-        let Ok(out) = std::env::var("SHIV_RENDER_OUT") else {
-            return;
-        };
-        slint::platform::set_platform(Box::new(TestingBackend::new(TestingBackendOptions {
-            mock_time: false,
-            threading: true,
-            renderer_name: Some("software".into()),
-        })))
-        .expect("platform");
-        let app = App::new().expect("app");
-        app.window()
-            .set_size(slint::LogicalSize::new(1120.0, 1180.0));
-        app.show().expect("show");
-        app.set_screen(4);
-        let state = app.global::<PerfState>();
-        state.set_load_state(LoadState::Ready);
-        state.set_section(2);
-        state.set_status("CompLock builders".into());
-        state.set_builder_status(slint::SharedString::new());
-        state.set_hit_name("ploop".into());
-        state.set_body_path("/sounds/ploop.wav".into());
-        state.set_body_start("407".into());
-        state.set_body_end("3046".into());
-        state.set_body_db("-2".into());
-        state.set_body_pitch("1".into());
-        state.set_head_path("/sounds/quake3.wav".into());
-        state.set_head_start("0".into());
-        state.set_head_end("6108".into());
-        state.set_head_db("0".into());
-        state.set_head_pitch("1".into());
-        state.set_hp_name("Classic".into());
-        state.set_hp_preset(6);
-        state.set_hp_link(
-        "w=60.48&h=8.19&enemy=%23FF4545&ally=%235BEF8F&fill=gloss&outline=1.26&ticks=all&low=true"
-            .into(),
-    );
-        run_until(&app, Duration::from_millis(400), |_| false);
-        assert_eq!(state.get_hit_name().as_str(), "ploop");
         let shot = app.window().take_snapshot().expect("snapshot");
         image::RgbaImage::from_raw(shot.width(), shot.height(), shot.as_bytes().to_vec())
             .expect("image")
@@ -2039,6 +2005,8 @@ mod tests {
             },
         );
         app.show().expect("show");
+        app.window()
+            .set_size(slint::LogicalSize::new(1120.0, 760.0));
         let state = app.global::<PerfState>();
         app.set_screen(4);
         let ready = |a: &App| {
@@ -2071,9 +2039,57 @@ mod tests {
         let soundcap = pack_row(&app, "soundcap");
         assert!(soundcap.has_pak && !soundcap.has_toggle);
         assert!(
-            soundcap.install_label.contains("Install"),
+            soundcap.install_label.starts_with("Install"),
             "{}",
             soundcap.install_label
+        );
+        assert_eq!(soundcap.by.as_str(), "By HoppCX");
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&app, "Builders").count(),
+            0
+        );
+        assert_eq!(state.get_complock().by.as_str(), "By HoppCX and jcStani");
+        assert_eq!(state.get_complock().link_url.as_str(), complock::SITE);
+        let hpbars = pack_row(&app, "hpbars");
+        assert_eq!(hpbars.by.as_str(), "By jcStani");
+        assert_eq!(hpbars.link_url.as_str(), complock::HPBAR_BUILDER_URL);
+        assert_eq!(
+            hpbars.link_text.as_str(),
+            "Make your own in the HP Bar Builder"
+        );
+        assert_eq!(hpbars.detected_badge.as_str(), "");
+        assert!(!state.get_hitsound_detected());
+        let opened_links = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = opened_links.clone();
+        performance::set_opener(move |u| {
+            sink.lock().expect("lock").push(u.to_owned());
+            Ok(())
+        });
+        scroll_to_button(
+            &app,
+            "PerformancePage::complock-options",
+            "Make your own in the HP Bar Builder",
+        )
+        .invoke_accessible_default_action();
+        scroll_to_button(
+            &app,
+            "PerformancePage::complock-options",
+            "Open Hitsound Builder",
+        )
+        .invoke_accessible_default_action();
+        if let Some(sv) =
+            ElementHandle::find_by_element_id(&app, "PerformancePage::complock-options").next()
+        {
+            sv.scroll(0.0, 20_000.0);
+            run_until(&app, Duration::from_millis(20), |_| false);
+        }
+        let check_links = opened_links.clone();
+        assert!(run_until(&app, Duration::from_secs(5), move |_| {
+            check_links.lock().expect("lock").len() == 2
+        }));
+        assert_eq!(
+            opened_links.lock().expect("lock").as_slice(),
+            [complock::HPBAR_BUILDER_URL, complock::HITSOUND_BUILDER_URL]
         );
         let ragdolls = pack_row(&app, "ragdolls");
         assert!(ragdolls.has_toggle && !ragdolls.has_pak);
@@ -2365,6 +2381,42 @@ mod tests {
             state.get_result_title()
         );
         assert_eq!(state.get_result_detail(), failure);
+
+        // Web-builder paks on disk (custom HP bar stylesheet + hitsound pack)
+        // are detected on load and surfaced on Performance without a Builders tab.
+        let custom_hp = shiv_core::generated::build_hpbar_preset("classic").expect("classic hpbar");
+        std::fs::write(paths.addons.join("pak81_dir.vpk"), custom_hp).expect("write hpbar");
+        let hitsound_pak = shiv_core::generated::build_hitsound(
+            &shiv_core::generated::ClipIn {
+                samples: vec![0.0_f32; 4410],
+                source_name: "body.wav".into(),
+                start: 0,
+                end: 4410,
+                db: 0.0,
+                pitch: 1.0,
+            },
+            &shiv_core::generated::ClipIn {
+                samples: vec![0.0_f32; 4410],
+                source_name: "head.wav".into(),
+                start: 0,
+                end: 4410,
+                db: 0.0,
+                pitch: 1.0,
+            },
+        )
+        .expect("build hitsound");
+        std::fs::write(paths.addons.join("pak82_dir.vpk"), hitsound_pak).expect("write hitsound");
+        state.invoke_shown();
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            let s = a.global::<PerfState>();
+            s.get_hitsound_detected()
+                && s.get_pack_rows().iter().any(|r| {
+                    r.id == "hpbars"
+                        && r.detected_badge.as_str() == "Custom build"
+                        && r.installed
+                        && r.current
+                })
+        }));
     }
 
     fn crosshair_flow() {
@@ -3232,6 +3284,61 @@ mod tests {
         );
         assert!(!reloaded.sources()[0].predates_origins());
         assert!(paths.addons.join("pak01_dir.vpk").is_file());
+
+        // Built-in GameBanana toggle and docs links on Sources (#68).
+        app.set_screen(2);
+        let docs_links = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let docs_sink = docs_links.clone();
+        sources::set_opener(move |u| {
+            docs_sink.lock().expect("lock").push(u.to_owned());
+            Ok(())
+        });
+        click(&app, "Mod sources guide");
+        click(&app, "Developer docs");
+        assert!(run_until(&app, Duration::from_secs(5), move |_| {
+            docs_links.lock().expect("lock").len() == 2
+        }));
+
+        let gb_switch = ElementHandle::find_by_accessible_label(&app, "GameBanana")
+            .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Switch))
+            .expect("GameBanana switch");
+        gb_switch.invoke_accessible_default_action();
+        assert!(!app.global::<SourcesState>().get_gamebanana_enabled());
+        assert!(run_until(&app, Duration::from_secs(5), |_| {
+            !source_filter::load_gamebanana_enabled()
+        }));
+        assert!(
+            run_until(&app, Duration::from_secs(5), move |a| ids(a)
+                == ["src-my_2dcommunity-example"]),
+            "{:?}",
+            ids(&app)
+        );
+        let disabled_sources: Vec<String> = app
+            .global::<BrowseState>()
+            .get_sources()
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(
+            disabled_sources,
+            ["All sources (1)", "Example Community (1)"]
+        );
+        let local = app.global::<crate::LocalInstallState>();
+        app.global::<crate::InstalledState>().invoke_install_file();
+        local.set_path("https://gamebanana.com/mods/123".into());
+        local.invoke_install();
+        assert!(
+            local.get_error_text().contains("GameBanana is disabled"),
+            "{}",
+            local.get_error_text()
+        );
+        local.invoke_cancel();
+
+        gb_switch.invoke_accessible_default_action();
+        assert!(run_until(&app, Duration::from_secs(10), move |a| {
+            ids(a).len() == 2
+        }));
+        source_filter::set_dir_for_test(None);
     }
 
     /// Kai's "nur Quickbuy" (t325u): a source whose catalog lists mods
@@ -3364,6 +3471,7 @@ mod tests {
             .is_some_and(|r| r.state == InstallState::Idle)),
             "the new snapshot's mod appears"
         );
+        source_filter::set_dir_for_test(None);
     }
 
     fn installed_screen() {

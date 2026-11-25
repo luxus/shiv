@@ -386,8 +386,12 @@ export component BrowsePage inherits Rectangle {
                 }
 
                 if (BrowseState.load-state == LoadState.ready || !BrowseState.catalog-shown) && BrowseState.mods.length == 0: CenteredMessage {
-                    title: "No mods match";
-                    detail: "Try a different search or category.";
+                    title: !BrowseState.gamebanana-enabled && BrowseState.sources.length <= 1
+                        ? "GameBanana is disabled"
+                        : "No mods match";
+                    detail: !BrowseState.gamebanana-enabled && BrowseState.sources.length <= 1
+                        ? "Enable GameBanana or add a custom source in Sources."
+                        : "Try a different search or category.";
                 }
 
                 mod-list := ListView {

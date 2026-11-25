@@ -2128,6 +2128,11 @@ impl Installed {
             self.with_app(|app| app.global::<LocalInstallState>().set_open(false));
             return Ok(());
         }
+        if !crate::browse::gamebanana_enabled() {
+            return Err(
+                "GameBanana is disabled. Enable it in Sources to open GameBanana mod pages.".into(),
+            );
+        }
         let kind = if audio { "sound" } else { "mod" };
         if !crate::browse::catalog_loaded() {
             return Err("The catalog has not finished loading; try again in a moment.".into());

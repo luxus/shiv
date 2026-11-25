@@ -23,6 +23,9 @@ export struct PerfComplock {
     subtitle: string,
     // The compatibility note from their site.
     note: string,
+    by: string,
+    link-url: string,
+    link-text: string,
     available: bool,
 }
 
@@ -40,6 +43,10 @@ export struct PerfPackRow {
     detail: string,
     // One line of the option's description.
     text: string,
+    by: string,
+    link-url: string,
+    link-text: string,
+    detected-badge: string,
     // The option's warning, in the danger colour.
     warn: string,
     // The option stages convars: a switch.
@@ -168,32 +175,11 @@ export global PerfState {
     callback discard();
     callback apply();
     callback dismiss-result();
+    callback open-link(string);
 
-    // CompLock builders. The form is edited here; the build runs on a worker.
-    in property <string> builder-note: "A hitsound or an HP bar built on this machine from the same templates as deadlockconfig.com. The sounds and the options stay here, so a template update can rebuild the pak.";
-    in property <string> builder-status;
-    in property <bool> builder-busy: false;
-    in property <[string]> hp-presets: ["jcStani's", "Flat", "Ticks", "Slim", "Bold", "Block", "Outline", "Classic", "Neon", "Minimal"];
-    in-out property <int> hp-preset: 0;
-    in-out property <string> hit-name: "Hitsound";
-    in-out property <string> body-path;
-    in-out property <string> head-path;
-    in-out property <string> body-start: "0";
-    in-out property <string> body-end;
-    in-out property <string> body-db: "0";
-    in-out property <string> body-pitch: "1";
-    in-out property <string> head-start: "0";
-    in-out property <string> head-end;
-    in-out property <string> head-db: "0";
-    in-out property <string> head-pitch: "1";
-    in-out property <string> hp-name: "HP bar";
-    in-out property <string> hp-link;
-    callback build-hitsound();
-    callback build-hpbar();
-    callback browse-body();
-    callback browse-head();
-    callback import-hitsound();
-    callback pick-hp-preset(int);
+    in property <string> hpbar-builder-url;
+    in property <string> hitsound-builder-url;
+    in property <bool> hitsound-detected: false;
 }
 
 
@@ -382,6 +368,7 @@ component PackCard inherits Rectangle {
     callback picked(int);
     callback installed;
     callback fov-changed(float);
+    callback link-clicked(string);
 
     accessible-role: list-item;
     accessible-label: root.item.title;
@@ -428,12 +415,34 @@ component PackCard inherits Rectangle {
                     horizontal-stretch: 1;
                     alignment: center;
                     spacing: 3px;
-                    Text {
-                        text: root.item.title;
-                        color: Theme.text;
-                        font-size: Theme.text-lg;
-                        font-weight: 600;
-                        overflow: elide;
+                    HorizontalLayout {
+                        spacing: Theme.s1;
+                        alignment: start;
+                        Text {
+                            text: root.item.title;
+                            color: Theme.text;
+                            font-size: Theme.text-lg;
+                            font-weight: 600;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        if root.item.detected-badge != "": Rectangle {
+                            height: 20px;
+                            width: badge-label.preferred-width + 12px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 10px;
+                            background: Theme.success.with-alpha(0.18);
+                            border-width: 1px;
+                            border-color: Theme.success;
+                            badge-label := Text {
+                                text: root.item.detected-badge;
+                                color: Theme.success;
+                                font-size: 11px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                     if root.item.text != "": Text {
                         text: root.item.text;
@@ -452,6 +461,19 @@ component PackCard inherits Rectangle {
                         color: Theme.danger;
                         font-size: Theme.text-sm;
                         overflow: elide;
+                    }
+                    if root.item.by != "": Text {
+                        text: root.item.by;
+                        color: Theme.text-faint;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                    }
+                    if root.item.link-text != "" && root.item.link-url != "": HorizontalLayout {
+                        alignment: start;
+                        TextButton {
+                            text: root.item.link-text;
+                            clicked => { root.link-clicked(root.item.link-url); }
+                        }
                     }
                 }
 
@@ -805,76 +827,6 @@ component ChangeRow inherits Rectangle {
     }
 }
 
-
-component BuilderField inherits Rectangle {
-    in property <string> label;
-    in property <string> placeholder;
-    in-out property <string> text;
-
-    height: Theme.control-h;
-    horizontal-stretch: 1;
-    HorizontalLayout {
-        spacing: Theme.s1;
-        alignment: center;
-        Text {
-            text: root.label;
-            color: Theme.text-muted;
-            font-size: Theme.text-sm;
-            vertical-alignment: center;
-            width: 48px;
-        }
-        SearchField {
-            horizontal-stretch: 1;
-            min-width: 80px;
-            placeholder: root.placeholder;
-            text <=> root.text;
-        }
-    }
-}
-
-component BuilderPath inherits Rectangle {
-    in property <string> label;
-    in property <string> placeholder;
-    in-out property <string> text;
-    callback browse;
-
-    height: Theme.control-h;
-    HorizontalLayout {
-        spacing: Theme.s1;
-        alignment: center;
-        BuilderField {
-            horizontal-stretch: 1;
-            label: root.label;
-            placeholder: root.placeholder;
-            text <=> root.text;
-        }
-        Button {
-            text: "Choose";
-            clicked => { root.browse(); }
-        }
-    }
-}
-
-component BuilderCard inherits VerticalLayout {
-    in property <string> title;
-    in property <string> detail;
-
-    spacing: 6px;
-    Text {
-        text: root.title;
-        color: Theme.text;
-        font-size: Theme.text-lg;
-        font-weight: 600;
-    }
-    Text {
-        text: root.detail;
-        color: Theme.text-muted;
-        font-size: Theme.text-sm;
-        wrap: word-wrap;
-    }
-    @children
-}
-
 export component PerformancePage inherits Rectangle {
     background: Theme.bg;
 
@@ -933,14 +885,29 @@ export component PerformancePage inherits Rectangle {
                         clicked => { PerfState.stage-complock(); }
                     }
                 }
-                Text {
+                HorizontalLayout {
                     x: 64px + Theme.s1;
-                    text: PerfState.complock-staged ? PerfState.complock.subtitle
-                        : (PerfState.active-tier >= 0 ? PerfState.tiers[PerfState.active-tier].name
-                        : "A preset stages a whole config. Nothing is written until you apply.");
-                    color: Theme.text-muted;
-                    font-size: Theme.text-sm;
-                    overflow: elide;
+                    spacing: Theme.s1;
+                    alignment: start;
+                    Text {
+                        text: PerfState.complock-staged ? PerfState.complock.subtitle
+                            : (PerfState.active-tier >= 0 ? PerfState.tiers[PerfState.active-tier].name
+                            : "A preset stages a whole config. Nothing is written until you apply.");
+                        color: Theme.text-muted;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    if PerfState.complock-staged && PerfState.complock.by != "": Text {
+                        text: "\u{b7} " + PerfState.complock.by;
+                        color: Theme.text-faint;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                    }
+                    if PerfState.complock-staged && PerfState.complock.link-text != "" && PerfState.complock.link-url != "": TextButton {
+                        text: PerfState.complock.link-text;
+                        clicked => { PerfState.open-link(PerfState.complock.link-url); }
+                    }
                 }
             }
 
@@ -963,11 +930,6 @@ export component PerformancePage inherits Rectangle {
                         label: "All settings";
                         active: PerfState.section == 1;
                         clicked => { PerfState.section = 1; }
-                    }
-                    SectionTab {
-                        label: "Builders";
-                        active: PerfState.section == 2;
-                        clicked => { PerfState.section = 2; }
                     }
                 }
             }
@@ -1007,6 +969,22 @@ export component PerformancePage inherits Rectangle {
                 padding-bottom: Theme.s3;
                 spacing: 10px;
                 alignment: start;
+                if PerfState.complock.available: HorizontalLayout {
+                    spacing: Theme.s1;
+                    alignment: start;
+                    Text {
+                        text: PerfState.complock.by != ""
+                            ? "Settings and packs \u{b7} " + PerfState.complock.by
+                            : "Settings and packs by CompLock";
+                        color: Theme.text-muted;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                    }
+                    TextButton {
+                        text: PerfState.complock.link-text;
+                        clicked => { PerfState.open-link(PerfState.complock.link-url); }
+                    }
+                }
                 for pack[i] in PerfState.pack-rows: VerticalLayout {
                     padding-top: pack.kind == PerfPackKind.heading && i > 0 ? Theme.s2 : 0px;
                     if pack.kind == PerfPackKind.heading: SectionHeader {
@@ -1019,100 +997,80 @@ export component PerformancePage inherits Rectangle {
                         picked(c) => { PerfState.pick-pack-choice(pack.id, c); }
                         installed => { PerfState.install-pack(pack.id); }
                         fov-changed(v) => { PerfState.set-fov(v); }
+                        link-clicked(u) => { PerfState.open-link(u); }
                     }
                 }
-            }
-        }
 
-        if PerfState.load-state == LoadState.ready && PerfState.section == 2: ScrollView {
-            vertical-stretch: 1;
-            VerticalLayout {
-                padding: Theme.s3;
-                padding-top: Theme.s2;
-                spacing: Theme.s2;
-                alignment: start;
-                Text {
-                    text: PerfState.builder-note;
-                    color: Theme.text-muted;
-                    font-size: Theme.text-sm;
-                    wrap: word-wrap;
-                }
-                if PerfState.builder-status != "": Text {
-                    text: PerfState.builder-status;
-                    color: Theme.text;
-                    font-size: Theme.text-sm;
-                    wrap: word-wrap;
-                }
-                BuilderCard {
-                    title: "Hitsound";
-                    detail: "Body and head clips, trim in samples, volume in dB, pitch. An empty end uses the whole file.";
-                    Rectangle {
-                        background: Theme.raised;
-                        border-radius: Theme.radius-md;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        VerticalLayout {
-                            padding: Theme.s2;
-                            spacing: Theme.s1;
-                            BuilderField { label: "Name"; placeholder: "Hitsound"; text <=> PerfState.hit-name; }
-                            BuilderPath { label: "Body"; placeholder: "WAV, MP3, OGG or FLAC"; text <=> PerfState.body-path; browse => { PerfState.browse-body(); } }
-                            HorizontalLayout {
-                                spacing: Theme.s1;
-                                BuilderField { label: "Start"; placeholder: "0"; text <=> PerfState.body-start; }
-                                BuilderField { label: "End"; placeholder: "end"; text <=> PerfState.body-end; }
-                                BuilderField { label: "dB"; placeholder: "0"; text <=> PerfState.body-db; }
-                                BuilderField { label: "Pitch"; placeholder: "1"; text <=> PerfState.body-pitch; }
-                            }
-                            BuilderPath { label: "Head"; placeholder: "WAV, MP3, OGG or FLAC"; text <=> PerfState.head-path; browse => { PerfState.browse-head(); } }
-                            HorizontalLayout {
-                                spacing: Theme.s1;
-                                BuilderField { label: "Start"; placeholder: "0"; text <=> PerfState.head-start; }
-                                BuilderField { label: "End"; placeholder: "end"; text <=> PerfState.head-end; }
-                                BuilderField { label: "dB"; placeholder: "0"; text <=> PerfState.head-db; }
-                                BuilderField { label: "Pitch"; placeholder: "1"; text <=> PerfState.head-pitch; }
-                            }
-                            HorizontalLayout {
-                                spacing: Theme.s1;
-                                alignment: start;
-                                Button { text: "Import pak"; disabled: PerfState.builder-busy; clicked => { PerfState.import-hitsound(); } }
-                                Button { text: PerfState.builder-busy ? "Building…" : "Build hitsound"; primary: true; disabled: PerfState.builder-busy; clicked => { PerfState.build-hitsound(); } }
-                            }
-                        }
+                // Web builders: customize HP bars and hitsounds on deadlockconfig.com, then drop the .vpk on Shiv.
+                VerticalLayout {
+                    padding-top: Theme.s2;
+                    spacing: 10px;
+                    SectionHeader {
+                        title: "WEB BUILDERS";
+                        blurb: "Build custom paks on deadlockconfig.com, then drop the downloaded .vpk into Shiv.";
                     }
-                }
-                BuilderCard {
-                    title: "HP bar";
-                    detail: "A preset, or a copy-link hash from the site. Defaults are left out of the hash.";
                     Rectangle {
-                        background: Theme.raised;
                         border-radius: Theme.radius-md;
                         border-width: 1px;
                         border-color: Theme.border;
-                        VerticalLayout {
+                        background: Theme.raised;
+                        HorizontalLayout {
                             padding: Theme.s2;
-                            spacing: Theme.s1;
-                            BuilderField { label: "Name"; placeholder: "HP bar"; text <=> PerfState.hp-name; }
-                            HorizontalLayout {
-                                spacing: Theme.s2;
+                            spacing: Theme.s2;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
                                 alignment: center;
+                                spacing: 3px;
+                                HorizontalLayout {
+                                    spacing: Theme.s1;
+                                    alignment: start;
+                                    Text {
+                                        text: "Hitsound Builder";
+                                        color: Theme.text;
+                                        font-size: Theme.text-lg;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    if PerfState.hitsound-detected: Rectangle {
+                                        height: 20px;
+                                        width: hit-badge.preferred-width + 12px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 10px;
+                                        background: Theme.success.with-alpha(0.18);
+                                        border-width: 1px;
+                                        border-color: Theme.success;
+                                        hit-badge := Text {
+                                            text: "Installed";
+                                            color: Theme.success;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
                                 Text {
-                                    text: "Preset";
+                                    text: "Build a custom body/headshot hitsound .vpk from your own audio clips.";
                                     color: Theme.text-muted;
                                     font-size: Theme.text-sm;
-                                    vertical-alignment: center;
-                                    width: 72px;
+                                    wrap: word-wrap;
                                 }
-                                Dropdown {
-                                    label: "HP bar preset";
-                                    options: PerfState.hp-presets;
-                                    current-index: PerfState.hp-preset;
-                                    selected(i) => { PerfState.hp-preset = i; PerfState.pick-hp-preset(i); }
+                                Text {
+                                    text: "By HoppCX";
+                                    color: Theme.text-faint;
+                                    font-size: Theme.text-sm;
                                 }
                             }
-                            BuilderField { label: "Link"; placeholder: "ticks=all or a full copy link"; text <=> PerfState.hp-link; }
-                            HorizontalLayout {
-                                alignment: start;
-                                Button { text: PerfState.builder-busy ? "Building…" : "Build HP bar"; primary: true; disabled: PerfState.builder-busy; clicked => { PerfState.build-hpbar(); } }
+                            VerticalLayout {
+                                alignment: center;
+                                HorizontalLayout {
+                                    spacing: Theme.s1;
+                                    alignment: end;
+                                    Button {
+                                        text: "Open Hitsound Builder";
+                                        clicked => { PerfState.open-link(PerfState.hitsound-builder-url); }
+                                    }
+                                }
                             }
                         }
                     }

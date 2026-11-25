@@ -2,7 +2,7 @@
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Button, TextButton, SearchField } from "widgets.slint";
+import { Button, TextButton, SearchField, Switch } from "widgets.slint";
 
 export struct SourceRow {
     origin: string,
@@ -14,6 +14,7 @@ export struct SourceRow {
 }
 
 export global SourcesState {
+    in-out property <bool> gamebanana-enabled: true;
     in property <[SourceRow]> rows;
     in property <string> banner-text;
     in-out property <string> add-url;
@@ -30,6 +31,8 @@ export global SourcesState {
     callback confirm-add();
     callback cancel-add();
     callback remove(string, string);
+    callback toggle-gamebanana(bool);
+    callback open-link(string);
     callback dismiss-banner();
 }
 
@@ -185,19 +188,82 @@ export component SourcesPage inherits Rectangle {
             }
         }
 
+        HorizontalLayout {
+            spacing: Theme.s1;
+            alignment: start;
+            Text {
+                text: "Custom sources extend Browse with third-party mod registries.";
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+                vertical-alignment: center;
+            }
+            TextButton {
+                text: "Mod sources guide";
+                clicked => { SourcesState.open-link("https://docs.deadlockmods.app/developer-docs/mod-sources"); }
+            }
+            TextButton {
+                text: "Developer docs";
+                clicked => { SourcesState.open-link("https://docs.deadlockmods.app/developer-docs"); }
+            }
+        }
+
+        Rectangle {
+            height: 84px + 2 * Theme.s1;
+            background: Theme.raised;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            HorizontalLayout {
+                padding: Theme.s2;
+                spacing: Theme.s2;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "GameBanana";
+                        color: Theme.text;
+                        font-size: Theme.text-lg;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "Built-in \u{b7} deadlockmods.app";
+                        color: Theme.text-muted;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "The Deadlock Mod Manager catalog (GameBanana mods and sounds).";
+                        color: Theme.text-faint;
+                        font-size: Theme.text-sm;
+                        overflow: elide;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Switch {
+                        label: "GameBanana";
+                        checked: SourcesState.gamebanana-enabled;
+                        toggled => { SourcesState.toggle-gamebanana(!SourcesState.gamebanana-enabled); }
+                    }
+                }
+            }
+        }
+
         Rectangle {
             vertical-stretch: 1;
 
             if SourcesState.rows.length == 0: VerticalLayout {
                 alignment: center;
                 Text {
-                    text: "No sources added yet";
+                    text: "No custom sources added yet";
                     color: Theme.text-muted;
                     font-size: Theme.text-lg;
                     horizontal-alignment: center;
                 }
                 Text {
-                    text: "Paste a dmm-source.json URL above to browse a registry's mods here and in Browse.";
+                    text: "Paste a dmm-source.json URL above to browse a custom registry's mods here and in Browse.";
                     color: Theme.text-faint;
                     font-size: Theme.text-md;
                     horizontal-alignment: center;

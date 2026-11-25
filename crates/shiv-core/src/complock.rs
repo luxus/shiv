@@ -26,6 +26,28 @@ const OPTIONS: &str = include_str!("../assets/complock-options.json");
 /// Where the pack data's part urls download from: they are site-relative.
 pub const SITE: &str = "https://deadlockconfig.com";
 
+/// CompLock's web HP Bar Builder page.
+pub const HPBAR_BUILDER_URL: &str = "https://deadlockconfig.com/docs/hpbars/";
+
+/// CompLock's web Hitsound Builder page.
+pub const HITSOUND_BUILDER_URL: &str = "https://deadlockconfig.com/docs/hitsound/";
+
+/// Resolve a CompLock link (site-relative path or `https://` URL) into a
+/// vetted `https://` URL for [`crate::link::open_web_link`].
+#[must_use]
+pub fn site_url(path_or_url: &str) -> Option<String> {
+    let raw = path_or_url.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let candidate = if raw.starts_with('/') {
+        format!("{SITE}{raw}")
+    } else {
+        raw.to_owned()
+    };
+    crate::link::is_web_link(&candidate).then_some(candidate)
+}
+
 /// Shown when the pack's `app_min` is newer than [`PACK_APP_VERSION`].
 pub const UPDATE_NEEDED: &str = "shiv update needed";
 
@@ -194,6 +216,12 @@ struct RawOption {
     #[serde(default)]
     title: String,
     #[serde(default)]
+    by: Option<String>,
+    #[serde(default)]
+    link: Option<String>,
+    #[serde(default)]
+    link_text: Option<String>,
+    #[serde(default)]
     text: Option<String>,
     #[serde(default)]
     how: Option<String>,
@@ -245,6 +273,12 @@ struct RawBase {
     id: String,
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    by: Option<String>,
+    #[serde(default)]
+    link: Option<String>,
+    #[serde(default)]
+    link_text: Option<String>,
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
@@ -356,6 +390,9 @@ pub struct PackOption {
     pub id: String,
     pub group: Option<String>,
     pub title: String,
+    pub by: Option<String>,
+    pub link: Option<String>,
+    pub link_text: Option<String>,
     pub avg: Option<String>,
     pub low: Option<String>,
     pub text: Option<String>,
@@ -374,6 +411,9 @@ pub struct PackOption {
 pub struct Hud {
     pub id: String,
     pub title: String,
+    pub by: Option<String>,
+    pub link: Option<String>,
+    pub link_text: Option<String>,
     pub text: Option<String>,
     pub avg: Option<String>,
     pub low: Option<String>,
@@ -414,6 +454,9 @@ pub struct Fov {
 pub struct GameinfoCard {
     pub id: String,
     pub title: String,
+    pub by: Option<String>,
+    pub link: Option<String>,
+    pub link_text: Option<String>,
     pub text: Option<String>,
     pub updated: Option<String>,
     pub convars: Vec<ConfigEntry>,
@@ -478,36 +521,8 @@ fn parse_pack(text: &str) -> Option<PackData> {
     let hud = raw.base.iter().find(|b| !b.choice.is_empty());
     let gameinfo = raw.base.iter().find(|b| b.fov.is_some());
     Some(PackData {
-        hud: hud.map(|hud| Hud {
-            id: hud.id.clone(),
-            title: hud.title.clone(),
-            text: hud.text.clone(),
-            avg: hud.avg.clone(),
-            low: hud.low.clone(),
-            updated: hud.updated.clone(),
-            choice_label: hud.choice_label.clone(),
-            default_pak: pak(&hud.pak),
-            variants: hud
-                .variants
-                .iter()
-                .filter_map(|(flag, name)| pak(&Some(name.clone())).map(|p| (flag.clone(), p)))
-                .collect(),
-            choices: hud.choice.iter().map(&choice).collect(),
-        }),
-        gameinfo: gameinfo.map(|b| GameinfoCard {
-            id: b.id.clone(),
-            title: b.title.clone(),
-            text: b.text.clone(),
-            updated: b.updated.clone(),
-            convars: b.gameinfo.clone(),
-            fov: b.fov.as_ref().map(|f| Fov {
-                cvar: f.cvar.clone(),
-                default: f.default.clone().unwrap_or_default(),
-                from: f.from,
-                to: f.to,
-                by: f.by,
-            }),
-        }),
+        hud: hud.map(|h| parse_hud(h, &pak, &choice)),
+        gameinfo: gameinfo.map(parse_gameinfo),
         groups: raw
             .group
             .iter()
@@ -524,6 +539,9 @@ fn parse_pack(text: &str) -> Option<PackData> {
                 id: o.id.clone(),
                 group: o.group.clone(),
                 title: o.title.clone(),
+                by: o.by.clone(),
+                link: o.link.clone(),
+                link_text: o.link_text.clone(),
                 avg: o.avg.clone(),
                 low: o.low.clone(),
                 text: o.text.clone(),
@@ -537,6 +555,52 @@ fn parse_pack(text: &str) -> Option<PackData> {
             })
             .collect(),
     })
+}
+
+fn parse_hud(
+    hud: &RawBase,
+    pak: &dyn Fn(&Option<String>) -> Option<Pak>,
+    choice: &dyn Fn(&RawChoice) -> Choice,
+) -> Hud {
+    Hud {
+        id: hud.id.clone(),
+        title: hud.title.clone(),
+        by: hud.by.clone(),
+        link: hud.link.clone(),
+        link_text: hud.link_text.clone(),
+        text: hud.text.clone(),
+        avg: hud.avg.clone(),
+        low: hud.low.clone(),
+        updated: hud.updated.clone(),
+        choice_label: hud.choice_label.clone(),
+        default_pak: pak(&hud.pak),
+        variants: hud
+            .variants
+            .iter()
+            .filter_map(|(flag, name)| pak(&Some(name.clone())).map(|p| (flag.clone(), p)))
+            .collect(),
+        choices: hud.choice.iter().map(choice).collect(),
+    }
+}
+
+fn parse_gameinfo(b: &RawBase) -> GameinfoCard {
+    GameinfoCard {
+        id: b.id.clone(),
+        title: b.title.clone(),
+        by: b.by.clone(),
+        link: b.link.clone(),
+        link_text: b.link_text.clone(),
+        text: b.text.clone(),
+        updated: b.updated.clone(),
+        convars: b.gameinfo.clone(),
+        fov: b.fov.as_ref().map(|f| Fov {
+            cvar: f.cvar.clone(),
+            default: f.default.clone().unwrap_or_default(),
+            from: f.from,
+            to: f.to,
+            by: f.by,
+        }),
+    }
 }
 
 /// Where a [`PackLoad`] came from.
@@ -1466,7 +1530,11 @@ const AUTHORS: [&str; 2] = ["HoppCX", "jcStani"];
 #[must_use]
 pub fn identify(vpk: &std::path::Path) -> Option<Identity> {
     let text = addoninfo_text(vpk)?;
-    let doc = SourceDocument::parse(&text, parse_options()).ok()?;
+    parse_identity(&text)
+}
+
+fn parse_identity(text: &str) -> Option<Identity> {
+    let doc = SourceDocument::parse(text, parse_options()).ok()?;
     let value = |key: &str| {
         doc.sites.iter().find_map(|site| {
             let SourceKind::Scalar { value, .. } = &site.kind else {
@@ -1493,6 +1561,81 @@ pub fn identify(vpk: &std::path::Path) -> Option<Identity> {
         authors,
         build_date: value("buildDate"),
     })
+}
+
+/// What CompLock web-builder pak an installed VPK represents, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuilderPak {
+    /// Custom (`hp_hpbars.js` output) or preset `hpbars.vpk`.
+    HpBars { custom: bool },
+    /// Hitsound Builder VPK (`hit_builder.js` or compatible compiled hitsound pack).
+    Hitsound,
+}
+
+/// Detect whether `vpk` (and optional Shiv `sidecar`) is an HP Bars or
+/// Hitsound pak created by CompLock or its web builders.
+#[must_use]
+pub fn detect_builder_pak(
+    vpk: &std::path::Path,
+    sidecar: Option<&crate::sidecar::Sidecar>,
+) -> Option<BuilderPak> {
+    if let Some(sc) = sidecar {
+        let gen_spec = sc
+            .generated
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<crate::generated::Spec>(v.clone()).ok());
+        if matches!(gen_spec, Some(crate::generated::Spec::Hitsound { .. }))
+            || sc.mod_id == crate::generated::HITSOUND_ID
+        {
+            return Some(BuilderPak::Hitsound);
+        }
+        if matches!(gen_spec, Some(crate::generated::Spec::HpBar { .. }))
+            || sc.mod_id == crate::generated::HPBAR_ID
+        {
+            return Some(BuilderPak::HpBars { custom: true });
+        }
+    }
+    let header = vpk_parser::VpkParser::header_from_file(vpk).ok()?;
+    let entries = vpk_parser::VpkParser::parse_directory_with_preload_from_file(vpk).ok()?;
+    if let Some((sheet_entry, sheet_preload)) = entries.iter().find(|(e, _)| {
+        e.full_path
+            .eq_ignore_ascii_case("panorama/styles/unit_status_v2.vcss_c")
+    }) {
+        const HPBAR_STYLE_MARK: &[u8] = b"/* ---- HP Bar Builder style ---- */";
+        const MAX_CSS_BYTES: u32 = 4 * 1024 * 1024;
+        let has_custom = read_vpk_entry(
+            vpk,
+            &header,
+            sheet_entry,
+            sheet_preload.clone(),
+            MAX_CSS_BYTES,
+        )
+        .is_some_and(|bytes| {
+            bytes
+                .windows(HPBAR_STYLE_MARK.len())
+                .any(|w| w == HPBAR_STYLE_MARK)
+        });
+        if has_custom {
+            return Some(BuilderPak::HpBars { custom: true });
+        }
+        let is_complock_hpbars = sidecar.is_some_and(|s| s.mod_id == "complock-hpbars")
+            || addoninfo_from_entries(vpk, &header, &entries)
+                .as_deref()
+                .and_then(parse_identity)
+                .is_some_and(|id| id.title.to_ascii_lowercase().contains("hp bars"));
+        if is_complock_hpbars {
+            return Some(BuilderPak::HpBars { custom: false });
+        }
+    }
+    let has_events = entries.iter().any(|(e, _)| {
+        e.full_path
+            .eq_ignore_ascii_case("soundevents/damage.vsndevts_c")
+    });
+    let has_default_hit = entries.iter().any(|(e, _)| {
+        e.full_path
+            .eq_ignore_ascii_case("sounds/hit_indicators/damage_send_default_01.vsnd_c")
+    });
+    (has_events && has_default_hit).then_some(BuilderPak::Hitsound)
 }
 
 /// What the site publishes for a CompLock pak Shiv did not install, known
@@ -1536,17 +1679,35 @@ pub fn published_for_title(title: &str) -> crate::drift::Published {
 /// the entry lives in the dir file itself (archive index 0x7fff), the
 /// bytes after the tree.
 fn addoninfo_text(vpk: &std::path::Path) -> Option<String> {
-    use std::io::{Read as _, Seek as _};
-    const IN_DIR_FILE: u16 = 0x7fff;
-    const MAX_ADDONINFO: u32 = 64 * 1024;
     let header = vpk_parser::VpkParser::header_from_file(vpk).ok()?;
     let entries = vpk_parser::VpkParser::parse_directory_with_preload_from_file(vpk).ok()?;
+    addoninfo_from_entries(vpk, &header, &entries)
+}
+
+fn addoninfo_from_entries(
+    vpk: &std::path::Path,
+    header: &vpk_parser::VpkHeader,
+    entries: &[(vpk_parser::VpkEntry, Vec<u8>)],
+) -> Option<String> {
+    const MAX_ADDONINFO: u32 = 64 * 1024;
     let (entry, preload) = entries
-        .into_iter()
+        .iter()
         .find(|(e, _)| e.filename.eq_ignore_ascii_case("addoninfo") && e.ext == "txt")?;
-    let mut bytes = preload;
+    let bytes = read_vpk_entry(vpk, header, entry, preload.clone(), MAX_ADDONINFO)?;
+    String::from_utf8(bytes).ok()
+}
+
+fn read_vpk_entry(
+    vpk: &std::path::Path,
+    header: &vpk_parser::VpkHeader,
+    entry: &vpk_parser::VpkEntry,
+    mut bytes: Vec<u8>,
+    max_len: u32,
+) -> Option<Vec<u8>> {
+    use std::io::{Read as _, Seek as _};
+    const IN_DIR_FILE: u16 = 0x7fff;
     if entry.entry_length > 0 {
-        if entry.archive_index != IN_DIR_FILE || entry.entry_length > MAX_ADDONINFO {
+        if entry.archive_index != IN_DIR_FILE || entry.entry_length > max_len {
             return None;
         }
         let start = vpk_parser::VpkParser::header_size(header.version)
@@ -1558,7 +1719,7 @@ fn addoninfo_text(vpk: &std::path::Path) -> Option<String> {
         file.read_exact(&mut rest).ok()?;
         bytes.extend_from_slice(&rest);
     }
-    String::from_utf8(bytes).ok()
+    Some(bytes)
 }
 
 /// What the daily watch found wrong with a fresh pack-data: each reason it
@@ -1904,8 +2065,145 @@ mod tests {
             !options().is_empty() && !groups().is_empty(),
             "the site's options and groups are there"
         );
-        assert!(hud().is_some(), "the HUD++ base is there");
-        assert!(gameinfo_card().is_some(), "the gameinfo card is there");
+        let hud = hud().expect("the HUD++ base is there");
+        assert!(hud.by.is_some());
+        let card = gameinfo_card().expect("the gameinfo card is there");
+        assert!(card.by.is_some());
         assert!(fov().is_some(), "the gameinfo card carries the FOV field");
+        let hpbars = options()
+            .iter()
+            .find(|o| o.id == "hpbars")
+            .expect("hpbars option");
+        assert!(hpbars.by.is_some());
+        assert_eq!(hpbars.link.as_deref(), Some("/docs/hpbars/"));
+        assert_eq!(
+            site_url(hpbars.link.as_deref().unwrap_or("")).as_deref(),
+            Some(HPBAR_BUILDER_URL)
+        );
+        assert!(hpbars.link_text.is_some());
+    }
+
+    #[test]
+    fn site_url_vets_and_resolves_links() {
+        assert_eq!(
+            site_url("/docs/hpbars/").as_deref(),
+            Some(HPBAR_BUILDER_URL)
+        );
+        assert_eq!(
+            site_url("/docs/hitsound/").as_deref(),
+            Some(HITSOUND_BUILDER_URL)
+        );
+        assert_eq!(site_url(SITE).as_deref(), Some(SITE));
+        assert_eq!(site_url("http://deadlockconfig.com/"), None);
+        assert_eq!(site_url("javascript:alert(1)"), None);
+        assert_eq!(site_url(""), None);
+    }
+
+    fn test_vpk_v1(entries: &[(&str, &str, &str, &[u8])]) -> Vec<u8> {
+        let mut tree = Vec::new();
+        let mut blobs = Vec::new();
+        for (ext, dir, name, data) in entries {
+            tree.extend_from_slice(ext.as_bytes());
+            tree.push(0);
+            tree.extend_from_slice(dir.as_bytes());
+            tree.push(0);
+            tree.extend_from_slice(name.as_bytes());
+            tree.push(0);
+            tree.extend_from_slice(&crc32(data).to_le_bytes());
+            tree.extend_from_slice(&0u16.to_le_bytes());
+            tree.extend_from_slice(&0x7fffu16.to_le_bytes());
+            let off = u32::try_from(blobs.len()).expect("test blob offset");
+            let len = u32::try_from(data.len()).expect("test blob length");
+            tree.extend_from_slice(&off.to_le_bytes());
+            tree.extend_from_slice(&len.to_le_bytes());
+            tree.extend_from_slice(&0xffffu16.to_le_bytes());
+            blobs.extend_from_slice(data);
+            tree.push(0);
+            tree.push(0);
+        }
+        tree.push(0);
+        let mut out = Vec::new();
+        out.extend_from_slice(&0x55aa_1234u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        let tree_len = u32::try_from(tree.len()).expect("test tree len");
+        out.extend_from_slice(&tree_len.to_le_bytes());
+        out.extend_from_slice(&tree);
+        out.extend_from_slice(&blobs);
+        out
+    }
+
+    #[test]
+    fn detect_builder_pak_recognises_hp_bars_hitsounds_and_ignores_unrelated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let custom_hp = dir.path().join("custom_hp.vpk");
+        std::fs::write(
+            &custom_hp,
+            test_vpk_v1(&[(
+                "vcss_c",
+                "panorama/styles",
+                "unit_status_v2",
+                b"DATA/* ---- HP Bar Builder style ---- */rule{}",
+            )]),
+        )
+        .expect("write custom hp");
+        assert_eq!(
+            detect_builder_pak(&custom_hp, None),
+            Some(BuilderPak::HpBars { custom: true })
+        );
+
+        let preset_hp = dir.path().join("preset_hp.vpk");
+        std::fs::write(
+            &preset_hp,
+            test_vpk_v1(&[
+                ("vcss_c", "panorama/styles", "unit_status_v2", b"DATA{}"),
+                (
+                    "txt",
+                    " ",
+                    "addoninfo",
+                    b"\"AddonInfo\"\n{\n\t\"addontitle\"\t\"jcStani's HP Bars - jcStani\"\n\t\"addonauthor\"\t\"jcStani\"\n}\n",
+                ),
+            ]),
+        )
+        .expect("write preset hp");
+        assert_eq!(
+            detect_builder_pak(&preset_hp, None),
+            Some(BuilderPak::HpBars { custom: false })
+        );
+
+        let hitsound = dir.path().join("my_hitsound.vpk");
+        std::fs::write(
+            &hitsound,
+            test_vpk_v1(&[
+                ("vsndevts_c", "soundevents", "damage", b"ev"),
+                (
+                    "vsnd_c",
+                    "sounds/hit_indicators",
+                    "damage_send_default_01",
+                    b"snd",
+                ),
+            ]),
+        )
+        .expect("write hitsound");
+        assert_eq!(
+            detect_builder_pak(&hitsound, None),
+            Some(BuilderPak::Hitsound)
+        );
+
+        let unrelated_hud = dir.path().join("other_hud.vpk");
+        std::fs::write(
+            &unrelated_hud,
+            test_vpk_v1(&[
+                ("vcss_c", "panorama/styles", "unit_status_v2", b"DATA{}"),
+                (
+                    "txt",
+                    " ",
+                    "addoninfo",
+                    b"\"AddonInfo\"\n{\n\t\"addontitle\"\t\"HUD++ - HoppCX, jcStani\"\n\t\"addonauthor\"\t\"HoppCX, jcStani\"\n}\n",
+                ),
+            ]),
+        )
+        .expect("write unrelated hud");
+        assert_eq!(detect_builder_pak(&unrelated_hud, None), None);
     }
 }
