@@ -108,15 +108,6 @@ pub(super) fn known_native_class(value: &Kv3Value, current: &Kv3Value) -> bool {
 }
 
 pub(super) fn unsupported_definition(value: &Kv3Value, current: &Kv3Value) -> Option<String> {
-    let Some(class) = value.get("_class").and_then(Kv3Value::as_str) else {
-        return Some("_class".into());
-    };
-    if !current.as_object().is_some_and(|rows| {
-        rows.iter()
-            .any(|(_, current)| current.get("_class").and_then(Kv3Value::as_str) == Some(class))
-    }) {
-        return Some(format!("_class={class}"));
-    }
     fn enums(value: &Kv3Value, path: &mut Vec<String>, out: &mut BTreeSet<(Vec<String>, String)>) {
         match value {
             Kv3Value::Object(fields) => {
@@ -147,6 +138,15 @@ pub(super) fn unsupported_definition(value: &Kv3Value, current: &Kv3Value) -> Op
             }
             _ => {}
         }
+    }
+    let Some(class) = value.get("_class").and_then(Kv3Value::as_str) else {
+        return Some("_class".into());
+    };
+    if !current.as_object().is_some_and(|rows| {
+        rows.iter()
+            .any(|(_, current)| current.get("_class").and_then(Kv3Value::as_str) == Some(class))
+    }) {
+        return Some(format!("_class={class}"));
     }
     let mut authored = BTreeSet::new();
     let mut known = BTreeSet::new();

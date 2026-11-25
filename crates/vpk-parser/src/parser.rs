@@ -10,7 +10,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use twox_hash::XxHash64;
 
-const VPK_SIGNATURE: u32 = 0x55aa1234;
+const VPK_SIGNATURE: u32 = 0x55aa_1234;
 const HASH_CHUNK_SIZE: usize = 1024 * 1024;
 
 pub struct VpkParser {
@@ -19,6 +19,7 @@ pub struct VpkParser {
 }
 
 impl VpkParser {
+    #[must_use]
     pub fn new(buffer: Vec<u8>) -> Self {
         Self { buffer, cursor: 0 }
     }
@@ -67,6 +68,7 @@ impl VpkParser {
     }
 
     /// Size in bytes of the fixed header for a given VPK version.
+    #[must_use]
     pub fn header_size(version: u32) -> u64 {
         if version >= 2 { 28 } else { 12 }
     }
@@ -353,7 +355,7 @@ impl VpkParser {
             path: normalized_path.to_string(),
             filename: filename.to_string(),
             ext: ext.to_string(),
-            crc32_hex: format!("{:08x}", crc32),
+            crc32_hex: format!("{crc32:08x}"),
             preload_bytes,
             archive_index,
             entry_offset,

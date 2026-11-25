@@ -34,7 +34,7 @@ pub(super) fn prepare(
         let Some(base) = resources.game_bytes(path)? else {
             continue;
         };
-        let input = models.get(path).map(Vec::as_slice).unwrap_or(&source.bytes);
+        let input = models.get(path).map_or(&source.bytes[..], Vec::as_slice);
         if let Some(repaired) = repair(input, &base, resources)? {
             log::info!(
                 "Restored tagged sound bindings for {}:{path}",
@@ -124,7 +124,7 @@ pub(super) fn repair(
             tables,
         )
     };
-    if !root_fields(&updated).is_some_and(|(_, fields)| field(&fields, SETTINGS).is_some()) {
+    if root_fields(&updated).is_none_or(|(_, fields)| field(&fields, SETTINGS).is_none()) {
         return Ok(None);
     }
     let game_references = material_repair::references(base).unwrap_or_default();
@@ -205,7 +205,9 @@ fn tables(assignment: &str) -> Option<Vec<String>> {
             continue;
         }
         if !table.starts_with(TABLES)
-            || !table.ends_with(".vdata")
+            || !std::path::Path::new(&table)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("vdata"))
             || table.split('/').any(|part| matches!(part, "" | "." | ".."))
         {
             return None;

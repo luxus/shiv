@@ -64,9 +64,9 @@ pub(crate) fn read_vertex_set(
         }
         _ => None,
     };
-    let (joints, weights) = skinning
-        .map(|(joints, weights)| (Some(joints), Some(weights)))
-        .unwrap_or((None, None));
+    let (joints, weights) = skinning.map_or((None, None), |(joints, weights)| {
+        (Some(joints), Some(weights))
+    });
 
     Ok(VertexSet {
         positions,
@@ -262,9 +262,9 @@ pub(crate) fn decode_vbib_primitive(
         .and_then(|(joint_field, weight_field)| {
             read_skinning(vertex_buffer, joint_field, vertex_buffer, weight_field, 8).ok()
         });
-    let (joints, weights) = skinning
-        .map(|(joints, weights)| (Some(joints), Some(weights)))
-        .unwrap_or((None, None));
+    let (joints, weights) = skinning.map_or((None, None), |(joints, weights)| {
+        (Some(joints), Some(weights))
+    });
 
     let index_buffer = vbib
         .index_buffers
@@ -306,7 +306,7 @@ pub(crate) fn decoded_indices_u32(primitive: &DecodedPrimitive) -> Result<Vec<u3
             .0
             .iter()
             .take(primitive.index_count)
-            .map(|chunk| Ok(u16::from_le_bytes(*chunk) as u32))
+            .map(|chunk| Ok(u32::from(u16::from_le_bytes(*chunk))))
             .collect(),
         GL_UNSIGNED_INT => primitive
             .indices
@@ -754,7 +754,10 @@ pub fn referenced_meshes(res: &Resource) -> Result<Vec<String>> {
                 let name = String::from_utf8_lossy(&bytes[..end]).replace('\\', "/");
                 if name.ends_with(".vmesh_c") {
                     meshes.push(name);
-                } else if name.ends_with(".vmesh") {
+                } else if std::path::Path::new(&name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("vmesh"))
+                {
                     meshes.push(format!("{name}_c"));
                 }
             }
@@ -768,7 +771,10 @@ pub(crate) fn normalize_mesh_ref(path: &str) -> Option<String> {
     let normalized = path.replace('\\', "/");
     if normalized.ends_with(".vmesh_c") {
         Some(normalized)
-    } else if normalized.ends_with(".vmesh") {
+    } else if std::path::Path::new(&normalized)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vmesh"))
+    {
         Some(format!("{normalized}_c"))
     } else {
         None

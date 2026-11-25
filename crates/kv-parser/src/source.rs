@@ -31,6 +31,7 @@ impl SourceSite {
         Ok(true)
     }
 
+    #[must_use]
     pub fn is_unconditional(&self) -> bool {
         self.conditions.is_empty()
     }
@@ -170,6 +171,7 @@ impl CharOffsets {
 ///
 /// # Panics
 /// Panics if `at` is out of bounds or not a UTF-8 character boundary.
+#[must_use]
 pub fn line_start(text: &str, at: usize) -> usize {
     text[..at].rfind('\n').map_or(0, |previous| previous + 1)
 }
@@ -179,6 +181,7 @@ pub fn line_start(text: &str, at: usize) -> usize {
 ///
 /// # Panics
 /// Panics if `at` is out of bounds or not a UTF-8 character boundary.
+#[must_use]
 pub fn line_end(text: &str, at: usize) -> usize {
     text[at..]
         .find('\n')

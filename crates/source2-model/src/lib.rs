@@ -364,8 +364,8 @@ pub fn inspect_texture(vpk_path: &Path, entry_path: &str) -> Result<(u32, u32, S
     let res = Resource::parse(bytes)?;
     let header = VtexHeader::parse(&res)?;
     Ok((
-        header.width as u32,
-        header.height as u32,
+        u32::from(header.width),
+        u32::from(header.height),
         format!("{:?}", header.format),
     ))
 }

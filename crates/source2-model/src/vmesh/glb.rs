@@ -43,7 +43,7 @@ pub fn rebind_render_model_to_skeleton_by_name(
 }
 
 pub(crate) fn write_index_bytes(indices: &[u32], vertex_count: usize) -> (Vec<u8>, u32) {
-    if vertex_count <= u16::MAX as usize {
+    if u16::try_from(vertex_count).is_ok() {
         let mut bytes = Vec::with_capacity(indices.len() * 2);
         for index in indices {
             bytes.extend_from_slice(&(*index as u16).to_le_bytes());
@@ -760,9 +760,9 @@ pub(crate) fn decode_mesh_glb_from_resource_with_skeleton(
         .and_then(|(joint_field, weight_field)| {
             read_skinning(vertex_buffer, joint_field, vertex_buffer, weight_field, 4).ok()
         });
-    let (joints, weights) = skinning
-        .map(|(joints, weights)| (Some(joints), Some(weights)))
-        .unwrap_or((None, None));
+    let (joints, weights) = skinning.map_or((None, None), |(joints, weights)| {
+        (Some(joints), Some(weights))
+    });
 
     let index_buffer = vbib
         .index_buffers

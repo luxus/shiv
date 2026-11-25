@@ -14,7 +14,7 @@ use crc::{CRC_32_ISO_HDLC, Crc};
 
 use crate::error::{Result, VpkManagerError};
 
-const VPK_SIGNATURE: u32 = 0x55aa1234;
+const VPK_SIGNATURE: u32 = 0x55aa_1234;
 const VPK_VERSION: u32 = 2;
 const INLINE_ARCHIVE_INDEX: u16 = 0x7fff;
 const ENTRY_TERMINATOR: u16 = 0xffff;
@@ -62,7 +62,7 @@ fn safe_relative_path(path: &Path) -> Option<PathBuf> {
 
 fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     let mut entries = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|entry| entry.path());
+    entries.sort_by_key(std::fs::DirEntry::path);
 
     for entry in entries {
         let path = entry.path();

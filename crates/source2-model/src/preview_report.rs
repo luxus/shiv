@@ -80,7 +80,7 @@ pub(crate) fn snapshot(evidence: &Option<Mutex<PreviewEvidence>>) -> PreviewRepo
         .map(|evidence| {
             evidence
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .snapshot()
         })
         .unwrap_or_default()

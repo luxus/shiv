@@ -1,6 +1,6 @@
 use crate::error::{KvError, Result};
 
-/// Evaluate a KeyValues condition without assigning meanings to its symbols.
+/// Evaluate a `KeyValues` condition without assigning meanings to its symbols.
 /// The resolver returns `None` for unsupported symbols. Every operand is parsed
 /// so malformed syntax and unsupported symbols are reported even in an otherwise
 /// decisive boolean expression. Parsing documents never evaluates conditions.

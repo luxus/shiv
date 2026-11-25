@@ -3,7 +3,7 @@ use crate::kv3::KvValue;
 use crate::resource::Resource;
 
 const BONE_FLAG_CLOTH: u32 = 0x8;
-const BONE_FLAG_PROCEDURAL: u32 = 0x400000;
+const BONE_FLAG_PROCEDURAL: u32 = 0x0040_0000;
 
 /// A bone's local transform. The Foundry never plays animation, but it does
 /// stand the model in the game's idle rest pose so the weapon sits in the hand,
@@ -29,6 +29,7 @@ pub struct Bone {
 
 impl Bone {
     /// A root `pin_procedural_cloth_roots` moves with the body.
+    #[must_use]
     pub fn is_procedural_cloth_root(&self) -> bool {
         self.parent < 0
             && self.flags & (BONE_FLAG_CLOTH | BONE_FLAG_PROCEDURAL)
@@ -123,8 +124,7 @@ impl Skeleton {
             let model = if bone.parent >= 0 {
                 model_matrices
                     .get(bone.parent as usize)
-                    .map(|parent| mat4_mul(parent, &local))
-                    .unwrap_or(local)
+                    .map_or(local, |parent| mat4_mul(parent, &local))
             } else {
                 local
             };

@@ -4,6 +4,7 @@ use crate::error::RepairError as Error;
 use crate::vdata_history::VdataHistoryIndex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,16 +115,21 @@ pub(super) fn model_overlaps(
         );
         if let Some(input) = mods.iter().find(|input| input.mod_id == mod_id) {
             match super::model_dependencies::mixed_animation_dependencies(resources, input, &path) {
-        Ok(dependencies) if !dependencies.is_empty() => detail.push_str(&format!(
-          " Original files mix this model with changed animation dependencies from another mod: {}. Compatibility repairs are assessed separately; test with only the intended skin enabled if the model stretches or twists.",
-          super::model_dependencies::describe(&dependencies)
-        )),
-        Err(error) => {
-          log::warn!("Could not inspect overlapping model dependencies for {path}: {error}");
-          detail.push_str(" Some animation dependencies could not be inspected.");
-        }
-        _ => {}
-      }
+                Ok(dependencies) if !dependencies.is_empty() => {
+                    let _ = write!(
+                        detail,
+                        " Original files mix this model with changed animation dependencies from another mod: {}. Compatibility repairs are assessed separately; test with only the intended skin enabled if the model stretches or twists.",
+                        super::model_dependencies::describe(&dependencies)
+                    );
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Could not inspect overlapping model dependencies for {path}: {error}"
+                    );
+                    detail.push_str(" Some animation dependencies could not be inspected.");
+                }
+                _ => {}
+            }
         }
         warnings.push(AssetWarning {
             mod_id,
@@ -218,7 +224,7 @@ fn may_reference_models(path: &str) -> bool {
         .any(|suffix| path.ends_with(suffix))
 }
 
-/// Compiled resources list their dependencies in RERL. VData also names
+/// Compiled resources list their dependencies in RERL. `VData` also names
 /// resources in plain string fields, such as a hero's model path.
 fn referenced_names(path: &str, bytes: &[u8]) -> Vec<String> {
     let mut names: Vec<_> = vpkmanager::material_repair::references(bytes)
@@ -280,7 +286,7 @@ pub(super) fn analyze(
                     file_path: path.clone(),
                     kind,
                     detail,
-                })
+                });
             };
             let Ok(decoded_value) = compiled_resource::decode(bytes, path) else {
                 add(WarningKind::UnreadableResource, "DATA".into());
@@ -446,7 +452,7 @@ fn missing_animation_fields(source: &Kv3Value, current: &Kv3Value) -> Vec<&'stat
                 && source
                     .get(field)
                     .and_then(Kv3Value::as_array)
-                    .is_none_or(|values| values.is_empty())
+                    .is_none_or(<[vpkmanager::source2::kv3::Value]>::is_empty)
         })
         .collect()
 }

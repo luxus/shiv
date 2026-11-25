@@ -217,6 +217,14 @@ fn equivalent_layout_with_evidence(
     evidence: Option<&animation_model_evidence::ModelEvidence>,
     extension: bool,
 ) -> Option<bool> {
+    const INDEXED_FIELDS: [&str; 6] = [
+        "m_boneIDs",
+        "m_parentIndices",
+        "m_parentSpaceReferencePose",
+        "m_modelSpaceReferencePose",
+        "m_maskDefinitions",
+        "m_numBonesToSampleAtLowLOD",
+    ];
     let names = |root: &Kv3Value| -> Option<Vec<String>> {
         root.get("m_boneIDs")?
             .as_array()?
@@ -398,14 +406,6 @@ fn equivalent_layout_with_evidence(
     let Kv3Value::Object(old_fields) = old else {
         return None;
     };
-    const INDEXED_FIELDS: [&str; 6] = [
-        "m_boneIDs",
-        "m_parentIndices",
-        "m_parentSpaceReferencePose",
-        "m_modelSpaceReferencePose",
-        "m_maskDefinitions",
-        "m_numBonesToSampleAtLowLOD",
-    ];
     // Current compiler/schema additions are inherited. Existing unknown metadata
     // must still match so a custom rig cannot be mistaken for an old vanilla export.
     for (name, value) in old_fields {

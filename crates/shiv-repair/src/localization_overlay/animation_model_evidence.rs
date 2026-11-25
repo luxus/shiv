@@ -476,7 +476,7 @@ impl ModelEvidence {
         if current
             .get("m_refMeshes")
             .and_then(Kv3Value::as_array)
-            .is_some_and(|refs| refs.is_empty())
+            .is_some_and(<[vpkmanager::source2::kv3::Value]>::is_empty)
             && let Some(meshes) = meshes.filter(|meshes| !meshes.is_empty())
             && meshes.iter().all(|mesh| {
                 mesh.get("m_skeleton")
@@ -487,7 +487,7 @@ impl ModelEvidence {
             && meshes.iter().all(|mesh| {
                 mesh.get("m_constraints")
                     .and_then(Kv3Value::as_array)
-                    .is_some_and(|constraints| constraints.is_empty())
+                    .is_some_and(<[vpkmanager::source2::kv3::Value]>::is_empty)
             })
             && let Some(spheres) = rig
                 .value

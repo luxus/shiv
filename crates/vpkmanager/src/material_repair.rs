@@ -66,7 +66,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Value, Encoding, kv3::Format)> {
 
 fn equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
-        (Value::Double(a), Value::Double(b)) => (a - b).abs() < 0.000001,
+        (Value::Double(a), Value::Double(b)) => (a - b).abs() < 0.000_001,
         (Value::Array(a), Value::Array(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| equal(a, b))
         }
@@ -364,7 +364,7 @@ pub fn bind_variants(
                 .get(path)
                 .ok_or_else(|| format!("no resource ID for {path}"))?;
             additions.push((id, path.clone()));
-            materials[position] = path.clone();
+            materials[position].clone_from(path);
         }
         let mut value = template.clone();
         *value.get_mut("m_name").ok_or("missing group name")? = Value::String(group.to_owned());

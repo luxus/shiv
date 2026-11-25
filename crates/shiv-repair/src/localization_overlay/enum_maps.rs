@@ -15,7 +15,7 @@ impl EnumMapCompatibility {
             keys: rows
                 .iter()
                 .filter(|(_, row)| row.get("_class").and_then(Kv3Value::as_str) == Some(CLASS))
-                .flat_map(|(_, row)| row.get(FIELD).and_then(Kv3Value::as_object))
+                .filter_map(|(_, row)| row.get(FIELD).and_then(Kv3Value::as_object))
                 .flatten()
                 .map(|(key, _)| key.clone())
                 .collect(),

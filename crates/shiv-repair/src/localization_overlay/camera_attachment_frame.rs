@@ -28,7 +28,7 @@ pub(super) fn prepare(
         let Some(base) = resources.game_bytes(path)? else {
             continue;
         };
-        let input = models.get(path).map(Vec::as_slice).unwrap_or(&source.bytes);
+        let input = models.get(path).map_or(&source.bytes[..], Vec::as_slice);
         match repair(input, &base) {
             Ok(Some(bytes)) => {
                 models.insert(path.clone(), bytes);

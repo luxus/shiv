@@ -332,7 +332,7 @@ impl VtexHeader {
         Ok(sequences)
     }
 
-    /// Compressed mip sizes if the COMPRESSED_MIP_SIZE extra-data block is
+    /// Compressed mip sizes if the `COMPRESSED_MIP_SIZE` extra-data block is
     /// present, with where the mip data starts: right after the size array,
     /// which sits between the extra-data headers and the pixels.
     fn compressed_mip_sizes(&self, data: &[u8]) -> Option<(Vec<usize>, usize)> {
@@ -360,11 +360,11 @@ impl VtexHeader {
     }
 
     /// Stored bytes of one mip for an embedded-image format (PNG/JPEG). Each mip
-    /// is a standalone image blob. When the COMPRESSED_MIP_SIZE table is present
+    /// is a standalone image blob. When the `COMPRESSED_MIP_SIZE` table is present
     /// it gives each mip's stored length (mips are laid out smallest-first);
     /// otherwise the texture is single-mip and the blob spans the rest of DATA.
     fn embedded_mip_bytes<'a>(&self, data: &'a [u8], target_level: u32) -> Result<&'a [u8]> {
-        let mips = self.num_mip_levels.max(1) as u32;
+        let mips = u32::from(self.num_mip_levels.max(1));
         let target_level = target_level.min(mips - 1);
         match self.compressed_mip_sizes(data) {
             Some((sizes, start)) => {
@@ -389,10 +389,10 @@ impl VtexHeader {
 
     /// Extract and (if needed) LZ4-decompress one mip level.
     fn mip_bytes(&self, data: &[u8], target_level: u32) -> Result<Vec<u8>> {
-        let mips = self.num_mip_levels.max(1) as u32;
+        let mips = u32::from(self.num_mip_levels.max(1));
         let target_level = target_level.min(mips - 1);
-        let target_width = (self.width as u32 >> target_level).max(1);
-        let target_height = (self.height as u32 >> target_level).max(1);
+        let target_width = (u32::from(self.width) >> target_level).max(1);
+        let target_height = (u32::from(self.height) >> target_level).max(1);
         let uncompressed_target = self.format.mip_byte_size(target_width, target_height)?;
         let (compressed_sizes, start) = match self.compressed_mip_sizes(data) {
             Some((sizes, start)) => (Some(sizes), start),
@@ -404,8 +404,8 @@ impl VtexHeader {
         let mut on_disk: Vec<(usize /*uncompressed*/, usize /*stored*/)> =
             Vec::with_capacity(mips as usize);
         for level in 0..mips {
-            let w = (self.width as u32 >> level).max(1);
-            let h = (self.height as u32 >> level).max(1);
+            let w = (u32::from(self.width) >> level).max(1);
+            let h = (u32::from(self.height) >> level).max(1);
             let unc = self.format.mip_byte_size(w, h)?;
             let stored = compressed_sizes
                 .as_ref()
@@ -423,11 +423,11 @@ impl VtexHeader {
                 .get(cursor..cursor + stored)
                 .ok_or_else(|| Source2Error::Resource("mip data oob".into()))?;
             if level == target_level {
-                let bytes = if stored != unc {
+                let bytes = if stored == unc {
+                    slice.to_vec()
+                } else {
                     lz4_flex::block::decompress(slice, unc)
                         .map_err(|e| Source2Error::Decode(format!("lz4: {e}")))?
-                } else {
-                    slice.to_vec()
                 };
                 target = Some(bytes);
                 break;
@@ -454,9 +454,9 @@ impl VtexHeader {
     /// Decode a mip no larger than `max_side` to RGBA8.
     pub fn decode_preview(&self, data: &[u8], max_side: u32) -> Result<DecodedTexture> {
         let mut level = 0;
-        let mut width = self.width as u32;
-        let mut height = self.height as u32;
-        while level + 1 < self.num_mip_levels as u32 && width.max(height) > max_side {
+        let mut width = u32::from(self.width);
+        let mut height = u32::from(self.height);
+        while level + 1 < u32::from(self.num_mip_levels) && width.max(height) > max_side {
             level += 1;
             width = (width >> 1).max(1);
             height = (height >> 1).max(1);
@@ -482,8 +482,8 @@ impl VtexHeader {
             });
         }
 
-        let w = (self.width as u32 >> level).max(1) as usize;
-        let h = (self.height as u32 >> level).max(1) as usize;
+        let w = (u32::from(self.width) >> level).max(1) as usize;
+        let h = (u32::from(self.height) >> level).max(1) as usize;
         let raw = self.mip_bytes(data, level)?;
         let mut out = vec![0u32; w * h];
 

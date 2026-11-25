@@ -29,7 +29,7 @@ const BR_V2_L1: [u32; 15] = [
     0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
 ];
 
-/// Byte length of a leading ID3v2 tag, or 0 when there isn't one.
+/// Byte length of a leading `ID3v2` tag, or 0 when there isn't one.
 fn skip_id3v2(data: &[u8]) -> usize {
     if data.len() < 10 || &data[0..3] != b"ID3" {
         return 0;
@@ -141,6 +141,7 @@ impl FrameHeader {
 }
 
 /// Whether these bytes look like MPEG audio at all.
+#[must_use]
 pub fn is_mp3(bytes: &[u8]) -> bool {
     find_first_frame(bytes, skip_id3v2(bytes)).is_some()
 }

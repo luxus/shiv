@@ -150,7 +150,7 @@ fn inspect_materials(
                 file_path: path.clone(),
                 kind,
                 detail,
-            })
+            });
         };
         let source = match edit::decode(&bytes) {
             Ok((value, _, _)) => value,
@@ -211,7 +211,10 @@ fn baseline(resources: &ResourceSnapshot, path: &str) -> Result<Arc<Vec<u8>>, Er
     if let Some((provider, effective)) = resources.resolve(path)?
         && provider.mod_id.is_some()
         && effective != current
-        && !((path.ends_with(".vtex") || path.ends_with(".vtex_c"))
+        && !((std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("vtex"))
+            || path.ends_with(".vtex_c"))
             && same_texture_runtime(&effective, &current))
     {
         return Err(invalid(format!(

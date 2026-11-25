@@ -14,6 +14,7 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
+    #[must_use]
     pub fn new(input: &str) -> Self {
         Self {
             input: input.chars().collect(),
@@ -26,6 +27,7 @@ impl Tokenizer {
         }
     }
 
+    #[must_use]
     pub fn with_options(
         input: &str,
         allow_escape_sequences: bool,

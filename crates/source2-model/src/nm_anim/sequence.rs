@@ -254,8 +254,7 @@ pub fn resolve_nm_clip_sequence_from_archive(
     let directory = primary
         .clip_path
         .rsplit_once('/')
-        .map(|(directory, _)| directory)
-        .unwrap_or("");
+        .map_or("", |(directory, _)| directory);
     let phases = coherent_phase_paths(
         &primary.clip_path,
         &family,
@@ -320,8 +319,7 @@ pub fn resolve_nm_additive_overlay_from_archive(
     }
     let directory = base_clip_path
         .rsplit_once('/')
-        .map(|(directory, _)| directory)
-        .unwrap_or("");
+        .map_or("", |(directory, _)| directory);
     Ok(archive
         .list_entries()
         .into_iter()

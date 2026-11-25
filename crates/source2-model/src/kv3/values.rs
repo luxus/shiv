@@ -36,6 +36,7 @@ impl KvValue {
         }
     }
 
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<&KvValue> {
         match self {
             KvValue::Object(values) => values.get(key),
@@ -43,6 +44,7 @@ impl KvValue {
         }
     }
 
+    #[must_use]
     pub fn as_array(&self) -> Option<&[KvValue]> {
         match self {
             KvValue::Array(values) => Some(values),
@@ -50,6 +52,7 @@ impl KvValue {
         }
     }
 
+    #[must_use]
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             KvValue::Int(value) => Some(*value),
@@ -58,12 +61,14 @@ impl KvValue {
         }
     }
 
+    #[must_use]
     pub fn as_u32(&self) -> Option<u32> {
         self.as_i64().and_then(|value| u32::try_from(value).ok())
     }
 
     /// The value as a 64-bit bit set. Signed values keep their bit pattern, so
     /// a mask stored as `-1` reads as all bits set.
+    #[must_use]
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             KvValue::Int(value) => Some(*value as u64),
@@ -72,6 +77,7 @@ impl KvValue {
         }
     }
 
+    #[must_use]
     pub fn as_f32(&self) -> Option<f32> {
         match self {
             KvValue::Float(value) => Some(*value as f32),
@@ -82,6 +88,7 @@ impl KvValue {
     }
 
     /// The first `N` items of a numeric array.
+    #[must_use]
     pub fn as_f32_array<const N: usize>(&self) -> Option<[f32; N]> {
         let items = self.as_array()?;
         let mut out = [0.0; N];
@@ -91,6 +98,7 @@ impl KvValue {
         (items.len() >= N).then_some(out)
     }
 
+    #[must_use]
     pub fn as_string(&self) -> Option<&str> {
         match self {
             KvValue::String(value) => Some(value),
@@ -98,6 +106,7 @@ impl KvValue {
         }
     }
 
+    #[must_use]
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             KvValue::Bool(value) => Some(*value),

@@ -344,10 +344,10 @@ fn effect_parameters(data: &kv3::KvValue) -> vmesh::Source2Effect {
             .unwrap_or("")
             .to_string(),
         material: String::new(),
-        floats: Default::default(),
-        vectors: Default::default(),
-        flags: Default::default(),
-        textures: Default::default(),
+        floats: std::collections::BTreeMap::default(),
+        vectors: std::collections::BTreeMap::default(),
+        flags: std::collections::BTreeMap::default(),
+        textures: std::collections::BTreeMap::default(),
     };
     for (collection, kind) in [
         ("m_floatParams", 0),

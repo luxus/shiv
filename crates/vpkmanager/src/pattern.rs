@@ -59,6 +59,7 @@ pub enum PatternStyle {
 }
 
 impl PatternStyle {
+    #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "liquid" => Self::Liquid,
@@ -481,7 +482,7 @@ fn pattern_pixel(style: PatternStyle, u: f32, v: f32, phase: f32) -> [u8; 3] {
 ///
 /// Public so the paint pass can run a recolor and a pattern over the *same*
 /// decode: doing them as two separate `*_texture` calls would decode and
-/// re-encode the mip chain twice, and the BCn encode is the whole cost.
+/// re-encode the mip chain twice, and the `BCn` encode is the whole cost.
 pub fn paint_image(image: &mut Image, pattern: Pattern) -> Result<()> {
     let (width, height) = (image.width.max(1), image.height.max(1));
     let ImageData::Rgba8(pixels) = &mut image.data else {
@@ -530,6 +531,7 @@ pub fn pattern_texture(original: &[u8], pattern: Pattern) -> Result<EditedTextur
 
 /// Render a standalone RGBA8 swatch of a style, for the picker's preview tile.
 /// Pure pattern generation: no VPK, no texture, cheap enough to call per style.
+#[must_use]
 pub fn pattern_swatch(pattern: Pattern, size: u32) -> Vec<u8> {
     let size = size.clamp(1, 512);
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);

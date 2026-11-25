@@ -56,7 +56,7 @@ pub struct PreviewTexture {
     pub orm_png: Option<Vec<u8>>,
     pub emissive_png: Option<Vec<u8>>,
     /// The material takes its colour from the mesh's vertex colours
-    /// (`F_VERTEX_COLOR`), so its primitives export a COLOR_0 stream.
+    /// (`F_VERTEX_COLOR`), so its primitives export a `COLOR_0` stream.
     pub vertex_color: bool,
     pub double_sided: bool,
     pub base_color_factor: [f32; 4],

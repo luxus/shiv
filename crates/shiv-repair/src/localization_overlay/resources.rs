@@ -261,7 +261,7 @@ impl ResourceSnapshot {
                 .game
                 .bytes
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&key)
         {
             self.bytes.borrow_mut().insert(key, Arc::clone(&bytes));
@@ -287,7 +287,7 @@ impl ResourceSnapshot {
             self.game
                 .bytes
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(key.clone(), Arc::clone(&bytes));
         }
         self.bytes.borrow_mut().insert(key, Arc::clone(&bytes));
@@ -328,7 +328,11 @@ pub(super) fn resource_path(name: &str) -> Option<String> {
     {
         return None;
     }
-    if !path.ends_with("_c") && !path.ends_with(".txt") {
+    if !path.ends_with("_c")
+        && !std::path::Path::new(&path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+    {
         path.push_str("_c");
     }
     Some(path)

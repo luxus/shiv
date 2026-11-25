@@ -73,6 +73,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    #[must_use]
     pub fn new(tokens: Vec<Token>) -> Self {
         Self {
             tokens,
@@ -272,7 +273,6 @@ impl Parser {
                         break;
                     }
                     temp_pos += 1;
-                    continue;
                 }
                 TokenType::Conditional => {
                     // Found conditional on same line
@@ -566,14 +566,11 @@ impl Parser {
 
                 // Handle duplicate keys
                 if let Some(existing) = result.get_mut(&key) {
-                    match existing {
-                        KeyValuesValue::Array(arr) => {
-                            arr.push(value);
-                        }
-                        _ => {
-                            let old_value = existing.clone();
-                            *existing = KeyValuesValue::Array(vec![old_value, value]);
-                        }
+                    if let KeyValuesValue::Array(arr) = existing {
+                        arr.push(value);
+                    } else {
+                        let old_value = existing.clone();
+                        *existing = KeyValuesValue::Array(vec![old_value, value]);
                     }
                 } else {
                     result.insert(key, value);
