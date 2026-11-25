@@ -500,12 +500,17 @@ mod tests {
     }
 
     fn scratch_dir(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
+
+        let seq = NEXT_SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|since_epoch| since_epoch.as_nanos())
             .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!("s2m-{label}-{unique}"));
-        fs::create_dir_all(&dir).expect("create scratch dir");
+        let dir =
+            std::env::temp_dir().join(format!("s2m-{label}-{}-{seq}-{unique}", std::process::id()));
+        fs::create_dir(&dir).expect("create scratch dir");
         dir
     }
 

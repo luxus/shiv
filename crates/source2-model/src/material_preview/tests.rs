@@ -475,12 +475,18 @@ mod material_semantics_tests {
 
     fn padded_texture_archive() -> (std::path::PathBuf, VpkArchive) {
         use std::io::{Seek, SeekFrom, Write};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ARCHIVE_ID: AtomicU64 = AtomicU64::new(0);
 
+        let seq = NEXT_ARCHIVE_ID.fetch_add(1, Ordering::Relaxed);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("s2m-large-material-{unique}.vpk"));
+        let path = std::env::temp_dir().join(format!(
+            "s2m-large-material-{}-{seq}-{unique}.vpk",
+            std::process::id()
+        ));
         let entries = [
             ("color_a", [200, 20, 30, 255], 24 * 1024 * 1024),
             ("normal", [128, 128, 255, 255], 24 * 1024 * 1024),
@@ -501,7 +507,11 @@ mod material_semantics_tests {
             offset += length as u32;
         }
         tree.extend_from_slice(b"\0\0\0");
-        let mut file = std::fs::File::create(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
         file.write_all(&0x55aa1234u32.to_le_bytes()).unwrap();
         file.write_all(&1u32.to_le_bytes()).unwrap();
         file.write_all(&(tree.len() as u32).to_le_bytes()).unwrap();
