@@ -19,7 +19,7 @@ body = """
 {% endfor %}
 {% endfor %}\
 {% if previous.version %}\
-**Full Changelog**: [{{ previous.version }}...{{ version }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/compare/{{ previous.version }}...{{ version }})
+**Full Changelog**: [{{ previous.version }}...{{ version }}](https://github.com/<REPO>/compare/{{ previous.version }}...{{ version }})
 {% endif %}
 """
 

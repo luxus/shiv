@@ -133,7 +133,11 @@ jobs:
       - name: Generate the changelog
         run: |
           notes="$RUNNER_TEMP/release-notes.md"
-          "$RUNNER_TEMP/git-cliff/git-cliff" --latest --strip header > "$notes"
+          # The tag checkout is detached with no branch tracking config,
+          # so git-cliff's remote detection cannot resolve the repo;
+          # <REPO> in cliff.toml is replaced here instead.
+          "$RUNNER_TEMP/git-cliff/git-cliff" --latest --strip header \
+            | sed "s|<REPO>|$GITHUB_REPOSITORY|g" > "$notes"
           # Fail closed: a release whose commits produced no changelog
           # sections (the 0.5.1 bug) is not published.
           grep -q '^## ' "$notes"
