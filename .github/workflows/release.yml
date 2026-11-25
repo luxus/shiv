@@ -1,6 +1,8 @@
 name: Release
 
-# Pushing a tag like v0.1.0 builds the AppImage, Flatpak and Windows files and publishes a GitHub release.
+# Pushing a tag like v0.1.0 builds the AppImage, Flatpak and Windows files
+# and publishes a GitHub release with a changelog generated from the
+# conventional commits between the last two tags (cliff.toml).
 # workflow_dispatch on a v* tag publishes the same way. The CompLock watch
 # does that, because a tag it pushes with GITHUB_TOKEN does not start this
 # workflow. Dispatch on a branch builds the artifacts and does not publish.
@@ -21,6 +23,8 @@ env:
   APPIMAGE_PLUGIN_SHA256: 49d6a17160675a6bd1781699aae6bdf7692d98552e02a3671d2183d10547842e
   FLATPAK_CARGO_GENERATOR_URL: https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/9d86d336a39b9af38b86f114b6ce5820fe260f91/cargo/flatpak-cargo-generator.py
   FLATPAK_CARGO_GENERATOR_SHA256: 0a2db6be87d75910facef28ab46d4d6460802e8419ab850d0caa6a364d26b380
+  GIT_CLIFF_URL: https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz
+  GIT_CLIFF_SHA256: 24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4
 
 jobs:
   appimage:
@@ -115,6 +119,24 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Full history: git-cliff reads the commits between the last two tags.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install git-cliff
+        run: |
+          mkdir -p "$RUNNER_TEMP/git-cliff"
+          curl -fsSL -o "$RUNNER_TEMP/git-cliff.tar.gz" "$GIT_CLIFF_URL"
+          echo "$GIT_CLIFF_SHA256  $RUNNER_TEMP/git-cliff.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/git-cliff.tar.gz" -C "$RUNNER_TEMP/git-cliff" --strip-components=1
+          "$RUNNER_TEMP/git-cliff/git-cliff" --version
+      - name: Generate the changelog
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          "$RUNNER_TEMP/git-cliff/git-cliff" --latest --strip header > "$notes"
+          # Fail closed: a release whose commits produced no changelog
+          # sections (the 0.5.1 bug) is not published.
+          grep -q '^## ' "$notes"
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -122,4 +144,4 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Shiv ${GITHUB_REF_NAME#v}" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Shiv ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -1,0 +1,40 @@
+# git-cliff configuration for release notes. `.github/workflows/release.yml`
+# runs `git-cliff --latest --strip header` when publishing a tag; the body
+# template below is what lands in the GitHub release's notes.
+#
+# Commit subjects are the changelog's source of truth: feat, fix, perf, and
+# chore(complock) reach the notes (CompLock data releases contain only the
+# chore(complock) commit); ci, test, docs, plain chore, and non-conventional
+# subjects (such as "release 0.6.0") do not. The <!-- N --> prefixes set the
+# section order; `striptags` removes them from the output.
+
+[changelog]
+trim = true
+body = """
+{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}\
+## {{ entry.group | striptags | trim | upper_first }}
+
+{% for commit in entry.commits %}\
+- {% if commit.breaking %}**Breaking change:** {% endif %}{{ commit.message | upper_first }}
+{% endfor %}
+{% endfor %}\
+{% if previous.version %}\
+**Full Changelog**: [{{ previous.version }}...{{ version }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/compare/{{ previous.version }}...{{ version }})
+{% endif %}
+"""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+sort_commits = "oldest"
+commit_parsers = [
+  { message = '^feat', group = '<!-- 0 -->Features' },
+  { message = '^fix', group = '<!-- 1 -->Fixes' },
+  { message = '^perf', group = '<!-- 2 -->Performance' },
+  { message = '^chore\(complock\)', group = '<!-- 3 -->CompLock data' },
+  { message = '^chore', skip = true },
+  { message = '^ci', skip = true },
+  { message = '^test', skip = true },
+  { message = '^docs', skip = true },
+]
