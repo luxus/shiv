@@ -80,6 +80,7 @@
             libxkbcommon
             fontconfig
             zstd
+            dbus.lib
           ]
         );
 
@@ -149,8 +150,8 @@
               $out/share/icons/hicolor/128x128/apps/io.github.Siebe_Uy.shiv.png
           '';
 
-          # winit dlopens libwayland-client and libxkbcommon when a window
-          # opens, so nothing links them at build time and the automatic
+          # winit and rfd dlopen libwayland-client, libxkbcommon and libdbus-1
+          # at runtime, so nothing links them at build time and the automatic
           # RPATH skips them. The binary cannot run without them, so the
           # paths go in by hand.
           postFixup = ''
@@ -158,6 +159,7 @@
               pkgs.lib.makeSearchPath "lib" [
                 pkgs.wayland
                 pkgs.libxkbcommon
+                pkgs.dbus.lib
               ]
             }"
             existing="$(patchelf --print-rpath $out/bin/shiv)"
@@ -188,6 +190,15 @@
       # renders with; cargo fetches the rest as usual.
       devShells = forAllSystems (
         pkgs:
+        let
+          dlopenLibs = pkgs.lib.makeLibraryPath (
+            nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              pkgs.wayland
+              pkgs.libxkbcommon
+              pkgs.dbus.lib
+            ]
+          );
+        in
         {
           default = pkgs.mkShell {
             packages =
@@ -197,15 +208,22 @@
               ]
               ++ windowingDeps pkgs
               ++ zstdForPkgConfig pkgs
-              ++ nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.zstd ];
+              ++ nixpkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+                pkgs.zstd
+                pkgs.dbus.lib
+              ];
             env = nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
               ZSTD_SYS_USE_PKG_CONFIG = "1";
             };
-            shellHook = ''
-              echo "shiv $(rustc --version)"
-              echo "cargo test --workspace          — everything"
-              echo "cargo run --release -p shiv-ui  — the app"
-            '';
+            shellHook =
+              nixpkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+                export LD_LIBRARY_PATH="${dlopenLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              ''
+              + ''
+                echo "shiv $(rustc --version)"
+                echo "cargo test --workspace          — everything"
+                echo "cargo run --release -p shiv-ui  — the app"
+              '';
           };
         }
       );

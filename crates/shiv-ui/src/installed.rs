@@ -68,12 +68,22 @@ impl Deps {
 const GAME_RUNNING_TEXT: &str =
     "Deadlock is running. Close it to enable, disable or uninstall mods.";
 const SUFFIX: &str = ".disabled";
-/// Shown when the file dialog returns nothing: cancelled, or no file dialog
-/// service (xdg-desktop-portal) is reachable.
+/// Shown when the file dialog returns nothing after being open to the user.
 const NO_FILE_PICKED: &str = "No file picked. You can also type or paste a path, a link, or a mod page link, or drop the file on the window.";
 /// deadlocker.net named something Shiv cannot resolve to a mod.
 const DEADLOCKER_NO_MOD_PAGE: &str =
     "deadlocker.net's answer for that mod named no GameBanana mod page.";
+/// Returning in under 150ms means xdg-desktop-portal / zenity could not be opened.
+const PORTAL_FAIL_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(150);
+const PICKER_UNAVAILABLE: &str = "Could not open the system file dialog (xdg-desktop-portal or zenity unavailable). Paste a path, link, or mod page link, or drop the file on the window.";
+
+fn pick_cancel_text(elapsed: std::time::Duration) -> &'static str {
+    if elapsed < PORTAL_FAIL_THRESHOLD {
+        PICKER_UNAVAILABLE
+    } else {
+        NO_FILE_PICKED
+    }
+}
 
 /// What the banner says when dropped files wait behind a dialog.
 pub(crate) fn queued_banner(n: usize) -> String {
@@ -1115,10 +1125,21 @@ fn wire_callbacks(app: &App, state: &InstalledState<'_>) {
 }
 
 /// A path typed or pasted into the install dialog: `~/` is the home folder,
-/// a `file://` URI its path, surrounding quotes and spaces are dropped.
+/// a `file://` URI its decoded local path, surrounding quotes and spaces are dropped.
 pub(crate) fn typed_path(text: &str, home: Option<&Path>) -> PathBuf {
     let t = text.trim().trim_matches(|c| c == '"' || c == '\'');
-    let t = t.strip_prefix("file://").unwrap_or(t);
+    let decoded;
+    let t = if let Some(rest) = t.strip_prefix("file://") {
+        let raw = match rest.find('/') {
+            Some(0) => rest,
+            Some(i) if &rest[..i] == "localhost" => &rest[i..],
+            _ => rest,
+        };
+        decoded = percent_decode_lossy(raw);
+        decoded.as_str()
+    } else {
+        t
+    };
     match (t.strip_prefix("~/"), home) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(t),
@@ -1906,34 +1927,42 @@ impl Installed {
         });
     }
 
+    /// Worker body: `rfd::FileDialog::pick_file` blocks until the portal closes.
+    fn pick_mod_file(title: &str) -> (Option<PathBuf>, std::time::Duration) {
+        let start = std::time::Instant::now();
+        let picked = rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("Mods", &["vpk", "zip", "rar", "7z"])
+            .add_filter("All files", &["*"])
+            .pick_file();
+        (picked, start.elapsed())
+    }
+
     /// The system file dialog blocks, so it runs on a worker.
     fn browse_file(&self) {
         let weak = self.weak.clone();
         crate::spawn_worker(
             "shiv-pick-file",
-            || {
-                rfd::FileDialog::new()
-                    .set_title("Install a mod from a file")
-                    .add_filter("Mods", &["vpk", "zip", "rar", "7z"])
-                    .add_filter("All files", &["*"])
-                    .pick_file()
-            },
-            move |picked| {
-                let picked = picked.ok().flatten();
+            || Self::pick_mod_file("Install a mod from a file"),
+            move |outcome| {
+                let outcome = outcome.ok();
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     let s = app.global::<LocalInstallState>();
-                    match picked {
-                        Some(path) => {
+                    match outcome {
+                        Some((Some(path), _)) => {
                             if s.get_name().is_empty() {
                                 s.set_name(default_name(&path).into());
                             }
                             s.set_path(path.to_string_lossy().as_ref().into());
                             s.set_error_text("".into());
                         }
-                        None => {
-                            if s.get_path().is_empty() {
-                                s.set_error_text(NO_FILE_PICKED.into());
+                        Some((None, elapsed)) => {
+                            if elapsed < PORTAL_FAIL_THRESHOLD || s.get_path().is_empty() {
+                                s.set_error_text(pick_cancel_text(elapsed).into());
                             }
+                        }
+                        None => {
+                            s.set_error_text(PICKER_UNAVAILABLE.into());
                         }
                     }
                 });
@@ -1942,13 +1971,14 @@ impl Installed {
     }
 
     fn install_file(&self) {
-        if !self.idle() {
-            return;
-        }
         let Some(app) = self.weak.upgrade() else {
             return;
         };
         let s = app.global::<LocalInstallState>();
+        if !self.idle() {
+            s.set_error_text("Wait for the current refresh or action to finish.".into());
+            return;
+        }
         let text = s.get_path().to_string();
         // A link routes by what it names; everything else is a local path.
         match link_target::classify(&text) {
@@ -2312,24 +2342,24 @@ impl Installed {
         let weak = self.weak.clone();
         crate::spawn_worker(
             "shiv-pick-update",
-            || {
-                rfd::FileDialog::new()
-                    .set_title("Update a mod from a file")
-                    .add_filter("Mods", &["vpk", "zip", "rar", "7z"])
-                    .add_filter("All files", &["*"])
-                    .pick_file()
-            },
-            move |picked| {
-                let picked = picked.ok().flatten();
+            || Self::pick_mod_file("Update a mod from a file"),
+            move |outcome| {
+                let outcome = outcome.ok();
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     let s = app.global::<UpdateFileState>();
-                    match picked {
-                        Some(path) => {
+                    match outcome {
+                        Some((Some(path), _)) => {
                             s.set_path(path.to_string_lossy().as_ref().into());
                             s.set_error_text("".into());
                         }
-                        None if s.get_path().is_empty() => s.set_error_text(NO_FILE_PICKED.into()),
-                        None => {}
+                        Some((None, elapsed)) => {
+                            if elapsed < PORTAL_FAIL_THRESHOLD || s.get_path().is_empty() {
+                                s.set_error_text(pick_cancel_text(elapsed).into());
+                            }
+                        }
+                        None => {
+                            s.set_error_text(PICKER_UNAVAILABLE.into());
+                        }
                     }
                 });
             },
@@ -2364,16 +2394,18 @@ impl Installed {
     }
 
     fn replace_file(&self) {
-        let Some(id) = self.updating.borrow().clone() else {
-            return;
-        };
-        if !self.idle() {
-            return;
-        }
         let Some(app) = self.weak.upgrade() else {
             return;
         };
         let s = app.global::<UpdateFileState>();
+        let Some(id) = self.updating.borrow().clone() else {
+            s.set_error_text("No mod selected to replace. Close and try again.".into());
+            return;
+        };
+        if !self.idle() {
+            s.set_error_text("Wait for the current refresh or action to finish.".into());
+            return;
+        }
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let path = typed_path(&s.get_path(), home.as_deref());
         if !path.is_file() {
@@ -2540,8 +2572,39 @@ impl Installed {
         self.pending.borrow_mut().clear();
     }
 
-    /// Files were dropped on the window. They are queued and processed one
-    /// by one; anything that is not a file is skipped with a note.
+    fn skipped_banner(n: usize) -> String {
+        if n == 1 {
+            "Skipped 1 dropped item that is not a file.".into()
+        } else {
+            format!("Skipped {n} dropped items that are not files.")
+        }
+    }
+
+    fn fill_open_picker(app: &App, file: &Path) -> bool {
+        let update = app.global::<UpdateFileState>();
+        if update.get_open()
+            && !update.get_busy()
+            && (!update.get_dropped() || update.get_path().trim().is_empty())
+        {
+            update.set_path(file.to_string_lossy().as_ref().into());
+            update.set_error_text("".into());
+            return true;
+        }
+        let local = app.global::<LocalInstallState>();
+        if local.get_open() && !local.get_busy() && local.get_path().trim().is_empty() {
+            if local.get_name().is_empty() {
+                local.set_name(default_name(file).into());
+            }
+            local.set_path(file.to_string_lossy().as_ref().into());
+            local.set_error_text("".into());
+            return true;
+        }
+        false
+    }
+
+    /// Files were dropped on the window. A single file dropped onto an open
+    /// "replace" or empty "install from file" picker fills that dialog
+    /// directly; otherwise drops queue behind open dialogs and process in order.
     fn dropped_batch(&self, paths: Vec<PathBuf>) {
         let Some(app) = self.weak.upgrade() else {
             return;
@@ -2552,6 +2615,13 @@ impl Installed {
         }
         let (files, skipped): (Vec<PathBuf>, Vec<PathBuf>) =
             paths.into_iter().partition(|p| p.is_file());
+        if files.len() == 1 && Self::fill_open_picker(&app, &files[0]) {
+            if !skipped.is_empty() {
+                let text = Self::skipped_banner(skipped.len());
+                self.with_state(|s| s.set_banner_text(text.into()));
+            }
+            return;
+        }
         let n_queued = {
             let mut pending = self.pending.borrow_mut();
             pending.extend(files);
@@ -2563,12 +2633,7 @@ impl Installed {
         let held = Self::dialog_open(&app) || !self.idle() || self.stepping.get();
         let mut parts: Vec<String> = Vec::new();
         if !skipped.is_empty() {
-            let n = skipped.len();
-            parts.push(if n == 1 {
-                "Skipped 1 dropped item that is not a file.".into()
-            } else {
-                format!("Skipped {n} dropped items that are not files.")
-            });
+            parts.push(Self::skipped_banner(skipped.len()));
         }
         if n_queued > 0 && held {
             parts.push(queued_banner(n_queued));
@@ -2969,8 +3034,28 @@ mod tests {
             typed_path(" 'file:///tmp/b.zip' ", Some(home)),
             PathBuf::from("/tmp/b.zip")
         );
+        assert_eq!(
+            typed_path("file:///tmp/my%20mod%20%281%29.zip", Some(home)),
+            PathBuf::from("/tmp/my mod (1).zip")
+        );
+        assert_eq!(
+            typed_path("file://localhost/tmp/b%20c.vpk", Some(home)),
+            PathBuf::from("/tmp/b c.vpk")
+        );
         assert_eq!(typed_path("\"/x/c.vpk\"", None), PathBuf::from("/x/c.vpk"));
         assert_eq!(typed_path("~/d.vpk", None), PathBuf::from("~/d.vpk"));
+    }
+
+    #[test]
+    fn pick_cancel_distinguishes_portal_failure() {
+        assert_eq!(
+            pick_cancel_text(std::time::Duration::from_millis(5)),
+            PICKER_UNAVAILABLE
+        );
+        assert_eq!(
+            pick_cancel_text(std::time::Duration::from_secs(1)),
+            NO_FILE_PICKED
+        );
     }
 
     #[test]

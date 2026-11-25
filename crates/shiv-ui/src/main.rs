@@ -3633,13 +3633,20 @@ mod tests {
             b"hits"
         );
 
-        // Install a bare VPK from a file outside the game folder.
-        let src = root.path().join("outline.vpk");
-        std::fs::write(&src, b"\x34\x12\xaa\x55\x02\x00\x00\x00x").expect("src");
+        // Dropping a file while LocalInstallDialog is empty populates it directly.
         state.invoke_install_file();
         let local = app.global::<crate::LocalInstallState>();
-        assert!(local.get_open());
-        local.set_path(src.to_string_lossy().as_ref().into());
+        assert!(local.get_open() && local.get_path().is_empty());
+        let src = root.path().join("outline.vpk");
+        std::fs::write(&src, b"\x34\x12\xaa\x55\x02\x00\x00\x00x").expect("src");
+        installed::file_dropped(src.clone());
+        assert_eq!(local.get_path().as_str(), src.to_string_lossy());
+        assert_eq!(local.get_name(), "outline");
+        assert!(
+            !state.get_banner_text().contains("queued"),
+            "{}",
+            state.get_banner_text()
+        );
         local.invoke_install();
         assert!(run_until(&app, Duration::from_secs(20), rows_are(2)));
         assert!(!local.get_open(), "{}", local.get_error_text());
@@ -3666,15 +3673,38 @@ mod tests {
                     .is_some_and(|r| r.name == "Outlines")
         }));
 
-        // Update from file on the row: same slot and name, old file backed up.
+        // Update from file on the row: dropping a replacement file populates the
+        // open dialog instead of queuing, percent-encoded file:// URIs resolve,
+        // and calling replace while refreshing shows an error instead of a no-op.
         let old_bytes = std::fs::read(addons.join("pak01_dir.vpk")).expect("read");
-        let v2 = root.path().join("outline_v2.vpk");
+        let v2 = root.path().join("outline v2.vpk");
         std::fs::write(&v2, b"\x34\x12\xaa\x55\x02\x00\x00\x00v2").expect("v2");
         state.invoke_update_file(id.clone());
         let update = app.global::<crate::UpdateFileState>();
         assert!(update.get_open() && !update.get_dropped());
         assert_eq!(update.get_target_name(), "Outlines");
-        update.set_path(v2.to_string_lossy().as_ref().into());
+        installed::file_dropped(v2.clone());
+        assert_eq!(update.get_path().as_str(), v2.to_string_lossy());
+        assert!(
+            !state.get_banner_text().contains("queued"),
+            "{}",
+            state.get_banner_text()
+        );
+        gate.store(true, Ordering::Relaxed);
+        state.invoke_refresh();
+        assert!(state.get_busy());
+        update.invoke_replace();
+        assert!(
+            update.get_error_text().contains("Wait"),
+            "{}",
+            update.get_error_text()
+        );
+        gate.store(false, Ordering::Relaxed);
+        assert!(run_until(&app, Duration::from_secs(20), |a| {
+            !a.global::<InstalledState>().get_busy()
+        }));
+        let uri_v2 = format!("file://{}", v2.display().to_string().replace(' ', "%20"));
+        update.set_path(uri_v2.into());
         update.invoke_replace();
         assert!(run_until(&app, Duration::from_secs(20), |a| {
             let s = a.global::<InstalledState>();
@@ -4784,13 +4814,30 @@ mod tests {
         assert!(!state.get_show_nsfw());
         assert_eq!(size(1), (thumbs::OBSCURED_W, thumbs::OBSCURED_H));
 
-        // Search finds NSFW mods too.
-        state.invoke_search_edited("spicy".into());
+        // Search finds NSFW mods too, and the clear button resets immediately.
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&app, "Clear search").count(),
+            0
+        );
+        let search_input =
+            ElementHandle::find_by_accessible_label(&app, "Search by name, author or description")
+                .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+                .expect("browse search input");
+        search_input.set_accessible_value("spicy");
         assert!(run_until(&app, Duration::from_secs(5), |a| {
             a.global::<BrowseState>().get_mods().row_count() == 1
         }));
         assert!(row(0).nsfw);
         assert_eq!(state.get_summary().as_str(), "1 of 4 mods");
+        click(&app, "Clear search");
+        assert!(run_until(&app, Duration::from_millis(50), |a| {
+            a.global::<BrowseState>().get_mods().row_count() == 4
+        }));
+        assert_eq!(search_input.accessible_value().as_deref(), Some(""));
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&app, "Clear search").count(),
+            0
+        );
 
         // A new session starts with NSFW blurred again.
         switch.invoke_accessible_default_action();

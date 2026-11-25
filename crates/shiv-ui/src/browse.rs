@@ -1774,7 +1774,13 @@ impl Browse {
 
     fn search_edited(&self, text: &str) {
         let search = Some(text.to_owned()).filter(|t| !t.trim().is_empty());
+        let empty = search.is_none();
         self.query.borrow_mut().search = search;
+        if empty {
+            self.search_timer.stop();
+            self.refresh();
+            return;
+        }
         let this = self.this.borrow().clone();
         self.search_timer
             .start(TimerMode::SingleShot, SEARCH_DEBOUNCE, move || {

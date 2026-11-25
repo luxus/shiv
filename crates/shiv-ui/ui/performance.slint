@@ -1130,6 +1130,7 @@ export component PerformancePage inherits Rectangle {
                 horizontal-stretch: 1;
                 spacing: Theme.s1;
                 SearchField {
+                    clearable: true;
                     placeholder: "Search settings";
                     edited(t) => { PerfState.search(t); }
                 }
