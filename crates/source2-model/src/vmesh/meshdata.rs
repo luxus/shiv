@@ -221,7 +221,10 @@ pub(crate) fn normalize_material_path(path: &str) -> String {
     if normalized.ends_with(".vmat_c") {
         return normalized;
     }
-    if normalized.ends_with(".vmat") {
+    if std::path::Path::new(&normalized)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vmat"))
+    {
         normalized.push_str("_c");
     }
     normalized
@@ -538,8 +541,7 @@ pub(crate) fn material_index_for_mesh(mesh_name: &str, textures: &[PreviewTextur
             (score >= 140).then_some((score, index + 1))
         })
         .max_by_key(|(score, _)| *score)
-        .map(|(_, index)| index)
-        .unwrap_or(0)
+        .map_or(0, |(_, index)| index)
 }
 
 pub(crate) fn material_index_for_material(
@@ -558,10 +560,7 @@ pub(crate) fn material_index_for_material(
                 .map(normalize_material_path)
                 .is_some_and(|candidate| candidate == material)
         })
-        .map(|index| index + 1)
-        // A named material that failed to decode gets the neutral default, not
-        // whichever other material happened to decode.
-        .unwrap_or(0)
+        .map_or(0, |index| index + 1)
 }
 
 #[cfg(test)]

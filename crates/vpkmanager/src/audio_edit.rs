@@ -11,7 +11,7 @@ use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
@@ -37,6 +37,7 @@ pub struct SoundAdjust {
 }
 
 impl SoundAdjust {
+    #[must_use]
     pub fn is_identity(&self) -> bool {
         self.gain_db == 0.0 && !self.normalize && !self.mute
     }
@@ -58,6 +59,7 @@ struct Pcm {
 }
 
 /// Extensions [`rebuild_sound`] can decode as a replacement.
+#[must_use]
 pub fn is_decodable_audio(extension: &str) -> bool {
     matches!(
         extension.to_ascii_lowercase().as_str(),
@@ -83,7 +85,10 @@ fn audio_error(error: impl std::fmt::Display) -> VpkManagerError {
 }
 
 fn decode(bytes: &[u8], extension: Option<&str>) -> Result<Pcm> {
-    let stream = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), Default::default());
+    let stream = MediaSourceStream::new(
+        Box::new(Cursor::new(bytes.to_vec())),
+        MediaSourceStreamOptions::default(),
+    );
     let mut hint = Hint::new();
     if let Some(extension) = extension {
         hint.with_extension(extension);

@@ -58,7 +58,7 @@ pub(super) fn prepare(
             None
         };
         if let Some((repaired, kind)) = repair_with_controls(
-            models.get(path).map(Vec::as_slice).unwrap_or(&source.bytes),
+            models.get(path).map_or(&source.bytes[..], Vec::as_slice),
             &base,
             |reference| {
                 animation_inputs.permits_camera_controls(resources, reference, &source.mod_id)

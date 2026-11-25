@@ -176,7 +176,11 @@ fn preview_paths_in_key_values(text: &str) -> Vec<String> {
                 }
                 KeyToken::Quoted(path) => {
                     let path = path.trim_end_matches("_c");
-                    if path.ends_with(".vpcf") && !paths.iter().any(|item| item == path) {
+                    if std::path::Path::new(path)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("vpcf"))
+                        && !paths.iter().any(|item| item == path)
+                    {
                         paths.push(path.to_string());
                     }
                     if depth == 0 {
@@ -214,17 +218,14 @@ pub fn discover_model_preview_particles(
     if inputs.is_empty() || signature.is_none() {
         return Ok(found);
     }
-    let directory = entry_path
-        .rsplit_once('/')
-        .map(|(dir, _)| dir)
-        .unwrap_or("");
+    let directory = entry_path.rsplit_once('/').map_or("", |(dir, _)| dir);
     let mut candidates: Vec<_> = archive
         .list_entries()
         .into_iter()
         .filter(|path| {
             path != entry_path
                 && path.ends_with(".vmdl_c")
-                && path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("") == directory
+                && path.rsplit_once('/').map_or("", |(dir, _)| dir) == directory
         })
         .collect();
     candidates.sort();
@@ -286,7 +287,10 @@ fn mesh_inputs(resource: &Resource) -> BTreeSet<(String, u32)> {
         .iter()
         .filter_map(|item| {
             let path = item.get("m_RelativeFilename")?.as_string()?;
-            if !path.ends_with(".dmx") && !path.ends_with(".fbx") {
+            let is_mesh_source = std::path::Path::new(path).extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("dmx") || ext.eq_ignore_ascii_case("fbx")
+            });
+            if !is_mesh_source {
                 return None;
             }
             let crc = item.get("m_nFileCRC")?.as_u32()?;
@@ -486,6 +490,7 @@ fn load_systems_with(
 }
 
 /// Every texture a system tree's renderers draw with, by `.vtex` path.
+#[must_use]
 pub fn particle_texture_paths(system: &ParticleSystemFile) -> BTreeSet<String> {
     fn collect(value: &serde_json::Value, out: &mut BTreeSet<String>) {
         match value {
@@ -561,7 +566,7 @@ fn atlas_side(
         .ceil()
         .max(512.0)
         .min(max_side as f32);
-    let aspect = width.min(height).max(1) as f64 / width.max(height).max(1) as f64;
+    let aspect = f64::from(width.min(height).max(1)) / f64::from(width.max(height).max(1));
     let budget_side = (f64::from(max_pixels) / aspect).sqrt().floor() as u32;
     (desired as u32)
         .min(budget_side)
@@ -575,6 +580,11 @@ fn decode_particle_texture(
     max_side: u32,
     max_pixels: Option<u32>,
 ) -> Result<ParticleTexture> {
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<std::collections::VecDeque<(u64, ParticleTexture)>>> =
+        OnceLock::new();
+
     let resource =
         Resource::parse(archive.extract_entry_limited(&compiled(path), MAX_TEXTURE_ENTRY_BYTES)?)?;
     let header = VtexHeader::parse(&resource)?;
@@ -589,11 +599,7 @@ fn decode_particle_texture(
         )
     });
     particle_decode_dimensions(&header, max_side)?;
-    use std::hash::{Hash, Hasher};
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<std::collections::VecDeque<(u64, ParticleTexture)>>> =
-        OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(Default::default()));
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::VecDeque::default()));
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     resource.data.hash(&mut hasher);
     max_side.hash(&mut hasher);

@@ -18,11 +18,13 @@ pub struct KvDocument {
 
 impl KvDocument {
     /// Create a new empty document
+    #[must_use]
     pub fn new() -> Self {
         Self::with_options(SerializeOptions::default())
     }
 
     /// Create a new document with custom serialization options
+    #[must_use]
     pub fn with_options(options: SerializeOptions) -> Self {
         Self {
             data: KeyValuesObject::new(),
@@ -40,6 +42,7 @@ impl KvDocument {
     }
 
     /// Get a value by path (e.g., "GameInfo.game")
+    #[must_use]
     pub fn get(&self, path: &str) -> Option<&KeyValuesValue> {
         let parts: Vec<&str> = path.split('.').collect();
         let mut current_value: Option<&KeyValuesValue> = None;
@@ -122,11 +125,13 @@ impl KvDocument {
     }
 
     /// Check if a path exists
+    #[must_use]
     pub fn has(&self, path: &str) -> bool {
         self.get(path).is_some()
     }
 
     /// Get all keys at a given path
+    #[must_use]
     pub fn keys(&self, path: Option<&str>) -> Vec<String> {
         match path {
             None => self.data.keys().cloned().collect(),
@@ -141,6 +146,7 @@ impl KvDocument {
     }
 
     /// Get all values at a given path
+    #[must_use]
     pub fn values(&self, path: Option<&str>) -> Vec<&KeyValuesValue> {
         match path {
             None => self.data.values().collect(),
@@ -155,16 +161,19 @@ impl KvDocument {
     }
 
     /// Get the entire data object
+    #[must_use]
     pub fn get_data(&self) -> &KeyValuesObject {
         &self.data
     }
 
     /// Get the AST if available
+    #[must_use]
     pub fn get_ast(&self) -> Option<&DocumentNode> {
         self.ast.as_ref()
     }
 
     /// Clone the document
+    #[must_use]
     pub fn clone_doc(&self) -> Self {
         Self {
             data: self.data.clone(),
@@ -225,6 +234,7 @@ impl KvDocument {
     }
 
     /// Generate a diff between this document and another
+    #[must_use]
     pub fn diff(&self, other: &KvDocument) -> DocumentDiff {
         DiffGenerator::generate_diff(&self.data, &other.data)
     }
@@ -244,18 +254,21 @@ impl KvDocument {
     }
 
     /// Compare with another document
+    #[must_use]
     pub fn equals(&self, other: &KvDocument) -> bool {
         let diff = self.diff(other);
         diff.changes.is_empty()
     }
 
     /// Get diff statistics
+    #[must_use]
     pub fn diff_stats(&self, other: &KvDocument) -> DiffStats {
         let diff = self.diff(other);
         DiffGenerator::get_stats(&diff)
     }
 
     /// Get a human-readable diff summary
+    #[must_use]
     pub fn diff_summary(&self, other: &KvDocument) -> String {
         let diff = self.diff(other);
         DiffGenerator::format_diff(&diff)
@@ -280,9 +293,9 @@ impl fmt::Display for KvDocument {
             let serializer = Serializer::new(self.options.clone());
             serializer
                 .serialize_data(&self.data)
-                .unwrap_or_else(|e| format!("[Serialization error: {}]", e))
+                .unwrap_or_else(|e| format!("[Serialization error: {e}]"))
         };
-        write!(f, "{}", serialized)
+        write!(f, "{serialized}")
     }
 }
 

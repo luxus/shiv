@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// KeyValues value type - can be string, number, object, or array
+/// `KeyValues` value type - can be string, number, object, or array
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum KeyValuesValue {
@@ -11,7 +11,7 @@ pub enum KeyValuesValue {
     Array(Vec<KeyValuesValue>),
 }
 
-/// KeyValues object - a map of string keys to values
+/// `KeyValues` object - a map of string keys to values
 pub type KeyValuesObject = HashMap<String, KeyValuesValue>;
 
 /// Position in source file
@@ -19,7 +19,7 @@ pub type KeyValuesObject = HashMap<String, KeyValuesValue>;
 #[serde(rename_all = "camelCase")]
 pub struct Position {
     /// Unicode scalar-value offset from the start of the input, retained for
-    /// compatibility. SourceDocument provides UTF-8 byte ranges for editing.
+    /// compatibility. `SourceDocument` provides UTF-8 byte ranges for editing.
     pub offset: usize,
     /// Line number (1-indexed)
     pub line: usize,
@@ -50,7 +50,7 @@ pub struct Token {
     pub value: String,
     pub line: usize,
     pub column: usize,
-    /// Unicode scalar-value offset, using the same units as Position::offset.
+    /// Unicode scalar-value offset, using the same units as `Position::offset`.
     pub offset: usize,
     pub raw: String,
     #[serde(skip_serializing_if = "Option::is_none")]

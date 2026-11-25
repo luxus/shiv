@@ -3,6 +3,7 @@ use crate::error::{Result, Source2Error};
 use crate::skeleton::BoneTransform;
 
 impl NmAnimation {
+    #[must_use]
     pub fn reference_pose(&self) -> Vec<BoneTransform> {
         self.skeleton
             .reference_pose
@@ -15,6 +16,7 @@ impl NmAnimation {
             .collect()
     }
 
+    #[must_use]
     pub fn fps(&self) -> f32 {
         if self.clip.frame_count <= 1 || self.clip.duration_seconds <= f32::EPSILON {
             0.0

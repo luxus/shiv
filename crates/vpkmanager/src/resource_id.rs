@@ -1,6 +1,6 @@
 //! Source 2 RERL identifiers for canonical, uncompiled resource names.
 //!
-//! Uses Austin Appleby's public-domain MurmurHash64B, not MurmurHash64A:
+//! Uses Austin Appleby's public-domain `MurmurHash64B`, not `MurmurHash64A`:
 //! <https://github.com/aappleby/smhasher/blob/master/src/MurmurHash2.cpp>.
 //! The seed and variant were checked against Deadlock's resourcesystem.dll and
 //! 276 distinct RERL references from installed resources, including every tail length.

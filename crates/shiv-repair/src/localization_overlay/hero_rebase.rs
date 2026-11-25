@@ -122,10 +122,10 @@ impl<'a> HeroRebaser<'a> {
             if donor.get("_class") != hero.get("_class")
                 || donor.get("m_bDisabled") != hero.get("m_bDisabled")
                 || donor.get("m_bInDevelopment") != hero.get("m_bInDevelopment")
-                || !donor
+                || donor
                     .get("m_strModelName")
                     .and_then(Kv3Value::as_str)
-                    .is_some_and(|path| normalize_path(path) == normalize_path(model))
+                    .is_none_or(|path| normalize_path(path) != normalize_path(model))
             {
                 continue;
             }

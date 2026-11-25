@@ -143,7 +143,7 @@ impl EnumCompatibility {
                 if let Some(Some(replacement)) =
                     self.aliases.get(&(field.to_ascii_lowercase(), old.clone()))
                 {
-                    *old = replacement.value.clone();
+                    old.clone_from(&replacement.value);
                     *encoding = replacement.encoding.clone();
                     Ok(1)
                 } else {

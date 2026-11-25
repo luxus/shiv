@@ -119,6 +119,7 @@ impl VdataSnapshot {
         })
     }
 
+    #[must_use]
     pub fn cache_size(&self) -> usize {
         // Charge map entries and B-tree allocation overhead conservatively.
         (self.discovery.len() + self.exact.len() + self.fields.len() + self.bindings.len())
@@ -171,6 +172,7 @@ fn decode_embedded_vdata_history() -> VdataHistoryIndex {
 
 impl VdataHistoryIndex {
     /// String bindings remain exact even in the older numeric history format.
+    #[must_use]
     pub fn observed_string_field(
         &self,
         file_path: &str,
@@ -313,6 +315,7 @@ impl VdataHistoryIndex {
         self.match_with_evidence(file_path, candidate_root).0
     }
 
+    #[must_use]
     pub fn match_with_evidence(
         &self,
         file_path: &str,
@@ -475,6 +478,7 @@ impl VdataHistoryIndex {
         (selected, evidence)
     }
 
+    #[must_use]
     pub fn with_observed(&self, observed: &Self) -> Self {
         let mut history = observed.clone();
         history.fallback = Arc::clone(&self.tables);
@@ -509,6 +513,13 @@ impl VdataHistoryIndex {
         version: u32,
         snapshot: &VdataSnapshot,
     ) -> Result<bool, String> {
+        fn combine(old: &[FingerprintChange], next: &mut Vec<FingerprintChange>) {
+            let mut values = BTreeMap::new();
+            apply_changes(&mut values, old);
+            apply_changes(&mut values, next);
+            *next = map_changes(&BTreeMap::new(), &values);
+        }
+
         let VdataSnapshot {
             discovery,
             exact,
@@ -556,12 +567,6 @@ impl VdataHistoryIndex {
         if table.builds.len() > 64 {
             let oldest = table.builds.remove(0);
             let next = &mut table.builds[0];
-            fn combine(old: &[FingerprintChange], next: &mut Vec<FingerprintChange>) {
-                let mut values = BTreeMap::new();
-                apply_changes(&mut values, old);
-                apply_changes(&mut values, next);
-                *next = map_changes(&BTreeMap::new(), &values);
-            }
             combine(&oldest.rows, &mut next.rows);
             combine(&oldest.exact_rows, &mut next.exact_rows);
             combine(&oldest.fields, &mut next.fields);
@@ -837,7 +842,7 @@ fn value_fingerprint(value: &Kv3Value, mode: FingerprintMode) -> Fingerprint {
 fn hash_value(hasher: &mut Sha256, value: &Kv3Value, mode: FingerprintMode) {
     match value {
         Kv3Value::Null => hash_part(hasher, b"null"),
-        Kv3Value::Bool(value) => hash_parts_into(hasher, &[b"bool", &[*value as u8]]),
+        Kv3Value::Bool(value) => hash_parts_into(hasher, &[b"bool", &[u8::from(*value)]]),
         Kv3Value::Int(value) => hash_parts_into(hasher, &[b"int", &value.to_le_bytes()]),
         Kv3Value::UInt(value) => hash_parts_into(hasher, &[b"uint", &value.to_le_bytes()]),
         Kv3Value::Double(value) => {

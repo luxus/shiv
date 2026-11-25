@@ -64,6 +64,11 @@ fn bare_file_name(value: &str) -> Result<&str, Error> {
 /// Copy `files` (bare names inside `addons`) into a new, timestamped backup
 /// folder under `directory`. The folder appears atomically: it is staged under
 /// a temporary name and renamed once every copy is synced.
+///
+/// # Errors
+///
+/// Returns an error if a file name is invalid or duplicated, a source file is
+/// missing, or filesystem I/O / index serialization fails.
 pub fn create_repair_backup(
     addons: &Path,
     directory: &Path,
@@ -79,6 +84,11 @@ pub fn create_repair_backup(
 /// again; their names must still be unique within the set. `new_dirs` are
 /// target folders the caller created for the change being backed up; a
 /// restore removes them again once they are empty.
+///
+/// # Errors
+///
+/// Returns an error if a target filename is invalid or duplicated, a path is
+/// non-regular, or staging/copying/renaming fails.
 pub fn create_backup_set(
     directory: &Path,
     targets: &[(&Path, &str)],
@@ -181,6 +191,11 @@ pub struct RestoreOutcome {
 /// Every copy is staged and synced beside its target before the first one
 /// replaces anything, and each replacement is a rename. Restored files get
 /// their original modification time.
+///
+/// # Errors
+///
+/// Returns an error if the backup index is missing/unsupported/invalid or
+/// restoring any target file fails.
 pub fn restore_backup_set(backup: &Path) -> Result<RestoreOutcome, Error> {
     restore_backup_set_except(backup, &[])
 }
@@ -200,6 +215,10 @@ fn same_file_path(folder: &Path, name: &str, path: &Path) -> bool {
     }
 }
 
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "64 KiB compare buffers avoid per-file heap allocation"
+)]
 fn files_equal(a: &Path, b: &Path) -> bool {
     use std::io::Read as _;
     let (Ok(meta_a), Ok(meta_b)) = (fs::metadata(a), fs::metadata(b)) else {
@@ -238,6 +257,11 @@ pub struct SavedFile {
 
 /// The backed-up copy of `path` in `backup`, or `None` when the set does not
 /// list it.
+///
+/// # Errors
+///
+/// Returns an error if reading or parsing `repair.json`, validating entry
+/// filenames, or reading the backed-up bytes fails.
 pub fn saved_file(backup: &Path, path: &Path) -> Result<Option<SavedFile>, Error> {
     let index = read_index(backup)?;
     for entry in &index.entries {
@@ -261,6 +285,11 @@ pub fn saved_file(backup: &Path, path: &Path) -> Result<Option<SavedFile>, Error
 
 /// [`restore_backup_set`] for every file except those at `skip`, which the
 /// caller restores in its own way.
+///
+/// # Errors
+///
+/// Returns an error if the backup index is invalid/legacy or staging,
+/// persisting, removing, or setting timestamps fails.
 pub fn restore_backup_set_except(backup: &Path, skip: &[&Path]) -> Result<RestoreOutcome, Error> {
     let index = read_index(backup)?;
     if index.version < INDEX_VERSION || index.entries.is_empty() {
@@ -331,6 +360,10 @@ pub fn restore_backup_set_except(backup: &Path, skip: &[&Path]) -> Result<Restor
 }
 
 /// The newest restorable [`create_backup_set`] backup under `directory`.
+///
+/// # Errors
+///
+/// Returns an error if reading `directory` fails (missing directory yields `Ok(None)`).
 pub fn latest_backup_set(directory: &Path) -> Result<Option<PathBuf>, Error> {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -359,6 +392,11 @@ pub fn latest_backup_set(directory: &Path) -> Result<Option<PathBuf>, Error> {
 /// Copy a backup's files back into `addons`. Refuses to overwrite anything:
 /// the caller removes the repaired files first. On failure every file this
 /// call created is removed again.
+///
+/// # Errors
+///
+/// Returns [`RepairError::BackupRestoreFailed`] if any destination file
+/// already exists or reading the index fails, or an I/O error during copy.
 pub fn restore_repair_backup(backup: &Path, addons: &Path) -> Result<(), Error> {
     let index = read_index(backup)?;
     let mut copies = Vec::new();

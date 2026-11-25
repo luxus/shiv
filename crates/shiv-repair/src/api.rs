@@ -29,8 +29,8 @@ use crate::localization_overlay::vdata_compatibility::{
     RepairKind as DataRepairKind, WarningReason,
 };
 use crate::localization_overlay::{
-    self, GameIndex, LocalizationModInput, LocalizationOverlayAnalysis, LocalizationOverlayPlan,
-    OVERLAY_VPK_NAME,
+    self, GameIndex, LocalizationModInput, LocalizationOverlayAnalysis,
+    LocalizationOverlayApplyResult, LocalizationOverlayPlan, OVERLAY_VPK_NAME,
 };
 use crate::mod_health::{
     self, CompatibilityChoice, FixModsStatus, ModFindings, ModHealthSource, ModHealthStatus,
@@ -94,7 +94,7 @@ pub struct ModHealth {
     /// One line for the list, e.g. "1 repair available".
     pub summary: String,
     /// What the repair package changes for this mod, one line per repaired
-    /// file or row, e.g. "scripts/heroes.vdata_c: restore game data the mod
+    /// file or row, e.g. "`scripts/heroes.vdata_c`: restore game data the mod
     /// leaves out". Empty when there is nothing to repair.
     pub changes: Vec<String>,
     /// Problems the repair does not address.
@@ -143,6 +143,7 @@ fn citadel(paths: &GamePaths) -> PathBuf {
 }
 
 /// Folder that holds the repair package, its receipt and learned game data.
+#[must_use]
 pub fn overlay_dir(paths: &GamePaths) -> PathBuf {
     citadel(paths).join(OVERLAY_DIR)
 }
@@ -153,6 +154,7 @@ fn backup_dir(paths: &GamePaths) -> PathBuf {
 
 /// The installed game build (`ClientVersion` in `game/citadel/steam.inf`).
 /// Pass it to [`analyze`]; [`apply`] reads it itself.
+#[must_use]
 pub fn game_build(paths: &GamePaths) -> Option<u64> {
     fs::read_to_string(citadel(paths).join("steam.inf"))
         .ok()?
@@ -214,13 +216,12 @@ fn installed(addons_dir: &Path) -> Result<Vec<Installed>, RepairError> {
         .into_iter()
         .map(|group| {
             let files: Vec<String> = group.vpks.iter().map(|vpk| file_name(&vpk.file)).collect();
-            let (id, name) = match &group.sidecar {
-                Some(sidecar) => (sidecar.mod_id.clone(), sidecar.name.clone()),
-                None => {
-                    let first = files.first().cloned().unwrap_or_default();
-                    let stem = first.strip_suffix(DISABLED_EXT).unwrap_or(&first);
-                    (format!("file:{stem}"), stem.to_owned())
-                }
+            let (id, name) = if let Some(sidecar) = &group.sidecar {
+                (sidecar.mod_id.clone(), sidecar.name.clone())
+            } else {
+                let first = files.first().cloned().unwrap_or_default();
+                let stem = first.strip_suffix(DISABLED_EXT).unwrap_or(&first);
+                (format!("file:{stem}"), stem.to_owned())
             };
             Installed {
                 id,
@@ -345,6 +346,7 @@ fn applied(paths: &GamePaths, version: Option<u32>, installed: &[Installed]) -> 
 }
 
 /// Whether the package on disk is mounted and still matches the installed mods and game.
+#[must_use]
 pub fn overlay_state(paths: &GamePaths) -> OverlayState {
     let dir = overlay_dir(paths);
     let overlay = dir.join(OVERLAY_VPK_NAME);
@@ -628,6 +630,7 @@ fn check_mod(
 /// Reads files only: nothing is written, renamed or created. `build_id` is
 /// [`game_build`] (0 when unknown). A mod that cannot be read is reported as
 /// [`RepairStatus::NotChecked`]; an unreadable addons folder yields no rows.
+#[must_use]
 pub fn analyze(paths: &GamePaths, build_id: u64) -> Vec<ModHealth> {
     let _cache_scope = localization_overlay::enter_cache_scope();
     let installed = match installed(&paths.addons) {
@@ -688,27 +691,34 @@ pub fn analyze(paths: &GamePaths, build_id: u64) -> Vec<ModHealth> {
 /// Repairs exactly `mods` (repairs of mods not listed are dropped; an empty
 /// list removes the package). Refuses while the game runs. See the module
 /// docs for what is written and backed up.
+///
+/// # Errors
+///
+/// Returns [`RepairError::GameRunning`] if Deadlock is running, or an error
+/// when listing mods, building the repair plan, backing up targets, or writing
+/// the package fails (failed writes are rolled back from the backup set).
 pub fn apply(paths: &GamePaths, mods: &[ModId]) -> Result<FixReport, RepairError> {
     apply_with(paths, mods, || game::running_at(&paths.root))
 }
 
-/// [`apply`] with an injectable running-game check.
-pub fn apply_with(
-    paths: &GamePaths,
-    mods: &[ModId],
-    game_running: impl Fn() -> bool,
-) -> Result<FixReport, RepairError> {
-    let _cache_scope = localization_overlay::enter_cache_scope();
-    // Checked first: nothing may be written while the game runs.
-    if game_running() {
-        return Err(RepairError::GameRunning);
-    }
-    let installed = installed(&paths.addons)?;
-    let citadel = citadel(paths);
-    let dir = overlay_dir(paths);
-    let overlay = dir.join(OVERLAY_VPK_NAME);
-    let version = game_build(paths).and_then(version);
+struct ApplyOutputs<'a> {
+    dir: &'a Path,
+    overlay: &'a Path,
+    gameinfo_path: &'a Path,
+    staged: Option<tempfile::TempPath>,
+    has_result: bool,
+    learned: Option<VdataHistoryIndex>,
+    new_gameinfo: Option<String>,
+    gameinfo_permissions: Option<fs::Permissions>,
+    version: Option<u32>,
+    stamps: Vec<InputStamp>,
+    selected: BTreeSet<ModId>,
+}
 
+fn select_repairable_mods(
+    installed: &[Installed],
+    mods: &[ModId],
+) -> (BTreeSet<ModId>, Vec<(ModId, String)>) {
     let mut selected = BTreeSet::new();
     let mut skipped = Vec::new();
     for id in mods {
@@ -723,17 +733,114 @@ pub fn apply_with(
             }
         }
     }
+    (selected, skipped)
+}
 
-    let inputs: Vec<LocalizationModInput> = mounted(&installed)
-        .into_iter()
-        .map(|(_, mod_id, vpk)| LocalizationModInput {
-            mod_id: mod_id.to_owned(),
-            vpks: vec![vpk.file.clone()],
-        })
-        .collect();
-    let stamps = stamps(&installed)?;
+fn stage_overlay_archive(
+    dir: &Path,
+    plan: Option<&LocalizationOverlayPlan>,
+    selected: &BTreeSet<ModId>,
+) -> Result<
+    (
+        Option<LocalizationOverlayApplyResult>,
+        Option<tempfile::TempPath>,
+    ),
+    RepairError,
+> {
+    let Some(plan) = plan.filter(|_| !selected.is_empty()) else {
+        return Ok((None, None));
+    };
+    fs::create_dir_all(dir)?;
+    // The packer replaces this path; staged beside the package so the
+    // final rename stays on one filesystem.
+    let path = tempfile::NamedTempFile::new_in(dir)?.into_temp_path();
+    let written = plan.write(&path, &[])?;
+    if written.has_overlay {
+        Ok((Some(written), Some(path)))
+    } else {
+        Ok((None, None))
+    }
+}
 
-    // Build and validate everything before the first write.
+fn write_apply_outputs(outputs: ApplyOutputs<'_>) -> Result<(), RepairError> {
+    // Package, learned data, receipt, then the mount.
+    if let Some(staged) = outputs.staged {
+        staged
+            .persist(outputs.overlay)
+            .map_err(|error| RepairError::Io(error.error))?;
+    } else {
+        remove_if_exists(outputs.overlay)?;
+    }
+    if let Some(observed) = outputs.learned {
+        // Learning is reproducible; a failed save must not fail the repair.
+        match observed.to_bytes() {
+            Ok(bytes) => {
+                if let Err(error) = write_atomic(&outputs.dir.join(HISTORY_NAME), &bytes, None) {
+                    log::warn!("Could not save learned game data: {error}");
+                }
+            }
+            Err(error) => log::warn!("Could not encode learned game data: {error}"),
+        }
+    }
+    if outputs.has_result {
+        let receipt = Receipt {
+            revision: REPAIR_REVISION,
+            game_build: outputs.version,
+            inputs: outputs.stamps,
+            fixed: outputs.selected,
+            overlay_hash: digest(outputs.overlay)?,
+        };
+        let bytes = serde_json::to_vec_pretty(&receipt).map_err(|error| {
+            RepairError::InvalidInput(format!("Could not record the repair package: {error}"))
+        })?;
+        write_atomic(&outputs.dir.join(RECEIPT_NAME), &bytes, None)?;
+    } else {
+        remove_if_exists(&outputs.dir.join(RECEIPT_NAME))?;
+    }
+    if let Some(text) = outputs.new_gameinfo {
+        write_atomic(
+            outputs.gameinfo_path,
+            text.as_bytes(),
+            outputs.gameinfo_permissions,
+        )?;
+    }
+    Ok(())
+}
+
+fn rollback_failed_apply(backup: Option<&PathBuf>, cause: &RepairError) {
+    let Some(backup) = backup else {
+        return;
+    };
+    match restore_backup_set(backup) {
+        Ok(_) => {
+            if let Err(cleanup) = fs::remove_dir_all(backup) {
+                log::warn!("Could not remove the rolled-back backup: {cleanup}");
+            }
+        }
+        Err(rollback) => log::error!(
+            "Repair failed ({cause}) and rolling back failed ({rollback}); the previous files are in {}",
+            backup.display()
+        ),
+    }
+}
+
+struct BuiltApplyPlan {
+    plan: Option<LocalizationOverlayPlan>,
+    learned: Option<VdataHistoryIndex>,
+    notes: Vec<String>,
+    new_gameinfo: Option<String>,
+    gameinfo_permissions: Option<fs::Permissions>,
+}
+
+fn build_apply_plan(
+    citadel: &Path,
+    dir: &Path,
+    gameinfo_path: &Path,
+    inputs: &[LocalizationModInput],
+    version: Option<u32>,
+    selected: &mut BTreeSet<ModId>,
+    skipped: &mut Vec<(ModId, String)>,
+) -> Result<BuiltApplyPlan, RepairError> {
     let mut plan = None;
     let mut learned = None;
     let mut notes = Vec::new();
@@ -741,11 +848,11 @@ pub fn apply_with(
     let _embedded = VdataHistoryIndex::embedded();
     if !selected.is_empty() {
         let (built, observed, changed) = LocalizationOverlayPlan::build_learning_history(
-            &citadel,
-            &inputs,
-            load_history(&dir),
+            citadel,
+            inputs,
+            load_history(dir),
             version,
-            &selected,
+            selected,
             &|_| {},
         )?;
         for id in selected.clone() {
@@ -763,10 +870,84 @@ pub fn apply_with(
     let mut new_gameinfo = None;
     let mut gameinfo_permissions = None;
     if !selected.is_empty() {
-        let text = fs::read_to_string(&paths.gameinfo)?;
+        let text = fs::read_to_string(gameinfo_path)?;
         new_gameinfo = gameinfo::with_overlay(&text)?;
-        gameinfo_permissions = Some(fs::metadata(&paths.gameinfo)?.permissions());
+        gameinfo_permissions = Some(fs::metadata(gameinfo_path)?.permissions());
     }
+    Ok(BuiltApplyPlan {
+        plan,
+        learned,
+        notes,
+        new_gameinfo,
+        gameinfo_permissions,
+    })
+}
+
+fn without_overlay_if_present(
+    gameinfo_path: &Path,
+) -> Result<(Option<String>, Option<fs::Permissions>), RepairError> {
+    match fs::read_to_string(gameinfo_path) {
+        Ok(text) => {
+            let updated = gameinfo::without_overlay(&text)?;
+            let perms = updated
+                .is_some()
+                .then(|| fs::metadata(gameinfo_path).map(|m| m.permissions()))
+                .transpose()?;
+            Ok((updated, perms))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((None, None)),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// [`apply`] with an injectable running-game check.
+///
+/// # Errors
+///
+/// Returns [`RepairError::GameRunning`] when `game_running()` reports true, or
+/// the same listing, planning, backup, and write errors as [`apply`].
+pub fn apply_with(
+    paths: &GamePaths,
+    mods: &[ModId],
+    game_running: impl Fn() -> bool,
+) -> Result<FixReport, RepairError> {
+    let _cache_scope = localization_overlay::enter_cache_scope();
+    // Checked first: nothing may be written while the game runs.
+    if game_running() {
+        return Err(RepairError::GameRunning);
+    }
+    let installed = installed(&paths.addons)?;
+    let citadel = citadel(paths);
+    let dir = overlay_dir(paths);
+    let overlay = dir.join(OVERLAY_VPK_NAME);
+    let version = game_build(paths).and_then(version);
+
+    let (mut selected, mut skipped) = select_repairable_mods(&installed, mods);
+    let inputs: Vec<LocalizationModInput> = mounted(&installed)
+        .into_iter()
+        .map(|(_, mod_id, vpk)| LocalizationModInput {
+            mod_id: mod_id.to_owned(),
+            vpks: vec![vpk.file.clone()],
+        })
+        .collect();
+    let stamps = stamps(&installed)?;
+
+    // Build and validate everything before the first write.
+    let BuiltApplyPlan {
+        plan,
+        learned,
+        notes,
+        mut new_gameinfo,
+        mut gameinfo_permissions,
+    } = build_apply_plan(
+        &citadel,
+        &dir,
+        &paths.gameinfo,
+        &inputs,
+        version,
+        &mut selected,
+        &mut skipped,
+    )?;
 
     // Removes the package folder again if this call created it and leaves it
     // empty (nothing to repair, or a rolled-back write).
@@ -774,33 +955,11 @@ pub fn apply_with(
         dir: dir.clone(),
         existed: dir.is_dir(),
     };
-    let mut result = None;
-    let mut staged = None;
-    if let Some(plan) = plan.as_ref().filter(|_| !selected.is_empty()) {
-        fs::create_dir_all(&dir)?;
-        // The packer replaces this path; staged beside the package so the
-        // final rename stays on one filesystem.
-        let path = tempfile::NamedTempFile::new_in(&dir)?.into_temp_path();
-        let written = plan.write(&path, &[])?;
-        if written.has_overlay {
-            result = Some(written);
-            staged = Some(path);
-        }
-    }
+    let (result, staged) = stage_overlay_archive(&dir, plan.as_ref(), &selected)?;
     if result.is_none() {
         // Nothing to package: remove any leftover mount and receipt too.
         selected.clear();
-        new_gameinfo = match fs::read_to_string(&paths.gameinfo) {
-            Ok(text) => {
-                let updated = gameinfo::without_overlay(&text)?;
-                if updated.is_some() {
-                    gameinfo_permissions = Some(fs::metadata(&paths.gameinfo)?.permissions());
-                }
-                updated
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
+        (new_gameinfo, gameinfo_permissions) = without_overlay_if_present(&paths.gameinfo)?;
     }
 
     // Back up, in one set, every file this call may replace, create or
@@ -831,61 +990,20 @@ pub fn apply_with(
     let gameinfo_changed = new_gameinfo.is_some();
     let packed_files = result.as_ref().map_or(0, |result| result.packed_files);
     let fixed: Vec<ModId> = selected.iter().cloned().collect();
-    let write = || -> Result<(), RepairError> {
-        // Package, learned data, receipt, then the mount.
-        if let Some(staged) = staged {
-            staged
-                .persist(&overlay)
-                .map_err(|error| RepairError::Io(error.error))?;
-        } else {
-            remove_if_exists(&overlay)?;
-        }
-        if let Some(observed) = learned {
-            // Learning is reproducible; a failed save must not fail the repair.
-            match observed.to_bytes() {
-                Ok(bytes) => {
-                    if let Err(error) = write_atomic(&dir.join(HISTORY_NAME), &bytes, None) {
-                        log::warn!("Could not save learned game data: {error}");
-                    }
-                }
-                Err(error) => log::warn!("Could not encode learned game data: {error}"),
-            }
-        }
-        if result.is_some() {
-            let receipt = Receipt {
-                revision: REPAIR_REVISION,
-                game_build: version,
-                inputs: stamps,
-                fixed: selected,
-                overlay_hash: digest(&overlay)?,
-            };
-            let bytes = serde_json::to_vec_pretty(&receipt).map_err(|error| {
-                RepairError::InvalidInput(format!("Could not record the repair package: {error}"))
-            })?;
-            write_atomic(&dir.join(RECEIPT_NAME), &bytes, None)?;
-        } else {
-            remove_if_exists(&dir.join(RECEIPT_NAME))?;
-        }
-        if let Some(text) = new_gameinfo {
-            write_atomic(&paths.gameinfo, text.as_bytes(), gameinfo_permissions)?;
-        }
-        Ok(())
-    };
-    if let Err(error) = write() {
-        // Put back the state from before this call, then report the cause.
-        if let Some(backup) = &backup {
-            match restore_backup_set(backup) {
-                Ok(_) => {
-                    if let Err(cleanup) = fs::remove_dir_all(backup) {
-                        log::warn!("Could not remove the rolled-back backup: {cleanup}");
-                    }
-                }
-                Err(rollback) => log::error!(
-                    "Repair failed ({error}) and rolling back failed ({rollback}); the previous files are in {}",
-                    backup.display()
-                ),
-            }
-        }
+    if let Err(error) = write_apply_outputs(ApplyOutputs {
+        dir: &dir,
+        overlay: &overlay,
+        gameinfo_path: &paths.gameinfo,
+        staged,
+        has_result: result.is_some(),
+        learned,
+        new_gameinfo,
+        gameinfo_permissions,
+        version,
+        stamps,
+        selected,
+    }) {
+        rollback_failed_apply(backup.as_ref(), &error);
         return Err(error);
     }
 
@@ -926,6 +1044,7 @@ pub struct RestoreReport {
 }
 
 /// Whether [`restore_last`] has a repair to undo (a backup set not yet restored).
+#[must_use]
 pub fn can_undo(paths: &GamePaths) -> bool {
     latest_backup_set(&backup_dir(paths)).is_ok_and(|backup| backup.is_some())
 }
@@ -938,11 +1057,22 @@ pub fn can_undo(paths: &GamePaths) -> bool {
 /// after [`remove_package`]) in the current file, and nothing else in it
 /// changes (its previous text goes to [`gameinfo_backup_path`]). If the file
 /// is gone, the saved copy is put back. Refuses while the game runs.
+///
+/// # Errors
+///
+/// Returns [`RepairError::GameRunning`] if Deadlock is running,
+/// [`RepairError::BackupRestoreFailed`] when no undo backup exists or
+/// restoring files fails, or I/O/gameinfo errors.
 pub fn restore_last(paths: &GamePaths) -> Result<RestoreReport, RepairError> {
     restore_last_with(paths, || game::running_at(&paths.root))
 }
 
 /// [`restore_last`] with an injectable running-game check.
+///
+/// # Errors
+///
+/// Returns [`RepairError::GameRunning`] when `game_running()` reports true, or
+/// the same backup and `gameinfo.gi` errors as [`restore_last`].
 pub fn restore_last_with(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,
@@ -1060,6 +1190,7 @@ fn undo_mount(paths: &GamePaths, backup: &Path) -> Result<MountUndo, RepairError
 const GAMEINFO_BACKUP_SUFFIX: &str = ".shiv-repair.bak";
 
 /// Where [`rewrite_gameinfo`] keeps the file as it was.
+#[must_use]
 pub fn gameinfo_backup_path(paths: &GamePaths) -> PathBuf {
     let mut name = paths.gameinfo.clone().into_os_string();
     name.push(GAMEINFO_BACKUP_SUFFIX);
@@ -1091,6 +1222,7 @@ pub struct RemoveReport {
 }
 
 /// Whether a repair package is on disk or mounted by `gameinfo.gi`.
+#[must_use]
 pub fn has_package(paths: &GamePaths) -> bool {
     overlay_dir(paths).join(OVERLAY_VPK_NAME).is_file() || mounts_overlay(paths)
 }
@@ -1104,11 +1236,22 @@ pub fn has_package(paths: &GamePaths) -> bool {
 /// Everything removed is backed up first with [`create_backup_set`], so
 /// [`restore_last`] can put it back; a failed write restores that set.
 /// Refuses while the game runs.
+///
+/// # Errors
+///
+/// Returns [`RepairError::GameRunning`] if Deadlock is running,
+/// [`RepairError::InvalidInput`] if no package exists or a target path is a
+/// symlink/non-regular file, or [`RepairError::Gameinfo`] / I/O errors.
 pub fn remove_package(paths: &GamePaths) -> Result<RemoveReport, RepairError> {
     remove_package_with(paths, || game::running_at(&paths.root))
 }
 
 /// [`remove_package`] with an injectable running-game check.
+///
+/// # Errors
+///
+/// Returns [`RepairError::GameRunning`] when `game_running()` reports true, or
+/// the same validation, backup, and removal errors as [`remove_package`].
 pub fn remove_package_with(
     paths: &GamePaths,
     game_running: impl Fn() -> bool,

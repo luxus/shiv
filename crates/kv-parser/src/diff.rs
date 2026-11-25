@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use crate::ast::*;
 use crate::error::{KvError, Result};
 use crate::types::{
@@ -9,6 +11,7 @@ pub struct DiffGenerator;
 
 impl DiffGenerator {
     /// Generate diff between two data objects
+    #[must_use]
     pub fn generate_diff(source: &KeyValuesObject, target: &KeyValuesObject) -> DocumentDiff {
         let mut changes = Vec::new();
         Self::compare_objects(
@@ -34,7 +37,7 @@ impl DiffGenerator {
                         let full_path = if path.is_empty() {
                             key.clone()
                         } else {
-                            format!("{}.{}", path, key)
+                            format!("{path}.{key}")
                         };
                         changes.push(DiffEntry {
                             op: DiffOp::Remove,
@@ -54,7 +57,7 @@ impl DiffGenerator {
                     let full_path = if path.is_empty() {
                         key.clone()
                     } else {
-                        format!("{}.{}", path, key)
+                        format!("{path}.{key}")
                     };
 
                     if let Some(src_value) = src_obj.get(key) {
@@ -137,6 +140,7 @@ impl DiffGenerator {
     }
 
     /// Get statistics about a diff
+    #[must_use]
     pub fn get_stats(diff: &DocumentDiff) -> DiffStats {
         let mut stats = DiffStats {
             total: diff.changes.len(),
@@ -157,6 +161,7 @@ impl DiffGenerator {
     }
 
     /// Format diff as human-readable string
+    #[must_use]
     pub fn format_diff(diff: &DocumentDiff) -> String {
         if diff.changes.is_empty() {
             return "No changes".to_string();
@@ -168,38 +173,37 @@ impl DiffGenerator {
             match change.op {
                 DiffOp::Add => {
                     if let Some(new_val) = &change.new_value {
-                        output.push_str(&format!(
-                            "+ Add {} = {}\n",
+                        let _ = writeln!(
+                            output,
+                            "+ Add {} = {}",
                             change.path,
                             Self::format_value(new_val)
-                        ));
+                        );
                     } else {
-                        output.push_str(&format!("+ Add {} = <missing value>\n", change.path));
+                        let _ = writeln!(output, "+ Add {} = <missing value>", change.path);
                     }
                 }
                 DiffOp::Remove => {
                     if let Some(old_val) = &change.old_value {
-                        output.push_str(&format!(
-                            "- Remove {} (was: {})\n",
+                        let _ = writeln!(
+                            output,
+                            "- Remove {} (was: {})",
                             change.path,
                             Self::format_value(old_val)
-                        ));
+                        );
                     } else {
-                        output.push_str(&format!(
-                            "- Remove {} (was: <missing value>)\n",
-                            change.path
-                        ));
+                        let _ = writeln!(output, "- Remove {} (was: <missing value>)", change.path);
                     }
                 }
                 DiffOp::Replace => {
-                    output.push_str(&format!("~ Replace {}\n", change.path));
+                    let _ = writeln!(output, "~ Replace {}", change.path);
                     if let Some(old_val) = &change.old_value {
-                        output.push_str(&format!("  - Old: {}\n", Self::format_value(old_val)));
+                        let _ = writeln!(output, "  - Old: {}", Self::format_value(old_val));
                     } else {
                         output.push_str("  - Old: <missing value>\n");
                     }
                     if let Some(new_val) = &change.new_value {
-                        output.push_str(&format!("  + New: {}\n", Self::format_value(new_val)));
+                        let _ = writeln!(output, "  + New: {}", Self::format_value(new_val));
                     } else {
                         output.push_str("  + New: <missing value>\n");
                     }
@@ -388,13 +392,8 @@ impl DiffApplicator {
                         path_parts[1],
                         new_value,
                     );
-                } else {
-                    return Self::update_in_nested_path(
-                        &mut obj.children,
-                        &path_parts[1..],
-                        new_value,
-                    );
                 }
+                return Self::update_in_nested_path(&mut obj.children, &path_parts[1..], new_value);
             }
         }
 
@@ -423,7 +422,7 @@ impl DiffApplicator {
         })
     }
 
-    /// Replace all KeyValue nodes with the given key with nodes from an array.
+    /// Replace all `KeyValue` nodes with the given key with nodes from an array.
     /// This handles the case where duplicate keys need to be replaced with a new array of values.
     fn replace_array_keyvalues(
         children: &mut Vec<AstNode>,
@@ -479,8 +478,7 @@ impl DiffApplicator {
             let sep = if let AstNode::KeyValue(kv) = &children[first_pos] {
                 kv.separator
                     .as_ref()
-                    .map(|s| s.raw.clone())
-                    .unwrap_or_else(|| "\t\t\t\t".to_string())
+                    .map_or_else(|| "\t\t\t\t".to_string(), |s| s.raw.clone())
             } else {
                 "\t\t\t\t".to_string()
             };
@@ -557,7 +555,7 @@ impl DiffApplicator {
             )
         {
             // Need to add whitespace before first entry
-            let ws_raw = format!("\r\n{}", indentation);
+            let ws_raw = format!("\r\n{indentation}");
             let ws_node = AstNode::Whitespace(WhitespaceNode {
                 node_type: NodeType::Whitespace,
                 start: Position {
@@ -584,7 +582,7 @@ impl DiffApplicator {
         for (i, value) in array_values.iter().enumerate() {
             // Add whitespace before each key EXCEPT the first one (which uses preserved/added whitespace)
             if i > 0 {
-                let ws_raw = format!("\r\n{}", indentation);
+                let ws_raw = format!("\r\n{indentation}");
                 children.insert(
                     current_pos,
                     AstNode::Whitespace(WhitespaceNode {
@@ -631,7 +629,7 @@ impl DiffApplicator {
                         line: 0,
                         column: 0,
                     },
-                    raw: format!("\"{}\"", key),
+                    raw: format!("\"{key}\""),
                     value: key.to_string(),
                     quoted: true,
                     quote_char: Some("\"".to_string()),
@@ -731,13 +729,8 @@ impl DiffApplicator {
                         path_parts[1],
                         new_value,
                     );
-                } else {
-                    return Self::add_in_nested_path(
-                        &mut obj.children,
-                        &path_parts[1..],
-                        new_value,
-                    );
                 }
+                return Self::add_in_nested_path(&mut obj.children, &path_parts[1..], new_value);
             }
         }
 
@@ -746,7 +739,7 @@ impl DiffApplicator {
         })
     }
 
-    /// Add multiple KeyValue nodes with the same key (for array values).
+    /// Add multiple `KeyValue` nodes with the same key (for array values).
     /// This handles the case where we're adding new entries that should be duplicate keys.
     fn add_multiple_keyvalues(
         children: &mut Vec<AstNode>,
@@ -771,8 +764,7 @@ impl DiffApplicator {
             if i == 0
                 || !children
                     .last()
-                    .map(|c| matches!(c, AstNode::Whitespace(_)))
-                    .unwrap_or(false)
+                    .is_some_and(|c| matches!(c, AstNode::Whitespace(_)))
             {
                 let ws_node = AstNode::Whitespace(WhitespaceNode {
                     node_type: NodeType::Whitespace,
@@ -817,7 +809,7 @@ impl DiffApplicator {
                         line: 0,
                         column: 0,
                     },
-                    raw: format!("\"{}\"", key),
+                    raw: format!("\"{key}\""),
                     value: key.to_string(),
                     quoted: true,
                     quote_char: Some("\"".to_string()),
@@ -875,10 +867,10 @@ impl DiffApplicator {
                         .skip_while(|c| *c == '\n' || *c == '\r')
                         .take_while(|c| *c == '\t')
                         .collect();
-                    if !tabs.is_empty() {
-                        format!("\n{}", tabs)
-                    } else {
+                    if tabs.is_empty() {
                         "\n\t\t\t".to_string()
+                    } else {
+                        format!("\n{tabs}")
                     }
                 } else {
                     // Look backwards for whitespace to detect indentation
@@ -893,7 +885,7 @@ impl DiffApplicator {
                                 .take_while(|c| *c == '\t')
                                 .collect();
                             if !tabs.is_empty() {
-                                found_indent = Some(format!("\n{}", tabs));
+                                found_indent = Some(format!("\n{tabs}"));
                                 break;
                             }
                         } else if let AstNode::KeyValue(_) = child {
@@ -909,8 +901,7 @@ impl DiffApplicator {
             // Only add whitespace if the last node is not already whitespace
             if !children
                 .last()
-                .map(|c| matches!(c, AstNode::Whitespace(_)))
-                .unwrap_or(false)
+                .is_some_and(|c| matches!(c, AstNode::Whitespace(_)))
             {
                 let ws_node = AstNode::Whitespace(WhitespaceNode {
                     node_type: NodeType::Whitespace,
@@ -955,7 +946,7 @@ impl DiffApplicator {
                         line: 0,
                         column: 0,
                     },
-                    raw: format!("\"{}\"", key),
+                    raw: format!("\"{key}\""),
                     value: key.to_string(),
                     quoted: true,
                     quote_char: Some("\"".to_string()),
@@ -1008,9 +999,8 @@ impl DiffApplicator {
             {
                 if path_parts.len() == 2 {
                     return Self::remove_keyvalue_from_children(&mut obj.children, path_parts[1]);
-                } else {
-                    return Self::remove_in_nested_path(&mut obj.children, &path_parts[1..]);
                 }
+                return Self::remove_in_nested_path(&mut obj.children, &path_parts[1..]);
             }
         }
 
@@ -1047,7 +1037,7 @@ impl DiffApplicator {
         }
 
         // Remove all occurrences (in reverse order to maintain indices)
-        positions_to_remove.sort();
+        positions_to_remove.sort_unstable();
         for &pos in positions_to_remove.iter().rev() {
             children.remove(pos);
         }
@@ -1055,10 +1045,10 @@ impl DiffApplicator {
         Ok(())
     }
 
-    /// Create a ValueNode from a KeyValuesValue.
+    /// Create a `ValueNode` from a `KeyValuesValue`.
     ///
     /// Note: Arrays are not supported in the AST representation and will return an error.
-    /// KeyValues format does not natively support arrays, and arrays are only used
+    /// `KeyValues` format does not natively support arrays, and arrays are only used
     /// internally when duplicate keys are encountered during parsing.
     fn create_value_node(value: &KeyValuesValue) -> Result<ValueNode> {
         match value {
@@ -1074,7 +1064,7 @@ impl DiffApplicator {
                     line: 0,
                     column: 0,
                 },
-                raw: format!("\"{}\"", s),
+                raw: format!("\"{s}\""),
                 value: s.clone(),
                 quoted: true,
                 quote_char: Some("\"".to_string()),
@@ -1112,7 +1102,7 @@ impl DiffApplicator {
                             line: 0,
                             column: 0,
                         },
-                        raw: format!("\"{}\"", key),
+                        raw: format!("\"{key}\""),
                         value: key.clone(),
                         quoted: true,
                         quote_char: Some("\"".to_string()),
@@ -1270,14 +1260,13 @@ impl DiffApplicator {
                         comment_text,
                         position,
                     );
-                } else {
-                    return Self::add_comment_in_nested_path(
-                        &mut obj.children,
-                        &path_parts[1..],
-                        comment_text,
-                        position,
-                    );
                 }
+                return Self::add_comment_in_nested_path(
+                    &mut obj.children,
+                    &path_parts[1..],
+                    comment_text,
+                    position,
+                );
             }
         }
 
@@ -1322,7 +1311,7 @@ impl DiffApplicator {
             // Create comment node with proper indentation
             // Note: Comment raw includes leading tabs but NOT trailing newline
             // The trailing newline will be handled by the whitespace node after it
-            let comment_raw = format!("// {}", comment_text);
+            let comment_raw = format!("// {comment_text}");
             let comment_node = AstNode::Comment(CommentNode {
                 node_type: NodeType::Comment,
                 start: Position {
@@ -1345,8 +1334,8 @@ impl DiffApplicator {
                 CommentPosition::Before => {
                     // Insert comment before the target node
                     // Structure: [existing content] [ws: \r\n + tabs] [comment: // text] [ws: \r\n + tabs] [target]
-                    let ws_before_comment = format!("\r\n{}", tabs);
-                    let ws_after_comment = format!("\r\n{}", tabs);
+                    let ws_before_comment = format!("\r\n{tabs}");
+                    let ws_after_comment = format!("\r\n{tabs}");
 
                     // Create whitespace node before comment
                     let ws_before_node = AstNode::Whitespace(WhitespaceNode {
@@ -1407,7 +1396,7 @@ impl DiffApplicator {
                         .unwrap_or(pos);
 
                     let insert_pos = last_kv_pos + 1;
-                    let ws_content = format!("\r\n{}", tabs);
+                    let ws_content = format!("\r\n{tabs}");
 
                     // Insert whitespace before comment
                     let ws_before_node = AstNode::Whitespace(WhitespaceNode {
@@ -1472,13 +1461,12 @@ impl DiffApplicator {
             {
                 if path_parts.len() == 2 {
                     return Self::remove_comment_from_children(&mut obj.children, comment_text);
-                } else {
-                    return Self::remove_comment_in_nested_path(
-                        &mut obj.children,
-                        &path_parts[1..],
-                        comment_text,
-                    );
                 }
+                return Self::remove_comment_in_nested_path(
+                    &mut obj.children,
+                    &path_parts[1..],
+                    comment_text,
+                );
             }
         }
 
@@ -1522,7 +1510,7 @@ impl DiffApplicator {
         }
 
         // Remove all occurrences (in reverse order to maintain indices)
-        positions_to_remove.sort();
+        positions_to_remove.sort_unstable();
         for &pos in positions_to_remove.iter().rev() {
             children.remove(pos);
         }

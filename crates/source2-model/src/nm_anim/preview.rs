@@ -175,7 +175,7 @@ pub fn preview_actions(
                 id: format!("ability:{}", family.trim_start_matches("ability_")),
                 kind: PreviewActionKind::Ability,
                 clips,
-                ability: named.get(&family).map(|name| name.to_string()),
+                ability: named.get(&family).map(std::string::ToString::to_string),
             });
         }
     }

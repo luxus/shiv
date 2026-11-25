@@ -91,17 +91,16 @@ pub(super) fn record(
         .lock()
         .ok()
         .and_then(|mut cache| cache.get(path, &digest));
-    let snapshot = match cached {
-        Some(snapshot) => snapshot,
-        None => {
-            let decoded = compiled_resource::decode(bytes, path)?;
-            let snapshot =
-                Arc::new(VdataSnapshot::new(path, &decoded.root).map_err(Error::ModInvalid)?);
-            if let Ok(mut cache) = cache.lock() {
-                cache.insert(path, digest, Arc::clone(&snapshot));
-            }
-            snapshot
+    let snapshot = if let Some(snapshot) = cached {
+        snapshot
+    } else {
+        let decoded = compiled_resource::decode(bytes, path)?;
+        let snapshot =
+            Arc::new(VdataSnapshot::new(path, &decoded.root).map_err(Error::ModInvalid)?);
+        if let Ok(mut cache) = cache.lock() {
+            cache.insert(path, digest, Arc::clone(&snapshot));
         }
+        snapshot
     };
     observed
         .record_snapshot(path, version, &snapshot)

@@ -48,6 +48,7 @@ pub enum EncodingChildren {
 
 impl Encoding {
     /// Whether this value occupies an IEEE 754 single-precision lane.
+    #[must_use]
     pub fn is_float(&self) -> bool {
         self.datatype == super::node::FLOAT
     }

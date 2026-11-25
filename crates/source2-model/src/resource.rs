@@ -75,10 +75,12 @@ impl Resource {
         Ok(Self { data, blocks })
     }
 
+    #[must_use]
     pub fn block(&self, name: &str) -> Option<&ResourceBlock> {
         self.blocks.iter().find(|b| b.name == name)
     }
 
+    #[must_use]
     pub fn block_bytes(&self, name: &str) -> Option<&[u8]> {
         self.block(name)
             .and_then(|b| self.data.get(b.offset..b.offset + b.size))

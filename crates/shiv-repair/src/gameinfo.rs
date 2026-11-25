@@ -55,6 +55,11 @@ fn active_game_path(site: &SourceSite) -> Result<Option<&str>, RepairError> {
 }
 
 /// True when `text` mounts the repair package.
+///
+/// # Errors
+///
+/// Returns [`RepairError::Gameinfo`] when `text` is not valid `KeyValues` or
+/// contains an invalid condition expression.
 pub fn mounts_overlay(text: &str) -> Result<bool, RepairError> {
     let doc = parse(text)?;
     for site in &doc.sites {
@@ -68,6 +73,11 @@ pub fn mounts_overlay(text: &str) -> Result<bool, RepairError> {
 /// `text` with the repair package mounted directly before `citadel/addons`,
 /// or `None` when it is already mounted. Fails when `citadel/addons` is not
 /// mounted: then no mod loads and the package would have nothing to repair.
+///
+/// # Errors
+///
+/// Returns [`RepairError::Gameinfo`] if `text` fails to parse or has no
+/// active `Game citadel/addons` search path.
 pub fn with_overlay(text: &str) -> Result<Option<String>, RepairError> {
     let doc = parse(text)?;
     let mut addons = None;
@@ -118,6 +128,11 @@ pub fn with_overlay(text: &str) -> Result<Option<String>, RepairError> {
 /// [`mounts_overlay`] finds them, and the result is checked with it: when a
 /// mount cannot be cut out safely (a condition on a line shared with other
 /// tokens) this fails instead of leaving the package mounted.
+///
+/// # Errors
+///
+/// Returns [`RepairError::Gameinfo`] if `text` fails to parse or the mount
+/// cannot be cleanly removed from a shared line.
 pub fn without_overlay(text: &str) -> Result<Option<String>, RepairError> {
     let doc = parse(text)?;
     let mut cuts: Vec<std::ops::Range<usize>> = Vec::new();

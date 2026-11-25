@@ -133,6 +133,7 @@ pub enum Finding<'a> {
 /// Structural model faults the engine can reject outright, and missing
 /// references it may not have a fallback for, are reported as crash risks.
 /// A missing texture only changes how the model looks.
+#[must_use]
 pub fn symptom(finding: Finding) -> ModHealthSymptom {
     use ModHealthSymptom::*;
     match finding {
@@ -192,7 +193,10 @@ pub fn symptom(finding: Finding) -> ModHealthSymptom {
 fn is_missing_texture(warning: &AssetWarning) -> bool {
     let target = warning.detail.to_ascii_lowercase();
     warning.kind == AssetWarningKind::MissingResource
-        && (target.ends_with(".vtex") || target.ends_with(".vtex_c"))
+        && (std::path::Path::new(&target)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("vtex"))
+            || target.ends_with(".vtex_c"))
 }
 
 /// Warnings that stay listed in review but don't mark a mod as needing an
@@ -219,8 +223,8 @@ fn is_informational(warning: &AssetWarning) -> bool {
 /// A prop model, such as a particle's model, never acts as a hero, so hero
 /// interface warnings do not apply.
 fn affects_mod(analysis: &LocalizationOverlayAnalysis, warning: &AssetWarning) -> bool {
-    !is_informational(warning)
-        && !(analysis.prop_models.contains(&warning.file_path)
+    !(is_informational(warning)
+        || analysis.prop_models.contains(&warning.file_path)
             && matches!(
                 warning.kind,
                 AssetWarningKind::MissingCameraInterface
@@ -249,11 +253,13 @@ pub struct ModFindings {
 }
 
 impl ModFindings {
+    #[must_use]
     pub fn uncovered() -> Self {
         Self::default()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn with_repairs(repairs: u32) -> Self {
         Self {
             repairs,
@@ -327,6 +333,7 @@ impl ModFindings {
     }
 
     /// The player-facing verdict for these findings.
+    #[must_use]
     pub fn health(
         &self,
         mod_id: &str,
@@ -353,6 +360,7 @@ impl ModFindings {
         }
     }
 
+    #[must_use]
     pub fn status(&self, choice: CompatibilityChoice) -> ModHealthStatus {
         if self.repairs > 0 {
             match choice {
@@ -424,6 +432,7 @@ pub struct CachedModHealth {
 }
 
 impl CachedModHealth {
+    #[must_use]
     pub fn new(key: HealthKey, findings: ModFindings, source: ModHealthSource) -> Self {
         Self {
             key,
@@ -443,6 +452,7 @@ pub struct ProfileHealth {
 }
 
 impl ProfileHealth {
+    #[must_use]
     pub fn is_current(&self, mod_id: &str, key: &HealthKey) -> bool {
         self.mods.get(mod_id).is_some_and(|entry| entry.key == *key)
     }
@@ -526,7 +536,9 @@ fn read_cache(app_data: &Path) -> HealthCache {
 }
 
 pub fn load(app_data: &Path, profile: &str) -> ProfileHealth {
-    let _guard = CACHE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = CACHE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     read_cache(app_data)
         .profiles
         .remove(profile)
@@ -539,7 +551,9 @@ pub fn record(
     game_build: Option<u32>,
     entries: impl IntoIterator<Item = (String, CachedModHealth)>,
 ) -> Result<(), Error> {
-    let _guard = CACHE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = CACHE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut cache = read_cache(app_data);
     let health = cache.profiles.entry(profile.to_owned()).or_default();
     for (mod_id, entry) in entries {

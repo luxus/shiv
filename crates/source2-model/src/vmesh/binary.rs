@@ -179,10 +179,10 @@ pub(crate) fn decompress_normal_v1(x: f32, y: f32) -> [f32; 3] {
     let z_sign_bit = if x < 0.0 { 1.0 } else { 0.0 };
     let t_sign_bit = if y < 0.0 { 1.0 } else { 0.0 };
     let z_sign = -((2.0 * z_sign_bit) - 1.0);
-    let _t_sign = -((2.0 * t_sign_bit) - 1.0);
+    let t_sign = -((2.0 * t_sign_bit) - 1.0);
 
     x = (x * z_sign) - z_sign_bit;
-    y = (y * _t_sign) - t_sign_bit;
+    y = (y * t_sign) - t_sign_bit;
     x -= 64.0;
     y -= 64.0;
 
@@ -261,9 +261,9 @@ pub(crate) fn read_normals(buffer: &BufferData, field: &LayoutField) -> Result<V
 }
 
 pub(crate) fn half_to_f32(bits: u16) -> f32 {
-    let sign = ((bits & 0x8000) as u32) << 16;
-    let exponent = ((bits >> 10) & 0x1f) as i32;
-    let mantissa = (bits & 0x03ff) as u32;
+    let sign = u32::from(bits & 0x8000) << 16;
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let mantissa = u32::from(bits & 0x03ff);
 
     let f32_bits = if exponent == 0 {
         if mantissa == 0 {
@@ -344,7 +344,7 @@ fn srgb_to_linear(value: f32) -> f32 {
 }
 
 /// Read a COLOR stream as linear RGBA. Source 2 stores vertex colours
-/// gamma-encoded like its colour textures; glTF's COLOR_0 is linear.
+/// gamma-encoded like its colour textures; glTF's `COLOR_0` is linear.
 pub(crate) fn read_colors(buffer: &BufferData, field: &LayoutField) -> Result<Vec<f32>> {
     let mut colors = Vec::with_capacity(buffer.element_count * 4);
     for i in 0..buffer.element_count {

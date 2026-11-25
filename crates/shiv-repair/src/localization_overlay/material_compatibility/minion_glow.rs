@@ -1,5 +1,5 @@
 //! Reviewed migration v1: legacy candle wax -> live Amber/Sapphire head surfaces.
-//! Current unit/model paths and role names come from npc_units, never mod IDs.
+//! Current unit/model paths and role names come from `npc_units`, never mod IDs.
 use super::*;
 use vpkmanager::source2::kv3::Value;
 

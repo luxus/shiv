@@ -50,12 +50,11 @@ pub(crate) fn parse_reference_pose(root: &KvValue, bone_count: usize) -> Vec<Ref
         let mut floats = [0.0f32; 8];
         let mut ok = true;
         for (slot, value) in floats.iter_mut().zip(values) {
-            match numeric_f32(value) {
-                Some(number) => *slot = number,
-                None => {
-                    ok = false;
-                    break;
-                }
+            if let Some(number) = numeric_f32(value) {
+                *slot = number;
+            } else {
+                ok = false;
+                break;
             }
         }
         if !ok {
@@ -215,8 +214,7 @@ pub fn resolve_nm_clip_from_archive(
         }
         let cast_is_generic = cast_parameter
             .map(normalize_name)
-            .map(|cast| meaningful_tokens(&cast).is_empty())
-            .unwrap_or(true);
+            .is_none_or(|cast| meaningful_tokens(&cast).is_empty());
         let graph_clip_is_generic =
             meaningful_tokens(&normalize_name(clip_name(&graph_match.clip_path))).is_empty();
         if cast_is_generic && graph_clip_is_generic {
@@ -772,8 +770,7 @@ pub(crate) fn normalize_name(value: &str) -> String {
             && previous.is_some_and(|previous| {
                 previous.is_ascii_lowercase()
                     || previous.is_ascii_digit()
-                    || (previous.is_ascii_uppercase()
-                        && next.is_some_and(|next| next.is_ascii_lowercase()))
+                    || (previous.is_ascii_uppercase() && next.is_some_and(char::is_ascii_lowercase))
             });
         if starts_word && !normalized.ends_with('_') {
             normalized.push('_');

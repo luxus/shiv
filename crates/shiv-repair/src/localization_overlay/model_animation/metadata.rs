@@ -43,11 +43,14 @@ pub(super) fn restore(
             for (range, text) in member_edits {
                 edits.push((object_start + range.start..object_start + range.end, text));
             }
-            let additions: String = current_members
+            let additions = current_members
                 .iter()
                 .filter(|(name, _)| !members.contains_key(*name))
-                .map(|(_, range)| format!("\n{}\n", &current_object[range.clone()]))
-                .collect();
+                .fold(String::new(), |mut out, (_, range)| {
+                    use std::fmt::Write as _;
+                    let _ = write!(out, "\n{}\n", &current_object[range.clone()]);
+                    out
+                });
             edits.push((object_start + end..object_start + end, additions));
         } else {
             edits.push((closing..closing, format!("\n{current_data}\n")));

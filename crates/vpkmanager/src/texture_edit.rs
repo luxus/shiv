@@ -5,7 +5,7 @@
 //! RGBA8888, …). That matters: writing an uncompressed replacement instead would
 //! inflate a 4K BC7 texture roughly eightfold and drop the mip chain the engine
 //! samples at distance, so the skin would both bloat the VPK and shimmer in game.
-//! Re-encoding BCn is lossy, which is acceptable when the pixels were being
+//! Re-encoding `BCn` is lossy, which is acceptable when the pixels were being
 //! changed on purpose anyway.
 
 use image::imageops::{FilterType, crop_imm, resize};
@@ -147,7 +147,7 @@ pub fn recolor_texture(original: &[u8], recolor: Recolor) -> Result<EditedTextur
 /// Apply a recolor, a pattern, or both — in a single decode/encode pass.
 ///
 /// Chaining `recolor_texture` into `pattern_texture` would decode the texture,
-/// re-encode its whole mip chain, then decode and re-encode it again. The BCn
+/// re-encode its whole mip chain, then decode and re-encode it again. The `BCn`
 /// encode is essentially the entire cost of a paint, so paying it twice doubles
 /// the wait for no benefit: both transforms are per-pixel and compose.
 ///

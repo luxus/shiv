@@ -25,6 +25,7 @@ pub enum SoundInput {
 }
 
 /// Classify a replacement by extension, which is what the file picker filters on.
+#[must_use]
 pub fn classify_sound_input(extension: &str) -> Option<SoundInput> {
     match extension.to_ascii_lowercase().as_str() {
         "mp3" => Some(SoundInput::Mp3),

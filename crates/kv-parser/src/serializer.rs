@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use crate::ast::*;
 use crate::error::{KvError, Result};
 use crate::types::{KeyValuesObject, KeyValuesValue, SerializeOptions};
@@ -7,11 +9,13 @@ pub struct Serializer {
 }
 
 impl Serializer {
+    #[must_use]
     pub fn new(options: SerializeOptions) -> Self {
         Self { options }
     }
 
     /// Serialize AST to string (perfect preservation)
+    #[must_use]
     pub fn serialize_ast(ast: &DocumentNode) -> String {
         Self::serialize_children(&ast.children)
     }
@@ -110,42 +114,40 @@ impl Serializer {
                     // Handle duplicate keys
                     for item in arr {
                         if matches!(item, KeyValuesValue::Object(_)) {
-                            result.push_str(&format!("{}{}\n", next_indent_str, formatted_key));
-                            result.push_str(&format!(
-                                "{}{}\n",
-                                next_indent_str,
+                            let _ = writeln!(result, "{next_indent_str}{formatted_key}");
+                            let _ = writeln!(
+                                result,
+                                "{next_indent_str}{}",
                                 self.serialize_kv_value(item, indent + 1)?
-                            ));
+                            );
                         } else {
-                            result.push_str(&format!(
-                                "{}{}    {}\n",
-                                next_indent_str,
-                                formatted_key,
+                            let _ = writeln!(
+                                result,
+                                "{next_indent_str}{formatted_key}    {}",
                                 self.serialize_kv_value(item, indent + 1)?
-                            ));
+                            );
                         }
                     }
                 }
                 KeyValuesValue::Object(_) => {
-                    result.push_str(&format!("{}{}\n", next_indent_str, formatted_key));
-                    result.push_str(&format!(
-                        "{}{}\n",
-                        next_indent_str,
+                    let _ = writeln!(result, "{next_indent_str}{formatted_key}");
+                    let _ = writeln!(
+                        result,
+                        "{next_indent_str}{}",
                         self.serialize_kv_value(value, indent + 1)?
-                    ));
+                    );
                 }
                 _ => {
-                    result.push_str(&format!(
-                        "{}{}    {}\n",
-                        next_indent_str,
-                        formatted_key,
+                    let _ = writeln!(
+                        result,
+                        "{next_indent_str}{formatted_key}    {}",
                         self.serialize_kv_value(value, indent + 1)?
-                    ));
+                    );
                 }
             }
         }
 
-        result.push_str(&format!("{}}}", indent_str));
+        let _ = write!(result, "{indent_str}}}");
         Ok(result)
     }
 

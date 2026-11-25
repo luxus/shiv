@@ -107,6 +107,7 @@ pub fn has_checkable_resources(input: &LocalizationModInput) -> Result<bool, Err
     Ok(false)
 }
 
+#[must_use]
 pub fn reads_compiled_baseline(path: &str) -> bool {
     [
         ".vdata_c",
@@ -673,7 +674,7 @@ impl LocalizationOverlayPlan {
                 stage,
                 checked,
                 total,
-            })
+            });
         };
         let repair_scope = repair_scope::RepairScope::new(mods, enabled_mod_ids, resources);
         let mut bases: BTreeMap<String, LocalizationFile> = BTreeMap::new();
@@ -1768,7 +1769,7 @@ fn compile_source(
                             target_row: String::new(),
                             reason: vdata_compatibility::WarningReason::AmbiguousTemplates,
                             detail: String::new(),
-                        })
+                        });
                 }
                 vdata_compatibility::InheritedRebase::NotApplicable => {}
             }
@@ -2386,9 +2387,8 @@ fn parse_localization_bytes(bytes: &[u8], source: &str) -> Result<ParsedLocaliza
     let root = parsed.value.get_obj().ok_or_else(|| {
         Error::ModInvalid(format!("Localization file {source} has no lang object"))
     })?;
-    let language = object_string(root, "Language")
-        .map(str::to_string)
-        .unwrap_or_else(|| infer_language(source));
+    let language =
+        object_string(root, "Language").map_or_else(|| infer_language(source), str::to_string);
     let token_object = object_value(root, "Tokens")
         .and_then(Value::get_obj)
         .ok_or_else(|| {
@@ -2443,7 +2443,7 @@ fn parse_localization_lines(text: &str, source: &str) -> Result<ParsedLocalizati
         if !in_tokens {
             match parse_quoted_fields(trimmed) {
                 Ok(fields) if fields.len() >= 2 && fields[0].eq_ignore_ascii_case("Language") => {
-                    language = fields[1].clone();
+                    language.clone_from(&fields[1]);
                 }
                 Ok(fields) if fields.len() == 1 && fields[0].eq_ignore_ascii_case("Tokens") => {
                     found_tokens = true;
@@ -2529,10 +2529,7 @@ fn object_value<'a, 'text>(
         .and_then(|(_, values)| values.last())
 }
 
-fn object_string<'a, 'text>(
-    object: &'a keyvalues_parser::Obj<'text>,
-    key: &str,
-) -> Option<&'a str> {
+fn object_string<'a>(object: &'a keyvalues_parser::Obj<'_>, key: &str) -> Option<&'a str> {
     object_value(object, key).and_then(Value::get_str)
 }
 
@@ -2560,7 +2557,7 @@ fn escape_keyvalues(value: &str) -> String {
         .replace('\t', "\\t")
 }
 
-/// Preserve the first key in BTree order when a file contains case variants,
+/// Preserve the first key in `BTree` order when a file contains case variants,
 /// matching the existing lookup semantics without scanning every token per query.
 fn token_index(tokens: &BTreeMap<String, String>) -> BTreeMap<String, &str> {
     let mut index = BTreeMap::new();
@@ -3024,7 +3021,9 @@ fn is_localization_path(path: &str) -> bool {
     let normalized = normalize_path(path);
     is_safe_vpk_relpath(&normalized)
         && normalized.starts_with("resource/localization/")
-        && normalized.ends_with(".txt")
+        && std::path::Path::new(&normalized)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
 }
 
 fn is_protected_localization_path(path: &str) -> bool {

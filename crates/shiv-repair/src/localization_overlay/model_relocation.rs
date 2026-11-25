@@ -76,9 +76,9 @@ pub(super) fn historical_hero_models<'a>(
             let [target] = targets.as_slice() else {
                 return false;
             };
-            !resources
+            resources
                 .provider(target)
-                .is_some_and(|provider| provider.mod_id.is_some())
+                .is_none_or(|provider| provider.mod_id.is_none())
         })
         .map(str::to_owned)
         .collect())

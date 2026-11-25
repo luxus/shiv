@@ -11,7 +11,7 @@ use crate::preview_report::{
     PreviewDependency, PreviewEvidence, PreviewIssue, PreviewIssueKind, PreviewReport,
 };
 
-const VPK_SIGNATURE: u32 = 0x55aa1234;
+const VPK_SIGNATURE: u32 = 0x55aa_1234;
 
 struct EntryInfo {
     full_path: String,
@@ -33,6 +33,7 @@ struct EntryInfo {
 pub const ORIGIN_SIDECAR_SUFFIX: &str = ".origin";
 
 /// Path of the origin sidecar belonging to `vpk_path`.
+#[must_use]
 pub fn origin_sidecar_path(vpk_path: &Path) -> PathBuf {
     let mut name = vpk_path.file_name().unwrap_or_default().to_os_string();
     name.push(ORIGIN_SIDECAR_SUFFIX);
@@ -41,6 +42,7 @@ pub fn origin_sidecar_path(vpk_path: &Path) -> PathBuf {
 
 /// Directory to resolve `_NNN.vpk` companions in: the one named by the origin
 /// sidecar when it exists and still points at a directory, else the VPK's own.
+#[must_use]
 pub fn companion_dir(vpk_path: &Path) -> PathBuf {
     if let Ok(text) = fs::read_to_string(origin_sidecar_path(vpk_path)) {
         let origin = PathBuf::from(text.trim());
@@ -150,12 +152,14 @@ impl VpkArchive {
     }
 
     /// Read missing resources from lower-priority archives without unpacking them.
+    #[must_use]
     pub fn with_fallbacks(mut self, fallbacks: Vec<Arc<VpkArchive>>) -> Self {
         self.fallbacks = fallbacks;
         self
     }
 
     /// Enable evidence only for this request; shared cached base archives remain immutable.
+    #[must_use]
     pub fn with_preview_report(mut self) -> Self {
         self.evidence = Some(Mutex::new(PreviewEvidence::default()));
         self
@@ -188,7 +192,7 @@ impl VpkArchive {
         if let Some(evidence) = &self.evidence {
             evidence
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .issue(PreviewIssue {
                     path: path.to_string(),
                     kind,
@@ -220,7 +224,7 @@ impl VpkArchive {
         {
             evidence
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .dependency(source);
         }
         if let Err(error) = result {
