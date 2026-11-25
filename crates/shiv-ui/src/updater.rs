@@ -9,14 +9,17 @@ use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use slint::ComponentHandle;
 
+use crate::pack_store::PackStore;
 use crate::{App, UpdateState, spawn_worker};
 use shiv_api::Client;
 use shiv_api::{
-    ASSET_ORIGINS, Release, asset_digest, digest_hex, latest_release, release_json, tag_is_newer,
+    ASSET_ORIGINS, Release, asset_digest, digest_hex, latest_release, release_json,
+    tag_is_at_least, tag_is_newer,
 };
 use shiv_core::link::open_web_link;
 use shiv_core::registry::check_download;
@@ -182,10 +185,11 @@ fn asset_of_swap(path: &Path) -> Option<Asset> {
 }
 
 /// Wire the strip's callbacks and start the silent launch check.
-pub(crate) fn attach(app: &App) {
+pub(crate) fn attach(app: &App, pack: Arc<PackStore>) {
     let state = app.global::<UpdateState>();
     let weak = app.as_weak();
-    state.on_check(move || start_check(weak.clone(), false));
+    let check_pack = pack.clone();
+    state.on_check(move || start_check(weak.clone(), false, check_pack.clone()));
     let weak = app.as_weak();
     state.on_apply(move || start_apply(weak.clone()));
     state.on_restart(move || {
@@ -213,13 +217,13 @@ pub(crate) fn attach(app: &App) {
     clean_stale_asides();
     // The launch check is silent: a failed or up-to-date check leaves
     // the strip as the quiet Check-for-updates row.
-    start_check(app.as_weak(), true);
+    start_check(app.as_weak(), true, pack);
 }
 
 /// Start the release check on a worker. `silent` keeps a failed or
 /// up-to-date check from showing anything (the launch check); the
 /// row's own check reports what happened.
-fn start_check(weak: slint::Weak<App>, silent: bool) {
+fn start_check(weak: slint::Weak<App>, silent: bool, pack: Arc<PackStore>) {
     let target = target_from(&Runtime::detect());
     if matches!(target, Target::Dev) {
         if !silent {
@@ -240,7 +244,7 @@ fn start_check(weak: slint::Weak<App>, silent: bool) {
         // `unwrap_or_else(Err)` folds a work panic into the same Err
         // arm as a failed check.
         move |result| match result.unwrap_or_else(Err) {
-            Ok(outcome) => post_check(&weak, &target, outcome, silent),
+            Ok(outcome) => post_check(&weak, &target, outcome, silent, &pack),
             // Both arms clear `busy`; a silent failure leaves the
             // status empty so the strip falls back to the check row.
             Err(text) if !silent => set_status(&weak, &text),
@@ -256,29 +260,53 @@ fn start_check(weak: slint::Weak<App>, silent: bool) {
 /// running version.
 fn check_release(target: &Target) -> Result<CheckOutcome, String> {
     let release = fetch_latest()?;
+    Ok(evaluate_release(&release, target))
+}
+
+fn evaluate_release(release: &Release, target: &Target) -> CheckOutcome {
     if !tag_is_newer(&release.tag, VERSION) {
-        return Ok(CheckOutcome::UpToDate);
+        let latest_tag = tag_is_at_least(&release.tag, "0.0.0").then(|| release.tag.clone());
+        return CheckOutcome::UpToDate { latest_tag };
     }
     let version = release
         .tag
         .strip_prefix('v')
         .unwrap_or(&release.tag)
         .to_owned();
-    Ok(CheckOutcome::Newer {
+    CheckOutcome::Newer {
+        tag: release.tag.clone(),
         version,
         swappable: asset_for(target).is_some(),
-    })
+    }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum CheckOutcome {
-    UpToDate,
-    Newer { version: String, swappable: bool },
+    UpToDate {
+        latest_tag: Option<String>,
+    },
+    Newer {
+        tag: String,
+        version: String,
+        swappable: bool,
+    },
 }
 
-fn post_check(weak: &slint::Weak<App>, target: &Target, outcome: CheckOutcome, silent: bool) {
+fn post_check(
+    weak: &slint::Weak<App>,
+    target: &Target,
+    outcome: CheckOutcome,
+    silent: bool,
+    pack: &Arc<PackStore>,
+) {
+    let pack = pack.clone();
     match outcome {
-        CheckOutcome::UpToDate => {
+        CheckOutcome::UpToDate { latest_tag } => {
             let _ = weak.upgrade_in_event_loop(move |app| {
+                if let Some(tag) = latest_tag {
+                    pack.set_latest_release(Some(tag));
+                    crate::performance::pack_changed();
+                }
                 let state = app.global::<UpdateState>();
                 state.set_busy(false);
                 if !silent {
@@ -286,7 +314,11 @@ fn post_check(weak: &slint::Weak<App>, target: &Target, outcome: CheckOutcome, s
                 }
             });
         }
-        CheckOutcome::Newer { version, swappable } => {
+        CheckOutcome::Newer {
+            tag,
+            version,
+            swappable,
+        } => {
             let managed = match (target, swappable) {
                 (Target::Managed(note), _) => Some((*note).to_owned()),
                 (_, false) => Some(
@@ -297,6 +329,8 @@ fn post_check(weak: &slint::Weak<App>, target: &Target, outcome: CheckOutcome, s
                 _ => None,
             };
             let _ = weak.upgrade_in_event_loop(move |app| {
+                pack.set_latest_release(Some(tag));
+                crate::performance::pack_changed();
                 let state = app.global::<UpdateState>();
                 state.set_version(version.into());
                 if let Some(note) = managed {
@@ -661,6 +695,19 @@ mod tests {
         assert_eq!(
             sibling(Path::new("/a/b/shiv.AppImage"), ".new"),
             PathBuf::from("/a/b/shiv.AppImage.new")
+        );
+    }
+
+    #[test]
+    fn complock_data_prerelease_tag_is_never_offered_as_an_update() {
+        let release = shiv_api::Release {
+            tag: shiv_core::complock::ARTIFACT_RELEASE_TAG.to_owned(),
+            notes: String::new(),
+            assets: Vec::new(),
+        };
+        assert_eq!(
+            super::evaluate_release(&release, &super::Target::Managed("flatpak")),
+            super::CheckOutcome::UpToDate { latest_tag: None }
         );
     }
 }

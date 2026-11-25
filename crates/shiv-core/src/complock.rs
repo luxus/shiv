@@ -2,12 +2,15 @@
 //! the ConVars of their published `gameinfo.gi`, staged into the Performance
 //! screen and written through [`crate::perf::apply`], and their pack options
 //! — the paks and per-option convar deltas the site's Pack Builder assembles
-//! into one zip. Both assets are their data verbatim, kept at the site's
-//! current build by the `complock-watch` workflow; the meta beside them names
-//! the build and the fetch date. Only the ConVars are taken from the
-//! gameinfo — their search paths match what Shiv's own fix-mount writes, and
-//! their mod paks are ordinary mods Shiv manages like any other, downloaded
-//! through [`part_url`] and installed through [`crate::install::install_files`].
+//! into one zip.
+//!
+//! Live updates are published by the `complock-watch` workflow to the rolling
+//! `complock-data` GitHub prerelease (`pack-data.json` and `meta.json`),
+//! gated on `schema`, `model` ([`MODEL_LEVEL`]), `source_sha256`, and
+//! `app_min` ([`PACK_APP_VERSION`]). The assets embedded at build time act as
+//! the first-paint and offline seed; their mod paks are ordinary mods Shiv
+//! manages like any other, downloaded through [`part_url`] and installed
+//! through [`crate::install::install_files`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,28 +51,55 @@ pub fn site_url(path_or_url: &str) -> Option<String> {
     crate::link::is_web_link(&candidate).then_some(candidate)
 }
 
-/// Shown when the pack's `app_min` is newer than [`PACK_APP_VERSION`].
+/// Shown when the pack's `app_min` is newer than [`PACK_APP_VERSION`] or a
+/// newer `model` is supported by an already-published Shiv release.
 pub const UPDATE_NEEDED: &str = "shiv update needed";
 
 /// The pack-data app version CompLock compares `app_min` with (`Web.AppVersion`).
 pub const PACK_APP_VERSION: u64 = 1;
 
-/// How long a successful look at the site stays current while the screen is open.
+/// Current CompLock data-model level supported by this build of Shiv.
+pub const MODEL_LEVEL: u64 = 1;
+
+/// Current artifact wrapper schema supported by this build of Shiv.
+pub const ARTIFACT_SCHEMA: u64 = 1;
+
+/// Tag of the rolling prerelease that publishes CompLock pack data.
+pub const ARTIFACT_RELEASE_TAG: &str = "complock-data";
+
+/// Published artifact metadata (`meta.json`) on GitHub Releases.
+pub const ARTIFACT_META_URL: &str =
+    "https://github.com/luxus/shiv/releases/download/complock-data/meta.json";
+
+/// Published pack data (`pack-data.json`) on GitHub Releases.
+pub const ARTIFACT_PACK_URL: &str =
+    "https://github.com/luxus/shiv/releases/download/complock-data/pack-data.json";
+
+/// Hard byte cap on `meta.json` before parsing.
+pub const MAX_META_BYTES: usize = 16 * 1024;
+
+/// Hard byte cap on `pack-data.json` before parsing.
+pub const MAX_PACK_BYTES: usize = 2 * 1024 * 1024;
+
+/// How long a successful look at the published artifact stays current while the screen is open.
 pub const PACK_REFRESH: Duration = Duration::from_mins(5);
 
 /// The cached pack-data file inside the shiv cache directory.
 pub const PACK_CACHE_FILE: &str = "pack-data.json";
 
+/// The cached metadata file inside the shiv cache directory.
+pub const PACK_META_CACHE_FILE: &str = "pack-meta.json";
+
 /// The game build the settings were crafted for, from the site's meta.
 #[must_use]
 pub fn game() -> &'static str {
-    build_meta().map_or("", |(game, _)| game)
+    build_meta().map_or("", |meta| meta.game.as_str())
 }
 
 /// When the embedded files were fetched, as `YYYY-MM-DD`.
 #[must_use]
 pub fn fetched() -> &'static str {
-    build_meta().map_or("", |(_, fetched)| fetched)
+    build_meta().map_or("", |meta| meta.fetched.as_str())
 }
 
 /// CompLock's ConVars as staged entries: every scalar pair in their
@@ -102,21 +132,38 @@ fn entries_of(gameinfo: &str) -> Vec<ConfigEntry> {
         .collect()
 }
 
-/// The parsed meta, or `None` when the workflow wrote something malformed —
-/// which the core test on the asset catches before it reaches a build.
-fn build_meta() -> Option<(&'static str, &'static str)> {
-    static META_ONCE: OnceLock<Option<(String, String)>> = OnceLock::new();
-    META_ONCE
-        .get_or_init(parse_meta)
-        .as_ref()
-        .map(|(game, fetched)| (game.as_str(), fetched.as_str()))
+#[derive(Deserialize)]
+struct BakedMeta {
+    #[serde(default = "default_schema")]
+    schema: u64,
+    #[serde(default = "default_model")]
+    model: u64,
+    game: String,
+    fetched: String,
 }
 
-fn parse_meta() -> Option<(String, String)> {
-    let parsed: serde_json::Value = serde_json::from_str(META).ok()?;
-    let game = parsed.get("game")?.as_str()?.to_owned();
-    let fetched = parsed.get("fetched")?.as_str()?.to_owned();
-    Some((game, fetched))
+fn default_schema() -> u64 {
+    ARTIFACT_SCHEMA
+}
+
+fn default_model() -> u64 {
+    1
+}
+
+/// The parsed meta, or `None` when the workflow wrote something malformed —
+/// which the core test on the asset catches before it reaches a build.
+fn build_meta() -> Option<&'static BakedMeta> {
+    static META_ONCE: OnceLock<Option<BakedMeta>> = OnceLock::new();
+    META_ONCE.get_or_init(parse_meta).as_ref()
+}
+
+fn parse_meta() -> Option<BakedMeta> {
+    let meta: BakedMeta = serde_json::from_str(META).ok()?;
+    (meta.schema == ARTIFACT_SCHEMA && meta.model >= 1 && meta.model <= MODEL_LEVEL).then_some(meta)
+}
+
+fn baked_model() -> u64 {
+    build_meta().map_or(MODEL_LEVEL, |meta| meta.model)
 }
 
 /// Source 2 reads backslashes literally in gameinfo.gi (as in perf).
@@ -606,20 +653,40 @@ fn parse_gameinfo(b: &RawBase) -> GameinfoCard {
 /// Where a [`PackLoad`] came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackOrigin {
-    /// The site's page, just now.
+    /// The published artifact, just now.
     Live,
-    /// The last page that parsed, kept in the shiv cache.
+    /// The last adopted artifact, kept in the shiv cache.
     Cache,
     /// The `include_str!` copies shipped with this build.
     Baked,
 }
 
-/// One resolved pack: the options, the gameinfo text, and whether this Shiv
-/// is older than the pack's `app_min` ([`PACK_APP_VERSION`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Compatibility {
+    Adopted,
+    Waiting { requires_shiv: Option<String> },
+    AppMinExceeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ArtifactMeta {
+    schema: u64,
+    model: u64,
+    #[serde(default)]
+    requires_shiv: Option<String>,
+    game: String,
+    fetched: String,
+    #[serde(default)]
+    source: String,
+    source_sha256: String,
+}
+
+/// One resolved pack: the options, the `gameinfo` text, and compatibility
+/// state (`app_min`, `schema`, and `model`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackLoad {
     origin: PackOrigin,
-    too_old: bool,
+    compat: Compatibility,
     game: String,
     fetched: String,
     gameinfo_text: String,
@@ -636,7 +703,38 @@ impl PackLoad {
     /// The pack's `app_min` is a number greater than [`PACK_APP_VERSION`].
     #[must_use]
     pub fn too_old(&self) -> bool {
-        self.too_old
+        matches!(self.compat, Compatibility::AppMinExceeded)
+    }
+
+    /// The published artifact has a newer `schema` or `model` than this build supports,
+    /// so Shiv stayed on its last compatible data.
+    #[must_use]
+    pub fn waiting(&self) -> bool {
+        matches!(self.compat, Compatibility::Waiting { .. })
+    }
+
+    /// The first Shiv release version known to support the waiting artifact's
+    /// `model`, or `None` while no release has tagged support yet.
+    #[must_use]
+    pub fn requires_shiv(&self) -> Option<&str> {
+        match &self.compat {
+            Compatibility::Waiting { requires_shiv } => requires_shiv.as_deref(),
+            Compatibility::Adopted | Compatibility::AppMinExceeded => None,
+        }
+    }
+
+    /// Whether the UI should show [`UPDATE_NEEDED`]: always when `app_min`
+    /// exceeds [`PACK_APP_VERSION`], and when waiting on a newer `model` only
+    /// once `requires_shiv` is set and `release_ready(requires_shiv)` holds.
+    #[must_use]
+    pub fn needs_update(&self, release_ready: impl FnOnce(&str) -> bool) -> bool {
+        match &self.compat {
+            Compatibility::Adopted => false,
+            Compatibility::AppMinExceeded => true,
+            Compatibility::Waiting { requires_shiv } => {
+                requires_shiv.as_deref().is_some_and(release_ready)
+            }
+        }
     }
 
     /// The game build the settings were crafted for.
@@ -645,8 +743,7 @@ impl PackLoad {
         &self.game
     }
 
-    /// When this copy was fetched, or `live` / `cached` for a page that
-    /// carries no fetch date.
+    /// When this copy was fetched, as `YYYY-MM-DD`.
     #[must_use]
     pub fn fetched(&self) -> &str {
         &self.fetched
@@ -706,21 +803,33 @@ impl PackLoad {
         published_in(self.data.hud.as_ref(), &self.data.options, mod_id)
     }
 
+    /// What this pack publishes for an unmanaged CompLock pak, matched by title.
+    #[must_use]
+    pub fn published_for_title(&self, title: &str) -> crate::drift::Published {
+        published_for_title_in(self.data.hud.as_ref(), &self.data.options, title)
+    }
+
     /// The pak this pack installs for `mod_id`, matching `version` when
     /// still published, else the default pak.
     #[must_use]
     pub fn release_for(&self, mod_id: &str, version: Option<&str>) -> Option<&Pak> {
         release_for_in(self.data.hud.as_ref(), &self.data.options, mod_id, version)
     }
+
+    /// The last pak slot this pack names (`1..=last_slot()`).
+    #[must_use]
+    pub fn last_slot(&self) -> u32 {
+        last_slot_in(self.data.hud.as_ref(), &self.data.options)
+    }
 }
 
-/// The pack shipped in this build. The screen shows it until a page or a
-/// cache loads, and again when both of those fail.
+/// The pack shipped in this build. The screen shows it until a live artifact
+/// or a cache loads, and again when both fail or wait on a newer model.
 #[must_use]
 pub fn baked_pack() -> PackLoad {
     PackLoad {
         origin: PackOrigin::Baked,
-        too_old: false,
+        compat: Compatibility::Adopted,
         game: game().to_owned(),
         fetched: fetched().to_owned(),
         gameinfo_text: GAMEINFO.to_owned(),
@@ -728,51 +837,86 @@ pub fn baked_pack() -> PackLoad {
     }
 }
 
-/// `<user cache>/shiv`, the directory [`load_pack`] writes `pack-data.json` into.
+/// `<user cache>/shiv`, the directory [`load_pack`] writes `pack-data.json`
+/// and `pack-meta.json` into.
 #[must_use]
 pub fn pack_cache_dir() -> Option<PathBuf> {
     crate::platform::cache_dir().map(|dir| dir.join("shiv"))
 }
 
-/// Whether another look at the site is due. `None` has never looked.
+/// Whether another look at the published artifact is due. `None` has never looked.
 /// A look younger than [`PACK_REFRESH`] is not due.
 #[must_use]
 pub fn pack_refresh_due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|then| now.saturating_duration_since(then) >= PACK_REFRESH)
 }
 
-/// The page at `{SITE}/`, then the cache in `cache_dir`, then [`baked_pack`].
+/// Fetch the published `complock-data` artifact (`meta.json` then
+/// `pack-data.json`), then the cache in `cache_dir`, then [`baked_pack`].
 ///
-/// `fetch` receives the page url and returns the HTML. A body whose
-/// `<script id="pack-data">` is not an object with `files`, arrays `base`
-/// and `option`, and a string `gameinfo` is the same as a failed fetch:
-/// nothing is cached. A cache write that fails still returns the live pack.
-/// A numeric `app_min` greater than [`PACK_APP_VERSION`] sets
-/// [`PackLoad::too_old`]. A missing `app_min`, or one that is not a number,
-/// does not.
+/// `meta.json` is fetched and validated first (`schema`, `model`,
+/// `source_sha256`). Artifacts with a newer `schema` or `model > MODEL_LEVEL`
+/// are never downloaded or cached; `load_pack` stays on the last compatible
+/// cached/baked data with [`PackLoad::waiting`] set and
+/// [`PackLoad::requires_shiv`] recording the resolved minimum version (if
+/// tagged). A numeric `app_min` greater than [`PACK_APP_VERSION`] likewise
+/// leaves the cache untouched and sets [`PackLoad::too_old`].
 #[must_use]
 pub fn load_pack(
-    fetch: impl FnOnce(&str) -> Result<String, String>,
+    mut fetch: impl FnMut(&str) -> Result<String, String>,
     cache_dir: Option<&Path>,
 ) -> PackLoad {
-    let url = format!("{SITE}/");
-    if let Ok(html) = fetch(&url)
-        && let Some(json) = script_pack_json(&html).filter(|json| pack_shape(json))
-        && let Some(load) = pack_from_json(json, PackOrigin::Live)
-    {
-        if let Some(dir) = cache_dir {
-            let _ = write_pack_cache(dir, json);
-        }
-        return load;
+    let Ok(meta_text) = fetch(ARTIFACT_META_URL) else {
+        return load_fallback(cache_dir);
+    };
+    let Some(meta) = parse_artifact_meta(&meta_text) else {
+        return load_fallback(cache_dir);
+    };
+    if meta.schema != ARTIFACT_SCHEMA || meta.model > MODEL_LEVEL {
+        let mut fallback = load_fallback(cache_dir);
+        fallback.compat = Compatibility::Waiting {
+            requires_shiv: meta.requires_shiv,
+        };
+        return fallback;
+    }
+    if meta.model < baked_model() {
+        return load_fallback(cache_dir);
     }
     if let Some(dir) = cache_dir
-        && let Ok(cached) = std::fs::read_to_string(dir.join(PACK_CACHE_FILE))
-        && pack_shape(&cached)
-        && let Some(load) = pack_from_json(&cached, PackOrigin::Cache)
+        && let Some((cached_meta, mut cached_load)) = load_cached(dir)
+        && cached_meta.source_sha256 == meta.source_sha256
     {
-        return load;
+        let _ = write_cache_file(dir, PACK_META_CACHE_FILE, &meta_text);
+        cached_load.origin = PackOrigin::Live;
+        cached_load.game = meta.game;
+        cached_load.fetched = meta.fetched;
+        return cached_load;
     }
-    baked_pack()
+    let Ok(pack_text) = fetch(ARTIFACT_PACK_URL) else {
+        return load_fallback(cache_dir);
+    };
+    if pack_text.len() > MAX_PACK_BYTES
+        || sha256_hex_of(pack_text.as_bytes()) != meta.source_sha256
+        || !pack_shape(&pack_text)
+    {
+        return load_fallback(cache_dir);
+    }
+    if app_requires_newer_shiv(&pack_text) {
+        let mut fallback = load_fallback(cache_dir);
+        fallback.compat = Compatibility::AppMinExceeded;
+        return fallback;
+    }
+    let Some(load) =
+        pack_from_artifact(&pack_text, &meta, PackOrigin::Live, Compatibility::Adopted)
+    else {
+        return load_fallback(cache_dir);
+    };
+    if let Some(dir) = cache_dir
+        && write_cache_file(dir, PACK_CACHE_FILE, &pack_text).is_ok()
+    {
+        let _ = write_cache_file(dir, PACK_META_CACHE_FILE, &meta_text);
+    }
+    load
 }
 
 /// `app_min` in `pack_json` is a number greater than [`PACK_APP_VERSION`].
@@ -788,26 +932,98 @@ pub fn app_requires_newer_shiv(pack_json: &str) -> bool {
     app_min_is_newer(min)
 }
 
-fn pack_from_json(json: &str, origin: PackOrigin) -> Option<PackLoad> {
+fn load_fallback(cache_dir: Option<&Path>) -> PackLoad {
+    cache_dir
+        .and_then(load_cached)
+        .map_or_else(baked_pack, |(_, load)| load)
+}
+
+fn load_cached(cache_dir: &Path) -> Option<(ArtifactMeta, PackLoad)> {
+    let meta_path = cache_dir.join(PACK_META_CACHE_FILE);
+    let pack_path = cache_dir.join(PACK_CACHE_FILE);
+    let max_meta = u64::try_from(MAX_META_BYTES).unwrap_or(u64::MAX);
+    let max_pack = u64::try_from(MAX_PACK_BYTES).unwrap_or(u64::MAX);
+    if std::fs::metadata(&meta_path).ok()?.len() > max_meta
+        || std::fs::metadata(&pack_path).ok()?.len() > max_pack
+    {
+        return None;
+    }
+    let meta_text = std::fs::read_to_string(&meta_path).ok()?;
+    let meta = parse_artifact_meta(&meta_text)?;
+    if meta.schema != ARTIFACT_SCHEMA || meta.model > MODEL_LEVEL || meta.model < baked_model() {
+        return None;
+    }
+    let pack_text = std::fs::read_to_string(&pack_path).ok()?;
+    if pack_text.len() > MAX_PACK_BYTES
+        || sha256_hex_of(pack_text.as_bytes()) != meta.source_sha256
+        || !pack_shape(&pack_text)
+        || app_requires_newer_shiv(&pack_text)
+    {
+        return None;
+    }
+    let load = pack_from_artifact(&pack_text, &meta, PackOrigin::Cache, Compatibility::Adopted)?;
+    Some((meta, load))
+}
+
+fn parse_artifact_meta(text: &str) -> Option<ArtifactMeta> {
+    if text.len() > MAX_META_BYTES {
+        return None;
+    }
+    let mut meta: ArtifactMeta = serde_json::from_str(text).ok()?;
+    if meta.schema == 0
+        || meta.model == 0
+        || meta.game.is_empty()
+        || !meta.game.bytes().all(|b| b.is_ascii_digit())
+        || !is_iso_date(&meta.fetched)
+        || !is_sha256_hex(&meta.source_sha256)
+    {
+        return None;
+    }
+    if !meta.source.is_empty() && !crate::link::is_web_link(&meta.source) {
+        return None;
+    }
+    if let Some(req) = &meta.requires_shiv
+        && (req.is_empty() || req.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        return None;
+    }
+    meta.source_sha256.make_ascii_lowercase();
+    Some(meta)
+}
+
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[8..10].iter().all(u8::is_ascii_digit)
+}
+
+fn is_sha256_hex(hex: &str) -> bool {
+    hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn sha256_hex_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    sha_hex(&Sha256::digest(bytes))
+}
+
+fn pack_from_artifact(
+    json: &str,
+    meta: &ArtifactMeta,
+    origin: PackOrigin,
+    compat: Compatibility,
+) -> Option<PackLoad> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let data = parse_pack(json)?;
     let gameinfo_text = value.get("gameinfo")?.as_str()?.to_owned();
-    let game = value
-        .get("game")
-        .and_then(|g| g.as_str())
-        .unwrap_or("")
-        .to_owned();
-    let fetched = match origin {
-        PackOrigin::Live => "live".to_owned(),
-        PackOrigin::Cache => "cached".to_owned(),
-        PackOrigin::Baked => fetched().to_owned(),
-    };
-    let too_old = value.get("app_min").is_some_and(app_min_is_newer);
     Some(PackLoad {
         origin,
-        too_old,
-        game,
-        fetched,
+        compat,
+        game: meta.game.clone(),
+        fetched: meta.fetched.clone(),
         gameinfo_text,
         data,
     })
@@ -826,20 +1042,6 @@ fn pack_shape(json: &str) -> bool {
             .is_some_and(serde_json::Value::is_string)
 }
 
-fn script_pack_json(html: &str) -> Option<&str> {
-    let start = html.find("<script id=\"pack-data\"")?;
-    let rest = &html[start..];
-    let open = rest.find('>')?;
-    let tag = &rest[..=open];
-    if !tag.contains("type=\"application/json\"") {
-        return None;
-    }
-    let body = &rest[open + 1..];
-    let end = body.find("</script>")?;
-    let json = body[..end].trim();
-    (!json.is_empty()).then_some(json)
-}
-
 fn app_min_is_newer(min: &serde_json::Value) -> bool {
     #[allow(
         clippy::cast_precision_loss,
@@ -849,9 +1051,9 @@ fn app_min_is_newer(min: &serde_json::Value) -> bool {
         .is_some_and(|version| version > PACK_APP_VERSION as f64)
 }
 
-fn write_pack_cache(dir: &Path, json: &str) -> Result<(), std::io::Error> {
+fn write_cache_file(dir: &Path, filename: &str, content: &str) -> Result<(), std::io::Error> {
     std::fs::create_dir_all(dir)?;
-    crate::fs_util::write_atomic(&dir.join(PACK_CACHE_FILE), json.as_bytes())
+    crate::fs_util::write_atomic(&dir.join(filename), content.as_bytes())
 }
 
 /// The site's options, in the order the pack data lists them.
@@ -1529,18 +1731,23 @@ fn updated_date_in<'a>(
 /// Shiv installs each part on the slot it names.
 #[must_use]
 pub fn last_slot() -> u32 {
-    let hud = hud().into_iter().flat_map(|h| {
+    last_slot_in(hud(), options())
+}
+
+fn last_slot_in(hud: Option<&Hud>, options: &[PackOption]) -> u32 {
+    let hud_paks = hud.into_iter().flat_map(|h| {
         h.default_pak
             .iter()
             .chain(h.variants.values())
             .chain(h.choices.iter().filter_map(|c| c.pak.as_ref()))
     });
-    let options = options().iter().flat_map(|o| {
+    let option_paks = options.iter().flat_map(|o| {
         o.pak
             .iter()
             .chain(o.choices.iter().filter_map(|c| c.pak.as_ref()))
     });
-    hud.chain(options)
+    hud_paks
+        .chain(option_paks)
         .flat_map(|p| &p.parts)
         .filter_map(|part| slot_of(&part.name))
         .max()
@@ -1714,10 +1921,18 @@ pub fn detect_builder_pak(
 /// revision is on disk cannot be told from the title.
 #[must_use]
 pub fn published_for_title(title: &str) -> crate::drift::Published {
+    published_for_title_in(hud(), options(), title)
+}
+
+fn published_for_title_in(
+    hud: Option<&Hud>,
+    options: &[PackOption],
+    title: &str,
+) -> crate::drift::Published {
     use crate::drift::Published;
     let key = |t: &str| t.split('(').next().unwrap_or(t).trim().to_ascii_lowercase();
     let wanted = key(title);
-    let paks = options()
+    let paks = options
         .iter()
         .flat_map(|o| {
             std::iter::once(o.title.as_str())
@@ -1729,7 +1944,7 @@ pub fn published_for_title(title: &str) -> crate::drift::Published {
                         .map(|p| p.title.as_str()),
                 )
         })
-        .chain(hud().into_iter().flat_map(|h| {
+        .chain(hud.into_iter().flat_map(|h| {
             std::iter::once(h.title.as_str())
                 .chain(h.default_pak.iter().map(|p| p.title.as_str()))
                 .chain(h.variants.values().map(|p| p.title.as_str()))
@@ -1815,6 +2030,18 @@ pub enum PackProblem {
         part: String,
         reason: String,
     },
+}
+
+impl PackProblem {
+    /// True when this problem signals a data-model change (new/removed key or
+    /// option) rather than corrupted or unusable pack data.
+    #[must_use]
+    pub fn is_model_change(&self) -> bool {
+        matches!(
+            self,
+            Self::NewKey { .. } | Self::GoneKey { .. } | Self::NewOption(_) | Self::GoneOption(_)
+        )
+    }
 }
 
 impl std::fmt::Display for PackProblem {
@@ -2090,7 +2317,9 @@ mod tests {
 
     #[test]
     fn the_meta_names_a_build_and_a_fetch_date() {
-        assert!(build_meta().is_some(), "the workflow's meta parses");
+        let meta = build_meta().expect("the workflow's meta parses");
+        assert_eq!(meta.schema, ARTIFACT_SCHEMA);
+        assert!(meta.model >= 1 && meta.model <= MODEL_LEVEL);
         assert!(game().bytes().all(|b| b.is_ascii_digit()) && !game().is_empty());
         assert_eq!(fetched().len(), 10, "a YYYY-MM-DD date");
     }

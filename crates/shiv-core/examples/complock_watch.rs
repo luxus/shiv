@@ -4,8 +4,10 @@
 //! `cargo run --release -p shiv-core --example complock_watch -- FRESH_JSON
 //! GAMEINFO LAST_GOOD_JSON PARTS_DIR REPORT_MD`
 //!
-//! Exit 0 and no report when the update is safe to embed; exit 1 with the
-//! problems written to REPORT_MD, one line each, when it is not; exit 2 on
+//! Exit 0 and no report when the update is valid at the same data model;
+//! exit 3 with model-change lines written to REPORT_MD when valid data
+//! introduces or drops keys/options (requiring a `model` bump); exit 1
+//! with failure lines written to REPORT_MD on hard failures; exit 2 on
 //! bad arguments or unreadable inputs.
 
 use std::process::ExitCode;
@@ -32,15 +34,27 @@ fn main() -> ExitCode {
     {
         problems.extend(complock::check_parts(&fresh, std::path::Path::new(parts)));
     }
-    if problems.is_empty() {
-        println!("pack-data, gameinfo and every part check clean");
-        return ExitCode::SUCCESS;
+    let (model_changes, hard): (Vec<_>, Vec<_>) = problems
+        .into_iter()
+        .partition(complock::PackProblem::is_model_change);
+    if !hard.is_empty() {
+        let lines: String = hard.iter().map(|p| format!("- {p}\n")).collect();
+        print!("{lines}");
+        if let Err(e) = std::fs::write(report, &lines) {
+            eprintln!("cannot write {report}: {e}");
+            return ExitCode::from(2);
+        }
+        return ExitCode::FAILURE;
     }
-    let lines: String = problems.iter().map(|p| format!("- {p}\n")).collect();
-    print!("{lines}");
-    if let Err(e) = std::fs::write(report, &lines) {
-        eprintln!("cannot write {report}: {e}");
-        return ExitCode::from(2);
+    if !model_changes.is_empty() {
+        let lines: String = model_changes.iter().map(|p| format!("- {p}\n")).collect();
+        print!("{lines}");
+        if let Err(e) = std::fs::write(report, &lines) {
+            eprintln!("cannot write {report}: {e}");
+            return ExitCode::from(2);
+        }
+        return ExitCode::from(3);
     }
-    ExitCode::FAILURE
+    println!("pack-data, gameinfo and every part check clean");
+    ExitCode::SUCCESS
 }

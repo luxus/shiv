@@ -1,5 +1,4 @@
-//! The data-release plan: one patch when embedded pack data changes, and
-//! the same answer when the watch runs again.
+//! App release version tooling and CompLock watch workflow guard.
 
 use std::fs;
 use std::path::Path;
@@ -26,147 +25,10 @@ fn run(args: &[&str]) -> (bool, String, String) {
     )
 }
 
-fn plan(args: &[&str]) -> String {
-    let mut full = vec![
-        "plan",
-        "--assets-changed",
-        "false",
-        "--version",
-        "0.4.0",
-        "--tag-exists",
-        "true",
-        "--release-exists",
-        "true",
-        "--dispatch-settled",
-        "false",
-        "--head-pending",
-        "false",
-        "--tag-is-data-release",
-        "false",
-    ];
-    full.extend_from_slice(args);
-    let (ok, out, err) = run(&full);
-    assert!(ok, "{err}");
-    out.trim().to_owned()
-}
-
-#[test]
-fn a_shipped_version_bumps_its_patch_once() {
-    let (ok, out, err) = run(&["marker", "0.4.0"]);
-    assert!(ok, "{err}");
-    assert_eq!(out.trim(), "Data-Release-Version: 0.4.0");
-    assert_eq!(
-        plan(&[
-            "--assets-changed",
-            "true",
-            "--tag-exists",
-            "true",
-            "--release-exists",
-            "true",
-        ]),
-        "commit 0.4.1"
-    );
-    assert_eq!(
-        plan(&[
-            "--assets-changed",
-            "true",
-            "--version",
-            "1.2.9",
-            "--tag-exists",
-            "true",
-        ]),
-        "commit 1.2.10"
-    );
-}
-
-#[test]
-fn an_unshipped_version_keeps_its_number() {
-    assert_eq!(
-        plan(&[
-            "--assets-changed",
-            "true",
-            "--tag-exists",
-            "false",
-            "--release-exists",
-            "false",
-        ]),
-        "commit 0.4.0"
-    );
-}
-
-#[test]
-fn a_second_run_does_not_bump_or_dispatch() {
-    assert_eq!(plan(&[]), "skip");
-    assert_eq!(
-        plan(&[
-            "--assets-changed",
-            "false",
-            "--tag-exists",
-            "true",
-            "--release-exists",
-            "false",
-            "--dispatch-settled",
-            "true",
-            "--tag-is-data-release",
-            "true",
-        ]),
-        "skip",
-        "a dispatch that is queued or already green is one release"
-    );
-    assert_eq!(
-        plan(&[
-            "--assets-changed",
-            "false",
-            "--tag-exists",
-            "false",
-            "--release-exists",
-            "false",
-            "--head-pending",
-            "false",
-        ]),
-        "skip",
-        "a human commit on main is not a data release"
-    );
-}
-
-#[test]
-fn a_rerun_finishes_a_release_that_stopped_early() {
-    assert_eq!(
-        plan(&[
-            "--assets-changed",
-            "false",
-            "--tag-exists",
-            "false",
-            "--release-exists",
-            "false",
-            "--head-pending",
-            "true",
-        ]),
-        "tag 0.4.0",
-        "the version commit landed and the tag did not"
-    );
-    assert_eq!(
-        plan(&[
-            "--assets-changed",
-            "false",
-            "--tag-exists",
-            "true",
-            "--release-exists",
-            "false",
-            "--dispatch-settled",
-            "false",
-            "--tag-is-data-release",
-            "true",
-        ]),
-        "dispatch 0.4.0",
-        "the tag exists and the release workflow has not published it"
-    );
-}
-
 #[test]
 fn a_bad_version_is_refused() {
     for version in ["0.4", "1.2.3-rc", "01.2.3", ""] {
-        let (ok, _out, err) = run(&["marker", version]);
+        let (ok, _out, err) = run(&["cmp-version", "--current", version, "--tag", "v0.6.0"]);
         assert!(!ok, "{version} should be refused");
         assert!(err.contains("major.minor.patch"), "{err}");
     }
@@ -243,29 +105,30 @@ fn apply_rewrites_only_the_app_version_and_is_idempotent() {
 }
 
 #[test]
-fn the_watch_dispatches_release_on_the_version_tag() {
+fn the_watch_publishes_a_prerelease_artifact_without_releasing_shiv() {
     let watch = fs::read_to_string(repo().join(".github/workflows/complock-watch.yml"))
         .expect("complock watch");
-    let release =
-        fs::read_to_string(repo().join(".github/workflows/release.yml")).expect("release workflow");
+    assert!(watch.contains("--prerelease"));
+    assert!(watch.contains("--latest=false"));
+    assert!(watch.contains("complock-data"));
+    assert!(watch.contains("scripts/complock_artifact.py"));
+    for sim in ["needs-shiv", "bad-crc", "missing-pak"] {
+        assert!(watch.contains(sim), "missing simulate option {sim}");
+    }
     assert!(
-        watch.contains("gh workflow run release.yml --ref"),
-        "the watch must start the release workflow itself"
+        !watch.contains("scripts/data_release.py"),
+        "the watch must never compute or apply an app release"
     );
     assert!(
-        watch.contains("scripts/data_release.py plan"),
-        "the same plan decides a rerun"
+        !watch.contains("gh workflow run release.yml"),
+        "the watch must not dispatch release.yml"
     );
-    assert!(watch.contains("scripts/data_release.py marker"));
+    assert!(!watch.contains("git tag"), "the watch must not tag v*");
     assert!(
-        !watch.contains("gh release create"),
-        "the watch must not publish a second way"
+        !watch.contains("actions: write"),
+        "the watch must not hold actions: write permission"
     );
-    assert!(
-        release.contains("startsWith(github.ref, 'refs/tags/v')"),
-        "a dispatched v* tag publishes"
-    );
-    assert!(release.contains("refs/tags/v*"));
+
     let cargo = repo().join("crates/shiv-ui/Cargo.toml");
     let (ok, out, err) = run(&["read-version", cargo.to_str().expect("cargo path")]);
     assert!(ok, "{err}");

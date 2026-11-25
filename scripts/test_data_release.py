@@ -46,6 +46,7 @@ class NextVersion(unittest.TestCase):
             "0.6.0",
             [
                 "chore: tidy",
+                "chore(complock): gameinfo build 6861 (deadlockconfig.com)",
                 "ci(release): generate the notes",
                 "test(core): more cover",
                 "docs(readme): shorter",
@@ -55,6 +56,11 @@ class NextVersion(unittest.TestCase):
         )
         self.assert_next("0.6.0", ["one line with no type"], "none")
         self.assert_next("0.6.0", [], "none")
+
+    def test_complock_watch_data_release_plan_removed(self) -> None:
+        self.assertFalse(hasattr(data_release, "plan"))
+        self.assertFalse(hasattr(data_release, "marker"))
+        self.assertFalse(hasattr(data_release, "MARKER"))
 
     def test_a_scope_with_a_bang_before_the_colon_is_breaking(self) -> None:
         self.assert_next("0.6.0", ["feat(core)!: one"], "1.0.0")

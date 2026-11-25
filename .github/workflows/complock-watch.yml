@@ -1,32 +1,33 @@
 name: CompLock watch
 
-# Daily: fetch deadlockconfig.com's pack-data, check it with the same typed
-# model Shiv uses (shiv-core's complock_watch example: parse, every named
-# pak present, key and option sets unchanged against the last good embed,
-# every part downloaded, unpacked and CRC-checked), then either embed it —
-# their gameinfo.gi, its build number and the options data (the pack-data
-# minus the gameinfo text) — or open one issue saying why not (#20). The
-# issue closes itself on the next green run.
-#
-# On main, a commit that changes the embedded pack also cuts one patch
-# release. scripts/data_release.py owns that decision. The watch tags the
-# commit and runs release.yml on that tag with workflow_dispatch: a
-# GITHUB_TOKEN push does not start other workflows, so the tag push is not
-# the trigger. The same pack on a later run does not bump, tag, or dispatch.
+# Daily: fetch deadlockconfig.com's pack-data and validate it with Shiv's typed
+# model (`complock_watch`: parse, every named pak present, every part
+# downloaded/unpacked/CRC-checked). Valid compatible updates refresh the
+# rolling `complock-data` prerelease (`pack-data.json`, `meta.json`,
+# `SHA256SUMS`) and commit `crates/shiv-core/assets/` when `model <= HEAD MODEL_LEVEL`.
+# Updates that introduce or drop keys/options bump `model` in `meta.json` and
+# publish to `complock-data` without touching `assets/` or bumping the Shiv app
+# version. An issue opens when `model` awaits a supporting Shiv release or when
+# hard validation fails.
 on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       simulate:
-        description: "Break the fresh data on purpose to prove the red path (none, new-key, bad-crc, missing-pak)"
+        description: "Break or bump the fresh data on purpose to prove the watch paths"
         required: false
         default: none
+        type: choice
+        options:
+          - none
+          - needs-shiv
+          - bad-crc
+          - missing-pak
 
 permissions:
   contents: write
   issues: write
-  actions: write
 
 concurrency:
   group: complock-watch
@@ -59,24 +60,30 @@ jobs:
           ).read().decode()
           m = re.search(r'<script[^>]*id="pack-data"[^>]*>(.*?)</script>', html, re.S)
           assert m, "the site carries no pack-data script"
-          data = json.loads(m.group(1))
+          raw_pack = m.group(1)
+          data = json.loads(raw_pack)
           game = str(data.get("game", ""))
           assert game.isdigit(), "the site names no game build"
-          options = {k: v for k, v in data.items() if k != "gameinfo"}
 
           simulate = os.environ["SIMULATE"]
-          if simulate == "new-key":
-              options["option"][0]["simulated_key"] = True
+          if simulate == "needs-shiv":
+              data["option"][0]["simulated_key"] = True
           elif simulate == "bad-crc":
-              first = next(iter(options["files"].values()))
+              first = next(iter(data["files"].values()))
               first["parts"][0]["crc"] ^= 1
           elif simulate == "missing-pak":
-              card = next(o for o in options["option"] if "pak" in o)
-              options["files"].pop(card["pak"], None)
+              card = next(o for o in data["option"] if "pak" in o)
+              data["files"].pop(card["pak"], None)
 
-          (out / "gameinfo.gi").write_text(data.get("gameinfo", ""))
-          (out / "options.json").write_text(json.dumps(options, indent=1) + "\n")
-          (out / "game").write_text(game)
+          if simulate == "none":
+              (out / "pack-data.json").write_bytes(raw_pack.encode("utf-8"))
+          else:
+              (out / "pack-data.json").write_text(json.dumps(data), encoding="utf-8")
+
+          options = {k: v for k, v in data.items() if k != "gameinfo"}
+          (out / "gameinfo.gi").write_text(data.get("gameinfo", ""), encoding="utf-8")
+          (out / "options.json").write_text(json.dumps(options, indent=1) + "\n", encoding="utf-8")
+          (out / "game").write_text(game, encoding="utf-8")
 
           failed = []
           seen = set()
@@ -102,9 +109,26 @@ jobs:
                           dest.write_bytes(urllib.request.urlopen(req, timeout=120).read())
                       except (urllib.error.URLError, OSError) as e:
                           failed.append(f"- `{url}`: {e}")
-          (out / "downloads.md").write_text("\n".join(failed) + ("\n" if failed else ""))
+          (out / "downloads.md").write_text("\n".join(failed) + ("\n" if failed else ""), encoding="utf-8")
           print(f"pack-data build {game}, {len(options.get('option', []))} options, {len(seen)} part urls, {len(failed)} failed")
           PY
+      - name: Download previous complock-data baseline
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          t="$RUNNER_TEMP/complock"
+          mkdir -p "$t/prev"
+          if gh release download complock-data -p meta.json -p pack-data.json -D "$t/prev" 2>/dev/null \
+              && [ -f "$t/prev/pack-data.json" ]; then
+            python3 scripts/complock_artifact.py extract-options \
+              "$t/prev/pack-data.json" "$t/prev/options.json"
+            echo "options=$t/prev/options.json" >> "$GITHUB_OUTPUT"
+            echo "prev_meta=$t/prev/meta.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "options=crates/shiv-core/assets/complock-options.json" >> "$GITHUB_OUTPUT"
+            echo "prev_meta=" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -114,19 +138,32 @@ jobs:
         run: rustup show active-toolchain
       - name: Check with Shiv's own model
         id: check
+        env:
+          BASELINE_OPTIONS: ${{ steps.baseline.outputs.options }}
         run: |
           t="$RUNNER_TEMP/complock"
           set +e
           cargo run --release -p shiv-core --example complock_watch -- \
-            "$t/options.json" "$t/gameinfo.gi" crates/shiv-core/assets/complock-options.json \
+            "$t/options.json" "$t/gameinfo.gi" "$BASELINE_OPTIONS" \
             "$t/parts" "$t/report.md"
           code=$?
           set -e
           cat "$t/downloads.md" >> "$t/report.md" 2>/dev/null || true
-          if [ "$code" -eq 0 ] && [ ! -s "$t/downloads.md" ]; then
-            echo "green=true" >> "$GITHUB_OUTPUT"
-          elif [ "$code" -le 1 ]; then
-            echo "green=false" >> "$GITHUB_OUTPUT"
+          if [ -s "$t/downloads.md" ] || [ "$code" -eq 1 ]; then
+            {
+              echo "valid=false"
+              echo "model_bumped=false"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 0 ]; then
+            {
+              echo "valid=true"
+              echo "model_bumped=false"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 3 ]; then
+            {
+              echo "valid=true"
+              echo "model_bumped=true"
+            } >> "$GITHUB_OUTPUT"
           else
             exit "$code"
           fi
@@ -163,24 +200,106 @@ jobs:
           {
             echo "decision=$(head -n 1 "$t/builders-decision")"
           } >> "$GITHUB_OUTPUT"
-      - name: Embed the update
-        id: embed
-        if: steps.check.outputs.green == 'true'
+      - name: Assemble artifact
+        id: assemble
+        if: steps.check.outputs.valid == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          MODEL_BUMPED: ${{ steps.check.outputs.model_bumped }}
+          PREV_META: ${{ steps.baseline.outputs.prev_meta }}
         run: |
           set -euo pipefail
           t="$RUNNER_TEMP/complock"
-          cp "$t/gameinfo.gi" crates/shiv-core/assets/complock-gameinfo.gi
-          cp "$t/options.json" crates/shiv-core/assets/complock-options.json
+          args=(
+            --pack-data "$t/pack-data.json"
+            --game "$(tr -d '[:space:]' < "$t/game")"
+            --fetched "$(date -u +%F)"
+            --head-complock crates/shiv-core/src/complock.rs
+            --repo .
+            --model-bumped "$MODEL_BUMPED"
+            --out-dir "$t/artifact"
+            --assets-meta crates/shiv-core/assets/complock.json
+          )
+          if [ -n "$PREV_META" ] && [ -f "$PREV_META" ]; then
+            args+=(--prev-meta "$PREV_META")
+          fi
+          python3 scripts/complock_artifact.py assemble "${args[@]}" >> "$GITHUB_OUTPUT"
+      - name: Upload workflow artifact
+        if: steps.check.outputs.valid == 'true' && ((inputs.simulate || 'none') != 'none' || github.ref != 'refs/heads/main')
+        uses: actions/upload-artifact@v4
+        with:
+          name: complock-artifact
+          path: ${{ runner.temp }}/complock/artifact
+      - name: Publish complock-data prerelease
+        id: publish
+        if: steps.check.outputs.valid == 'true' && (inputs.simulate || 'none') == 'none' && github.ref == 'refs/heads/main' && steps.assemble.outputs.publish_needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODEL: ${{ steps.assemble.outputs.model }}
+          REQUIRES_SHIV: ${{ steps.assemble.outputs.requires_shiv }}
+          SOURCE_SHA256: ${{ steps.assemble.outputs.source_sha256 }}
+        run: |
+          set -euo pipefail
+          t="$RUNNER_TEMP/complock"
           game=$(tr -d '[:space:]' < "$t/game")
-          printf '{\n  "game": "%s",\n  "fetched": "%s"\n}\n' "$game" "$(date -u +%F)" \
-            > crates/shiv-core/assets/complock.json
-          git config user.name "shiv-complock-watch"
-          git config user.email "actions@users.noreply.github.com"
+          notes="CompLock pack-data build ${game}, model ${MODEL}"
+          if [ -n "$REQUIRES_SHIV" ]; then
+            notes="${notes}, requires Shiv >= ${REQUIRES_SHIV}"
+          else
+            notes="${notes}, requires unreleased Shiv support"
+          fi
+          notes="${notes} (source_sha256: ${SOURCE_SHA256})."
+          if gh release view complock-data >/dev/null 2>&1; then
+            gh release edit complock-data --prerelease --latest=false --notes "$notes"
+            gh release upload complock-data --clobber \
+              "$t/artifact/pack-data.json" \
+              "$t/artifact/meta.json" \
+              "$t/artifact/SHA256SUMS"
+          else
+            gh release create complock-data \
+              --prerelease \
+              --latest=false \
+              --title "CompLock Pack Data" \
+              --notes "$notes" \
+              "$t/artifact/pack-data.json" \
+              "$t/artifact/meta.json" \
+              "$t/artifact/SHA256SUMS"
+          fi
+      - name: Embed compatible assets
+        id: embed
+        if: steps.check.outputs.valid == 'true' && (inputs.simulate || 'none') == 'none'
+        env:
+          ASSETS_COMPATIBLE: ${{ steps.assemble.outputs.assets_compatible }}
+          BUILDERS: ${{ steps.builders.outputs.decision }}
+        run: |
+          set -euo pipefail
+          t="$RUNNER_TEMP/complock"
+          game=$(tr -d '[:space:]' < "$t/game")
+          pack_changed=false
+          if [ "$ASSETS_COMPATIBLE" = "true" ]; then
+            cp "$t/gameinfo.gi" crates/shiv-core/assets/complock-gameinfo.gi
+            cp "$t/options.json" crates/shiv-core/assets/complock-options.json
+            if ! git diff --quiet -- crates/shiv-core/assets/complock-gameinfo.gi crates/shiv-core/assets/complock-options.json; then
+              pack_changed=true
+            fi
+            python3 -c '
+          import json, pathlib, sys
+          art_meta = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          asset_path = pathlib.Path("crates/shiv-core/assets/complock.json")
+          cur_asset = json.loads(asset_path.read_text()) if asset_path.is_file() else {}
+          fetched = art_meta["fetched"] if sys.argv[2] == "true" else cur_asset.get("fetched", art_meta["fetched"])
+          asset_meta = {
+              "schema": art_meta["schema"],
+              "model": art_meta["model"],
+              "requires_shiv": art_meta["requires_shiv"],
+              "game": art_meta["game"],
+              "fetched": fetched,
+              "source": art_meta["source"],
+          }
+          asset_path.write_text(json.dumps(asset_meta, indent=2) + "\n", encoding="utf-8")
+          ' "$t/artifact/meta.json" "$pack_changed"
+          fi
           bdir="$t/builders"
-          decision=$(head -n 1 "$t/builders-decision")
-          case "$decision" in
+          case "$BUILDERS" in
             template)
               cp "$bdir/out/hit_builder.js" crates/shiv-core/assets/complock-gen/hit_builder.js
               if [ -f "$bdir/out/hpbars_base.vpk" ]; then
@@ -195,130 +314,31 @@ jobs:
               printf '{\n  "review": false\n}\n' > crates/shiv-core/assets/complock-gen/builders.json
               ;;
           esac
-          pack_changed=true
-          if git diff --quiet -- crates/shiv-core/assets/complock-gameinfo.gi crates/shiv-core/assets/complock-options.json; then
-            git checkout -- \
-              crates/shiv-core/assets/complock-gameinfo.gi \
-              crates/shiv-core/assets/complock-options.json \
-              crates/shiv-core/assets/complock.json
-            pack_changed=false
-          fi
           if git diff --quiet -- crates/shiv-core/assets; then
-            assets_changed=false
-          else
-            assets_changed=true
-          fi
-          if [ "$pack_changed" = true ]; then
-            subject="chore(complock): gameinfo build ${game} (deadlockconfig.com)"
-            release_summary="CompLock pack data from deadlockconfig.com, gameinfo build ${game}."
-          elif [ "$decision" = "review" ]; then
-            subject="chore(complock): flag builder scripts for review (deadlockconfig.com)"
-            release_summary="CompLock builder scripts flagged for review from deadlockconfig.com."
-          else
-            subject="chore(complock): builder templates (deadlockconfig.com)"
-            release_summary="CompLock builder templates from deadlockconfig.com."
-          fi
-          if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
-            if [ "$assets_changed" = false ]; then
-              echo "The embedded CompLock data is current."
-              exit 0
-            fi
-            git add crates/shiv-core/assets
-            git commit -m "$subject"
-            git push
+            echo "The embedded CompLock assets are current."
             exit 0
           fi
-          version=$(python3 scripts/data_release.py read-version crates/shiv-ui/Cargo.toml)
-          tag_exists=false
-          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
-            tag_exists=true
+          if [ "$pack_changed" = true ] || ! git diff --quiet -- crates/shiv-core/assets/complock.json; then
+            subject="chore(complock): gameinfo build ${game} (deadlockconfig.com)"
+          elif [ "$BUILDERS" = "review" ]; then
+            subject="chore(complock): flag builder scripts for review (deadlockconfig.com)"
+          else
+            subject="chore(complock): builder templates (deadlockconfig.com)"
           fi
-          release_exists=false
-          if gh release view "v${version}" >/dev/null 2>&1; then
-            release_exists=true
-          fi
-          marker=$(python3 scripts/data_release.py marker "$version")
-          head_pending=false
-          if git log -1 --format=%B | grep -F -q "$marker"; then
-            head_pending=true
-          fi
-          tag_is_data_release=false
-          if [ "$tag_exists" = true ] && git log -1 --format=%B "v${version}" | grep -F -q "$marker"; then
-            tag_is_data_release=true
-          fi
-          dispatch_settled=false
-          if [ "$tag_exists" = true ]; then
-            sha=$(git rev-parse "v${version}^{}")
-            count=$(gh run list --workflow release.yml --limit 50 \
-              --json headSha,event,status,conclusion \
-              --jq "[.[] | select(.headSha==\"${sha}\" and .event==\"workflow_dispatch\" and (.status==\"requested\" or .status==\"queued\" or .status==\"in_progress\" or .status==\"waiting\" or .status==\"pending\" or .conclusion==\"success\"))] | length")
-            if [ -z "$count" ]; then
-              echo "could not read release workflow runs" >&2
-              exit 2
-            fi
-            if [ "$count" != "0" ]; then
-              dispatch_settled=true
-            fi
-          fi
-          plan=$(python3 scripts/data_release.py plan \
-            --assets-changed "$assets_changed" \
-            --version "$version" \
-            --tag-exists "$tag_exists" \
-            --release-exists "$release_exists" \
-            --dispatch-settled "$dispatch_settled" \
-            --head-pending "$head_pending" \
-            --tag-is-data-release "$tag_is_data_release")
-          echo "release plan: ${plan}"
-          case "$plan" in
-            skip)
-              echo "No CompLock release."
-              exit 0
-              ;;
-            commit\ *)
-              release_version=${plan#commit }
-              python3 scripts/data_release.py apply \
-                --from "$version" \
-                --to "$release_version" \
-                --date "$(date -u +%F)" \
-                --summary "$release_summary" \
-                --cargo crates/shiv-ui/Cargo.toml \
-                --lock Cargo.lock \
-                --metainfo packaging/flatpak/io.github.Siebe_Uy.shiv.metainfo.xml
-              release_marker=$(python3 scripts/data_release.py marker "$release_version")
-              git add \
-                crates/shiv-core/assets \
-                crates/shiv-ui/Cargo.toml \
-                Cargo.lock \
-                packaging/flatpak/io.github.Siebe_Uy.shiv.metainfo.xml
-              git commit \
-                -m "$subject" \
-                -m "$release_marker"
-              git push
-              git tag "v${release_version}"
-              git push origin "refs/tags/v${release_version}"
-              gh workflow run release.yml --ref "v${release_version}"
-              ;;
-            tag\ *)
-              release_version=${plan#tag }
-              git tag "v${release_version}"
-              git push origin "refs/tags/v${release_version}"
-              gh workflow run release.yml --ref "v${release_version}"
-              ;;
-            dispatch\ *)
-              release_version=${plan#dispatch }
-              gh workflow run release.yml --ref "v${release_version}"
-              ;;
-            *)
-              echo "unknown release plan: ${plan}" >&2
-              exit 2
-              ;;
-          esac
+          git config user.name "shiv-complock-watch"
+          git config user.email "actions@users.noreply.github.com"
+          git add crates/shiv-core/assets
+          git commit -m "$subject"
+          git push
       - name: Open, update or close the watch issue
-        if: always() && steps.check.outputs.green != '' && steps.embed.outcome != 'failure'
+        if: always() && steps.check.outputs.valid != '' && steps.publish.outcome != 'failure' && steps.embed.outcome != 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
-          GREEN: ${{ steps.check.outputs.green }}
+          VALID: ${{ steps.check.outputs.valid }}
           BUILDERS: ${{ steps.builders.outputs.decision }}
+          MODEL: ${{ steps.assemble.outputs.model }}
+          HEAD_MODEL: ${{ steps.assemble.outputs.head_model }}
+          REQUIRES_SHIV: ${{ steps.assemble.outputs.requires_shiv }}
         run: |
           t="$RUNNER_TEMP/complock"
           run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -326,13 +346,30 @@ jobs:
           if [ -f "$t/builders-decision" ]; then
             cat "$t/builders-decision" >> "$t/report.md"
           fi
-          if [ "$GREEN" = "true" ] && { [ "$BUILDERS" = "current" ] || [ "$BUILDERS" = "template" ]; }; then
+          if [ "$VALID" = "true" ] && [ -z "$REQUIRES_SHIV" ] && [ "${MODEL:-0}" -gt "${HEAD_MODEL:-0}" ]; then
+            digest=$(printf '%s\n%s' "$MODEL" "$(cat "$t/report.md" 2>/dev/null || true)" | sha256sum | cut -c1-16)
+            body=$(printf '%s\n\nmodel %s needs Shiv support (build %s). The watch published the artifact without embedding incompatible assets.\n\n%s\n\nRun: %s\n' \
+              "<!-- complock-watch:$digest -->" "$MODEL" "$(cat "$t/game")" "$(cat "$t/report.md" 2>/dev/null || true)" "$run")
+            if [ -z "$open" ]; then
+              gh label create "$ISSUE_LABEL" --color d93f0b --description "The CompLock watch could not apply an upstream update" 2>/dev/null || true
+              gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body "$body"
+            else
+              seen=$(gh issue view "$open" --json body,comments --jq '[.body] + [.comments[].body] | map(select(contains("complock-watch:"))) | last')
+              if printf '%s' "$seen" | grep -q "complock-watch:$digest"; then
+                echo "Issue #$open already reports model $MODEL."
+              else
+                gh issue comment "$open" --body "$body"
+              fi
+            fi
+            exit 0
+          fi
+          if [ "$VALID" = "true" ] && { [ "$BUILDERS" = "current" ] || [ "$BUILDERS" = "template" ]; }; then
             if [ -n "$open" ]; then
               gh issue close "$open" --comment "The watch is green again: $run"
             fi
             exit 0
           fi
-          if [ "$GREEN" = "true" ] && [ "$BUILDERS" = "review" ]; then
+          if [ "$VALID" = "true" ] && [ "$BUILDERS" = "review" ]; then
             digest=$(sha256sum "$t/builders-decision" | cut -c1-16)
             body=$(printf '%s\n\nBuilder changed, review. The watch did not replace the pinned scripts, and Shiv will not run the new ones.\n\n%s\n\nRun: %s\n' \
               "<!-- complock-watch:$digest -->" "$(cat "$t/builders-decision")" "$run")
@@ -349,9 +386,9 @@ jobs:
             fi
             exit 0
           fi
-          if [ "$GREEN" = "true" ] && [ "$BUILDERS" = "failed" ]; then
+          if [ "$VALID" = "true" ] && [ "$BUILDERS" = "failed" ]; then
             digest=$(sha256sum "$t/builders-decision" | cut -c1-16)
-            body=$(printf '%s\n\nThe builder files did not check. Pack data was still embedded when it was green. Shiv did not change the pinned scripts.\n\n%s\n\nRun: %s\n' \
+            body=$(printf '%s\n\nThe builder files did not check. Pack data was still published when valid. Shiv did not change the pinned scripts.\n\n%s\n\nRun: %s\n' \
               "<!-- complock-watch:$digest -->" "$(cat "$t/builders-decision")" "$run")
             if [ -z "$open" ]; then
               gh label create "$ISSUE_LABEL" --color d93f0b --description "The CompLock watch could not apply an upstream update" 2>/dev/null || true
@@ -367,7 +404,7 @@ jobs:
             exit 0
           fi
           digest=$(sha256sum "$t/report.md" | cut -c1-16)
-          body=$(printf '%s\n\nThe daily watch did not embed the site'"'"'s update (build %s). What failed:\n\n%s\n\nRun: %s\n' \
+          body=$(printf '%s\n\nThe daily watch did not publish the site'"'"'s update (build %s). What failed:\n\n%s\n\nRun: %s\n' \
             "<!-- complock-watch:$digest -->" "$(cat "$t/game")" "$(cat "$t/report.md")" "$run")
           if [ -z "$open" ]; then
             gh label create "$ISSUE_LABEL" --color d93f0b --description "The CompLock watch could not apply an upstream update" 2>/dev/null || true
@@ -380,3 +417,6 @@ jobs:
           else
             gh issue comment "$open" --body "$body"
           fi
+      - name: Fail when pack check failed
+        if: steps.check.outputs.valid == 'false'
+        run: exit 1

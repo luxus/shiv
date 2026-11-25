@@ -147,6 +147,22 @@ or scope-bound). `VdataHistoryIndex::embedded()` uses `Weak`, and
 `animation_contract::cache` caches are released by `CacheScope` when the last
 active `analyze` or `apply` call finishes.
 
+## CompLock data never bumps the app
+
+Upstream CompLock settings, pak URLs, and dates publish to the rolling
+`complock-data` GitHub prerelease (`pack-data.json`, `meta.json`,
+`SHA256SUMS`) with `--prerelease --latest=false` instead of cutting a Shiv
+patch release. Schema/model changes bump `model` in `meta.json` and resolve
+`requires_shiv` dynamically by scanning `v*` release tags for
+`MODEL_LEVEL`; Shiv adopts only when `model <= MODEL_LEVEL` and `schema`
+matches, and commits compatible updates to `crates/shiv-core/assets/` as a
+`chore(complock)` seed without bumping `shiv-ui`'s version, tagging `v*`, or
+dispatching `release.yml`. Enforced by
+`the_watch_publishes_a_prerelease_artifact_without_releasing_shiv`
+(`crates/shiv-core/tests/data_release.rs`), `scripts/test_complock_artifact.py`,
+`scripts/test_data_release.py`, and the `.github/workflows/complock-watch.yml`
+`simulate` (`needs-shiv`, `bad-crc`, `missing-pak`) workflow dispatch paths.
+
 ## A second pair of eyes for every feature
 
 Every feature PR gets two review passes (core logic / trust boundaries, and

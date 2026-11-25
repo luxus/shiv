@@ -69,6 +69,7 @@ const MODULES_UNDER_GUARD: &[&str] = &[
     "frame_probe",
     "installed",
     "launch",
+    "pack_store",
     "performance",
     "profiles",
     "repair",

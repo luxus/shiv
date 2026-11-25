@@ -69,6 +69,16 @@ pub fn tag_is_newer(tag: &str, current: &str) -> bool {
     }
 }
 
+/// True when `tag` (`vX.Y.Z`, the `v` optional) is equal to or newer than
+/// `minimum` (also `X.Y.Z`). A version that does not parse returns `false`.
+#[must_use]
+pub fn tag_is_at_least(tag: &str, minimum: &str) -> bool {
+    match (triple(tag), triple(minimum)) {
+        (Some(tag), Some(minimum)) => tag >= minimum,
+        _ => false,
+    }
+}
+
 /// The `X.Y.Z` of a `vX.Y.Z` (the `v` optional), as a comparable triple.
 fn triple(version: &str) -> Option<(u64, u64, u64)> {
     let rest = version.strip_prefix('v').unwrap_or(version);
@@ -126,6 +136,20 @@ pub fn release_json(url: &str, user_agent: &str) -> Result<String, ApiError> {
 /// As [`release_json`].
 pub fn asset_digest(url: &str) -> Result<String, ApiError> {
     pinned_text(url, &asset_origins(), "shiv", DIGEST_LIMIT)
+}
+
+/// Download a text release asset (such as CompLock's `meta.json` or
+/// `pack-data.json`), pinned to [`ASSET_ORIGINS`] on every hop and capped
+/// at `limit` bytes.
+///
+/// # Errors
+///
+/// [`ApiError::Http`] for a non-2xx answer; [`ApiError::Network`] for a
+/// transport failure or a body exceeding `limit`; [`ApiError::Parse`] when
+/// `url` or any redirect target sits outside [`ASSET_ORIGINS`], or when the
+/// body is not valid UTF-8.
+pub fn release_asset_text(url: &str, user_agent: &str, limit: u64) -> Result<String, ApiError> {
+    pinned_text(url, &asset_origins(), user_agent, limit)
 }
 
 /// The digest of [`asset_digest`]'s answer: the first token of a
@@ -271,10 +295,66 @@ mod tests {
     #[test]
     fn a_tag_that_does_not_parse_is_never_newer() {
         assert!(!tag_is_newer("v0.6.1-rc1", "0.6.0"));
+        assert!(!tag_is_newer("complock-data", "0.6.1"));
+        assert!(!tag_is_newer("complock-data", "0.0.0"));
         assert!(!tag_is_newer("latest", "0.6.0"));
         assert!(!tag_is_newer("", "0.6.0"));
         assert!(!tag_is_newer("v0.6.1", "dev"));
         assert!(!tag_is_newer("v0.6.1.2", "0.6.0"));
+    }
+
+    #[test]
+    fn tag_is_at_least_checks_inclusive_semver_order() {
+        assert!(tag_is_at_least("v0.7.0", "0.7.0"));
+        assert!(tag_is_at_least("0.7.0", "v0.7.0"));
+        assert!(tag_is_at_least("v0.10.0", "0.9.9"));
+        assert!(!tag_is_at_least("v0.6.1", "0.7.0"));
+        assert!(!tag_is_at_least("complock-data", "0.7.0"));
+        assert!(!tag_is_at_least("v0.7.0-rc1", "0.7.0"));
+        assert!(!tag_is_at_least("v0.7.0", ""));
+    }
+
+    #[test]
+    fn release_asset_text_and_pinned_text_enforce_origins_redirects_and_size_caps() {
+        let err = release_asset_text("https://evil.example/meta.json", "shiv", 1024).unwrap_err();
+        assert!(matches!(err, ApiError::Parse(_)), "{err:?}");
+
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("stub");
+        let origin = format!("http://{}", server.server_addr().to_ip().expect("ip"));
+        std::thread::spawn(move || {
+            for _ in 0..3 {
+                let Ok(req) = server.recv() else { return };
+                let resp = match req.url() {
+                    "/ok" => tiny_http::Response::from_string("hello").with_status_code(200),
+                    "/big" => {
+                        tiny_http::Response::from_string("0123456789abcdef").with_status_code(200)
+                    }
+                    "/redirect-evil" => tiny_http::Response::from_string("")
+                        .with_status_code(302)
+                        .with_header(
+                            tiny_http::Header::from_bytes("Location", "https://evil.example/x")
+                                .unwrap(),
+                        ),
+                    _ => tiny_http::Response::from_string("").with_status_code(404),
+                };
+                let _ = req.respond(resp);
+            }
+        });
+        let origins = vec![origin.clone()];
+
+        let ok = pinned_text(&format!("{origin}/ok"), &origins, "shiv", 16)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(ok, "hello");
+
+        let too_big = pinned_text(&format!("{origin}/big"), &origins, "shiv", 8).unwrap_err();
+        assert!(matches!(too_big, ApiError::Network(_)), "{too_big:?}");
+
+        let cross_origin =
+            pinned_text(&format!("{origin}/redirect-evil"), &origins, "shiv", 16).unwrap_err();
+        assert!(
+            matches!(cross_origin, ApiError::Parse(_)),
+            "{cross_origin:?}"
+        );
     }
 
     #[test]

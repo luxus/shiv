@@ -36,6 +36,7 @@ mod installed;
 mod launch;
 mod link_target;
 mod log;
+mod pack_store;
 mod performance;
 mod profiles;
 mod repair;
@@ -188,12 +189,13 @@ fn run() -> Result<(), slint::PlatformError> {
     // Override for testing (e.g. an unreachable URL to see the Retry state).
     let api_url = std::env::var("SHIV_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_owned());
     let cache = browse::attach(&app, &api_url);
-    installed::attach(&app, cache);
+    let pack = std::sync::Arc::new(pack_store::PackStore::system());
+    installed::attach(&app, cache, pack.clone());
     conflict::attach(&app);
     launch::attach(&app);
     repair::attach(&app);
     crosshair::attach(&app);
-    performance::attach(&app, &api_url);
+    performance::attach(&app, &api_url, pack.clone());
     profiles::attach(&app);
     sources::attach(&app);
     // Browse lists the added sources' mods from the start, not only once
@@ -202,7 +204,8 @@ fn run() -> Result<(), slint::PlatformError> {
     sources::load();
     downloads::attach(&app);
     dnd::attach(&app);
-    updater::attach(&app);
+    updater::attach(&app, pack.clone());
+    pack_store::PackStore::refresh(&app.as_weak(), &pack);
     #[cfg(all(unix, not(target_vendor = "apple")))]
     warm_fallback_fonts();
     // Debug builds only: open on another screen (e.g. for screenshots); 0 is Browse.
@@ -420,9 +423,169 @@ mod tests {
         crosshair_flow();
         performance_flow();
         complock_options_flow();
+        complock_artifact_store_flow();
         drift_reset_flow();
         downloads::storm::progress_storm_flow(&app);
         activity_flow();
+    }
+
+    fn complock_artifact_store_flow() {
+        use shiv_core::complock;
+        use shiv_core::perf::CatalogCache;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = GamePaths::from_root(temp.path().join("game"));
+        std::fs::create_dir_all(&paths.addons).expect("addons");
+        let baked_pak = complock::release_for("complock-soundcap", None).expect("baked soundcap");
+        let vpk = temp.path().join("pak03_dir.vpk");
+        std::fs::write(&vpk, b"seed soundcap bytes").expect("seed vpk");
+        let guard = shiv_core::install::InstallGuard::acquire(&paths.addons).expect("guard");
+        shiv_core::install::install_files_in_slots(
+            &[vpk],
+            shiv_core::install::ModMeta {
+                mod_id: "complock-soundcap".into(),
+                name: "CompLock Sound cap".into(),
+                version: Some(complock::revision(baked_pak)),
+                version_label: complock::updated_date("complock-soundcap").map(str::to_owned),
+                thumbnail_url: None,
+                nsfw: false,
+                hero: None,
+                category: None,
+            },
+            &paths,
+            || false,
+            complock::last_slot(),
+            None,
+            guard.permit(),
+        )
+        .expect("seed soundcap");
+        drop(guard);
+
+        let pack_json = r#"{"game":"6860","gameinfo":"GameInfo { ConVars { fps_max \"1\" } }","files":{"soundcap":{"parts":[{"name":"pak10_dir.vpk","size":100,"crc":123456789,"csize":50,"url":["/dl/pack/soundcap-new.z"]}]}},"base":[],"option":[{"id":"soundcap","group":"perf","title":"Sound cap","pak":"soundcap","updated":{"date":"2026-12-01"}}]}"#;
+        let meta_json = format!(
+            r#"{{"schema":{},"model":{},"requires_shiv":null,"game":"6860","fetched":"2026-12-01","source":"https://deadlockconfig.com/","source_sha256":"96a3daca089a305fc2fd57be42acd89e7e18937971783fa1113d310c47f3f9e4"}}"#,
+            complock::ARTIFACT_SCHEMA,
+            complock::MODEL_LEVEL,
+        );
+        let allow_live = Arc::new(AtomicBool::new(false));
+        let allow_live_fetch = allow_live.clone();
+        let cache_dir = temp.path().join("pack-cache");
+        let store = Arc::new(pack_store::PackStore::new(
+            Arc::new(move |url| {
+                if !allow_live_fetch.load(Ordering::Acquire) {
+                    return Err("offline before artifact refresh".into());
+                }
+                if url == complock::ARTIFACT_META_URL {
+                    Ok(meta_json.clone())
+                } else if url == complock::ARTIFACT_PACK_URL {
+                    Ok(pack_json.to_owned())
+                } else {
+                    Err(format!("unexpected url {url}"))
+                }
+            }),
+            Some(cache_dir),
+        ));
+
+        let app = App::new().expect("app");
+        let located = paths.clone();
+        let locate: browse::Locate = Arc::new(move || Ok(located.clone()));
+        let cache = browse::attach_with(&app, DEFAULT_API_URL, &locate);
+        installed::attach_with(
+            &app,
+            cache,
+            installed::Deps {
+                locate: locate.clone(),
+                running: Arc::new(|| false),
+                download: Arc::new(|_, _| Err("no network in tests".into())),
+                pack: store.clone(),
+            },
+        );
+        app.show().expect("show");
+        app.set_screen(1);
+        let store_idle = store.clone();
+        assert!(run_until(&app, Duration::from_secs(20), move |a| {
+            let s = a.global::<InstalledState>();
+            s.get_load_state() == LoadState::Ready && !s.get_busy() && !store_idle.is_busy()
+        }));
+        assert!(
+            app.global::<InstalledState>()
+                .get_rows()
+                .iter()
+                .find(|r| r.id.as_str() == "complock-soundcap")
+                .is_some_and(|r| !r.update),
+            "baked soundcap should initially be up to date"
+        );
+
+        allow_live.store(true, Ordering::Release);
+        pack_store::PackStore::refresh(&app.as_weak(), &store);
+        assert!(
+            run_until(&app, Duration::from_secs(20), |a| {
+                a.global::<InstalledState>()
+                    .get_rows()
+                    .iter()
+                    .find(|r| r.id.as_str() == "complock-soundcap")
+                    .is_some_and(|r| r.update && r.update_label.as_str() == "Update to 2026-12-01")
+            }),
+            "live artifact should surface update in Installed without changing assets"
+        );
+
+        let waiting_meta = format!(
+            r#"{{"schema":{},"model":{},"requires_shiv":"0.8.0","game":"6860","fetched":"2026-12-02","source_sha256":"{}"}}"#,
+            complock::ARTIFACT_SCHEMA,
+            complock::MODEL_LEVEL + 1,
+            "a".repeat(64),
+        );
+        let waiting_store = Arc::new(pack_store::PackStore::new(
+            Arc::new(move |url| {
+                if url == complock::ARTIFACT_META_URL {
+                    Ok(waiting_meta.clone())
+                } else {
+                    Err(format!("waiting model must not fetch {url}"))
+                }
+            }),
+            None,
+        ));
+        let app2 = App::new().expect("app2");
+        let located2 = paths;
+        performance::attach_with(
+            &app2,
+            performance::Deps {
+                locate: Arc::new(move || Ok(located2.clone())),
+                running: Arc::new(|| false),
+                fetch: Arc::new(|_| Ok(Some(("\"e1\"".into(), PERF_CATALOG.as_bytes().to_vec())))),
+                cache: Some(CatalogCache::new(temp.path().join("perf-cache"))),
+                pack_download: Arc::new(|_, _, _, _| Err("no downloads in tests".into())),
+                pack: waiting_store.clone(),
+            },
+        );
+        app2.show().expect("show2");
+        app2.set_screen(4);
+        app2.global::<PerfState>().invoke_shown();
+        pack_store::PackStore::refresh(&app2.as_weak(), &waiting_store);
+        let waiting_check = waiting_store.clone();
+        assert!(run_until(&app2, Duration::from_secs(20), move |a| {
+            let s = a.global::<PerfState>();
+            s.get_load_state() == LoadState::Ready && waiting_check.current().waiting()
+        }));
+        assert!(
+            app2.global::<PerfState>().get_complock().available,
+            "card must stay usable while requires_shiv release is unknown"
+        );
+
+        waiting_store.set_latest_release(Some("v0.7.0".into()));
+        performance::pack_changed();
+        assert!(
+            app2.global::<PerfState>().get_complock().available,
+            "card must stay usable before v0.8.0 ships"
+        );
+
+        waiting_store.set_latest_release(Some("v0.8.0".into()));
+        performance::pack_changed();
+        let card = app2.global::<PerfState>().get_complock();
+        assert!(!card.available);
+        assert_eq!(card.subtitle.as_str(), complock::UPDATE_NEEDED);
     }
 
     /// Drift on the Installed screen (issue #21) over a temp game: a
@@ -516,6 +679,7 @@ mod tests {
                     count.fetch_add(1, Ordering::Relaxed);
                     std::fs::write(dest, &served).map_err(|e| e.to_string())
                 }),
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
         app.show().expect("show");
@@ -711,6 +875,7 @@ mod tests {
                 locate: Arc::new(move || Ok(located.clone())),
                 running: Arc::new(|| false),
                 download: Arc::new(|_, _| Err("no network in this check".into())),
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
         app.show().expect("show");
@@ -790,7 +955,8 @@ mod tests {
                 .success()
         );
         std::fs::copy(&gameinfo, &paths.gameinfo).expect("gameinfo");
-        let mut deps = performance::Deps::system(DEFAULT_API_URL);
+        let mut deps =
+            performance::Deps::system(DEFAULT_API_URL, Arc::new(pack_store::PackStore::baked()));
         let located = paths.clone();
         deps.locate = Arc::new(move || Ok(located.clone()));
         let app = App::new().expect("app");
@@ -880,7 +1046,8 @@ mod tests {
         std::fs::copy(seed.join("gameinfo.gi"), &paths.gameinfo).expect("gameinfo");
         let app = App::new().expect("app");
         let located = paths.clone();
-        let mut perf = performance::Deps::system(DEFAULT_API_URL);
+        let mut perf =
+            performance::Deps::system(DEFAULT_API_URL, Arc::new(pack_store::PackStore::baked()));
         perf.locate = Arc::new(move || Ok(located.clone()));
         performance::attach_with(&app, perf);
         app.window()
@@ -972,9 +1139,11 @@ mod tests {
                         )
                         .map_err(|e| e.to_string())
                 }),
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
-        let mut perf = performance::Deps::system(DEFAULT_API_URL);
+        let mut perf =
+            performance::Deps::system(DEFAULT_API_URL, Arc::new(pack_store::PackStore::baked()));
         perf.locate = locate.clone();
         performance::attach_with(&app, perf);
         downloads::attach(&app);
@@ -1621,6 +1790,7 @@ mod tests {
                 locate: Arc::new(move || Ok(located.clone())),
                 running: Arc::new(|| false),
                 download: Arc::new(|_, _| Err("no network in tests".into())),
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
         app.set_screen(1);
@@ -1754,8 +1924,7 @@ mod tests {
                     }
                     Ok(())
                 }),
-                pack_page: performance::pack_page_offline(),
-                pack_cache: None,
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
         app.show().expect("show");
@@ -2125,8 +2294,7 @@ mod tests {
                     }
                     Ok(())
                 }),
-                pack_page: performance::pack_page_offline(),
-                pack_cache: None,
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
         app.show().expect("show");
@@ -3175,6 +3343,7 @@ mod tests {
                         )
                         .map_err(|e| e.to_string())
                 }),
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
         app.show().expect("show");
@@ -3699,6 +3868,7 @@ mod tests {
                 flag.load(Ordering::Relaxed)
             }),
             download: Arc::new(|_, _| Err("no network in tests".into())),
+            pack: Arc::new(pack_store::PackStore::baked()),
         };
         let app = App::new().expect("app");
         let cache = Arc::new(thumbs::Cache::with_fetcher(1 << 20, |_| None));
@@ -4397,6 +4567,7 @@ mod tests {
                 }),
                 running: Arc::new(|| false),
                 download: Arc::new(|_, _| Err("no network in tests".into())),
+                pack: Arc::new(pack_store::PackStore::baked()),
             },
         );
         app2.show().expect("show");
@@ -4990,6 +5161,7 @@ mod tests {
                 locate: Arc::new(move || Ok(located.clone())),
                 running: Arc::new(|| false),
                 download: Arc::new(|_, _| Err("no network in tests".into())),
+                pack: Arc::new(pack_store::PackStore::baked()),
             }
         };
         let width = |a: &App, name: &str| {

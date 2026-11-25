@@ -32,6 +32,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 
 use crate::browse::{game_error_text, install_error_text, to_slint};
 use crate::link_target::{self, LinkTarget};
+use crate::pack_store::PackStore;
 use crate::thumbs;
 use crate::{
     App, DropState, InstalledRow, InstalledState, LoadState, LocalInstallState, ModEditState,
@@ -50,10 +51,11 @@ pub(crate) struct Deps {
     pub locate: Locate,
     pub running: Running,
     pub download: Download,
+    pub pack: Arc<PackStore>,
 }
 
 impl Deps {
-    fn system() -> Self {
+    fn system(pack: Arc<PackStore>) -> Self {
         Deps {
             locate: Arc::new(crate::locate_game),
             running: Arc::new(game::running_here),
@@ -62,6 +64,7 @@ impl Deps {
                     .fetch_cancellable(url, dest, &AtomicBool::new(false), |_, _| {}, None)
                     .map_err(|e| format!("The download failed. {e}"))
             }),
+            pack,
         }
     }
 }
@@ -218,7 +221,11 @@ fn facts(addons: &Path, m: &InstalledMod) -> Facts {
 /// or the loaded registry catalog.
 #[derive(Debug, Clone)]
 enum ResetPlan {
-    CompLock { pak: &'static complock::Pak },
+    CompLock {
+        pak: complock::Pak,
+        updated_date: Option<String>,
+        last_slot: u32,
+    },
     Registry(Box<RegistryPlan>),
     Generated(generated::Spec),
 }
@@ -242,7 +249,11 @@ struct RegistryPlan {
 /// ids and for other paks whose `addoninfo.txt` names it, the loaded
 /// registry catalog for registry ids (a source not loaded is unknown, a
 /// listing it no longer carries or without a release is retired).
-fn published(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Published {
+fn published(
+    e: &Entry,
+    catalogs: &[(AddedSource, Vec<NativeListing>)],
+    pack: &complock::PackLoad,
+) -> Published {
     if generated::is_id(&e.id) {
         return generated::publication(
             generated::builder_review(),
@@ -250,7 +261,7 @@ fn published(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Publi
         );
     }
     if e.id.starts_with(complock::MOD_PREFIX) {
-        return complock::published(&e.id);
+        return pack.published(&e.id);
     }
     if let Some((source_id, listing_id)) = registry::split_mod_id(&e.id) {
         let Some((_, listings)) = catalogs.iter().find(|(s, _)| s.source_id == source_id) else {
@@ -267,12 +278,16 @@ fn published(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Publi
     e.facts
         .complock_title
         .as_deref()
-        .map_or(Published::Unknown, complock::published_for_title)
+        .map_or(Published::Unknown, |title| pack.published_for_title(title))
 }
 
 /// The release a reset of the row installs, when one can be fetched
 /// directly: a CompLock pak, or a registry release with a direct artifact.
-fn reset_plan(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Option<ResetPlan> {
+fn reset_plan(
+    e: &Entry,
+    catalogs: &[(AddedSource, Vec<NativeListing>)],
+    pack: &complock::PackLoad,
+) -> Option<ResetPlan> {
     if !e.managed {
         return None;
     }
@@ -287,8 +302,14 @@ fn reset_plan(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> Opti
             .map(ResetPlan::Generated);
     }
     if e.id.starts_with(complock::MOD_PREFIX) {
-        return complock::release_for(&e.id, e.version.as_deref())
-            .map(|pak| ResetPlan::CompLock { pak });
+        return pack
+            .release_for(&e.id, e.version.as_deref())
+            .cloned()
+            .map(|pak| ResetPlan::CompLock {
+                pak,
+                updated_date: pack.updated_date(&e.id).map(str::to_owned),
+                last_slot: pack.last_slot(),
+            });
     }
     let (source_id, listing_id) = registry::split_mod_id(&e.id)?;
     let (source, listings) = catalogs.iter().find(|(s, _)| s.source_id == source_id)?;
@@ -493,7 +514,11 @@ fn matching_registry_label<'a>(
 
 /// Human-readable version or update date for a card, omitting raw CRC/hash
 /// codes and pak numbers.
-pub(crate) fn display_version(e: &Entry, catalogs: &[(AddedSource, Vec<NativeListing>)]) -> String {
+pub(crate) fn display_version(
+    e: &Entry,
+    catalogs: &[(AddedSource, Vec<NativeListing>)],
+    pack: Option<&complock::PackLoad>,
+) -> String {
     if !e.managed {
         return String::new();
     }
@@ -513,7 +538,9 @@ pub(crate) fn display_version(e: &Entry, catalogs: &[(AddedSource, Vec<NativeLis
                     .as_deref()
                     .filter(|d| !d.is_empty())
             })
-            .or_else(|| (e.drift == Drift::Pristine).then(|| complock::updated_date(&e.id))?)
+            .or_else(|| {
+                (e.drift == Drift::Pristine).then(|| pack.and_then(|p| p.updated_date(&e.id)))?
+            })
     } else if registry::split_mod_id(&e.id).is_some() {
         e.version_label
             .as_deref()
@@ -704,7 +731,7 @@ fn entry(m: &InstalledMod) -> Entry {
         unverified: s.unverified == Some(true),
         generated: s.generated.as_ref().map(ToString::to_string),
     };
-    out.detail = detail_line(&display_version(&out, &[]), out.partly_enabled);
+    out.detail = detail_line(&display_version(&out, &[], None), out.partly_enabled);
     out
 }
 
@@ -807,12 +834,18 @@ fn run_reset(
         id,
         || running(),
         || match plan {
-            ResetPlan::CompLock { pak } => {
+            ResetPlan::CompLock {
+                pak,
+                updated_date,
+                last_slot,
+            } => {
                 *note.borrow_mut() = reset_complock(
                     &paths,
                     id,
                     name,
                     pak,
+                    updated_date.as_deref(),
+                    *last_slot,
                     &fetched,
                     &|| running(),
                     &ask,
@@ -893,6 +926,8 @@ fn reset_complock(
     id: &str,
     name: &str,
     pak: &complock::Pak,
+    updated_date: Option<&str>,
+    last_slot: u32,
     fetched: &[PathBuf],
     running: &dyn Fn() -> bool,
     ask: &dyn Fn(&[install::SlotOccupant]) -> Option<install::SlotChoice>,
@@ -902,7 +937,7 @@ fn reset_complock(
         mod_id: id.to_owned(),
         name: name.to_owned(),
         version: Some(complock::revision(pak)),
-        version_label: complock::updated_date(id).map(str::to_owned),
+        version_label: updated_date.map(str::to_owned),
         thumbnail_url: None,
         nsfw: false,
         hero: None,
@@ -913,7 +948,7 @@ fn reset_complock(
         meta.clone(),
         paths,
         running,
-        complock::last_slot(),
+        last_slot,
         None,
         permit,
     );
@@ -927,7 +962,7 @@ fn reset_complock(
                 meta,
                 paths,
                 running,
-                complock::last_slot(),
+                last_slot,
                 Some(choice),
                 permit,
             )
@@ -947,7 +982,7 @@ fn fetch_release(
     plan: &ResetPlan,
 ) -> Result<(Vec<PathBuf>, bool), String> {
     match plan {
-        ResetPlan::CompLock { pak } => {
+        ResetPlan::CompLock { pak, .. } => {
             let mut vpks = Vec::new();
             for part in &pak.parts {
                 let mut pieces = Vec::new();
@@ -1311,8 +1346,8 @@ enum LinkUpdate {
 }
 
 /// Wire the Installed screen to `app` using the real game location.
-pub fn attach(app: &App, cache: Arc<thumbs::Cache>) {
-    attach_with(app, cache, Deps::system());
+pub fn attach(app: &App, cache: Arc<thumbs::Cache>, pack: Arc<PackStore>) {
+    attach_with(app, cache, Deps::system(pack));
 }
 
 pub(crate) fn attach_with(app: &App, cache: Arc<thumbs::Cache>, deps: Deps) {
@@ -1795,9 +1830,14 @@ pub(crate) fn catalogs_ready() {
     with_installed(|i| i.note_loaded_catalogs());
 }
 
-fn plan_target_version(id: &str, plan: &ResetPlan) -> Option<String> {
+/// The live CompLock pack changed; recompute drift and update badges.
+pub(crate) fn pack_changed() {
+    with_installed(|i| i.note_loaded_catalogs());
+}
+
+fn plan_target_version(plan: &ResetPlan) -> Option<String> {
     match plan {
-        ResetPlan::CompLock { .. } => complock::updated_date(id).map(str::to_owned),
+        ResetPlan::CompLock { updated_date, .. } => updated_date.clone(),
         ResetPlan::Registry(r) => r.version_label.clone(),
         ResetPlan::Generated(_) => {
             (!complock::fetched().is_empty()).then(|| complock::fetched().to_owned())
@@ -1805,25 +1845,25 @@ fn plan_target_version(id: &str, plan: &ResetPlan) -> Option<String> {
     }
 }
 
-fn note_drift(list: &mut [Entry]) -> HashMap<String, ResetPlan> {
+fn note_drift(list: &mut [Entry], pack: &complock::PackLoad) -> HashMap<String, ResetPlan> {
     let catalogs = crate::sources::catalogs();
     let mut plans = HashMap::new();
     for entry in list {
         entry.drift = drift::state(
             entry.facts.untouched,
             entry.version.as_deref(),
-            &published(entry, &catalogs),
+            &published(entry, &catalogs, pack),
         );
         entry.can_reset = false;
         entry.target_version = None;
         if matches!(entry.drift, Drift::Modified | Drift::UpdateAvailable)
-            && let Some(plan) = reset_plan(entry, &catalogs)
+            && let Some(plan) = reset_plan(entry, &catalogs, pack)
         {
             entry.can_reset = entry.drift == Drift::Modified;
-            entry.target_version = plan_target_version(&entry.id, &plan);
+            entry.target_version = plan_target_version(&plan);
             plans.insert(entry.id.clone(), plan);
         }
-        let ver = display_version(entry, &catalogs);
+        let ver = display_version(entry, &catalogs, Some(pack));
         entry.detail = detail_line(&ver, entry.partly_enabled);
     }
     plans
@@ -1969,6 +2009,9 @@ impl Installed {
     /// Re-read the addons folder. `user` refreshes (screen shown, Refresh,
     /// Retry) also clear the banner; the refresh after an action keeps it.
     fn refresh(&self, user: bool) {
+        if user {
+            PackStore::refresh_if_due(&self.weak, &self.deps.pack);
+        }
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.with_state(|s| {
@@ -2021,7 +2064,8 @@ impl Installed {
         for (entry, facts) in list.iter_mut().zip(loaded.facts) {
             entry.facts = facts;
         }
-        let plans = note_drift(&mut list);
+        let pack = self.deps.pack.current();
+        let plans = note_drift(&mut list, &pack);
         *self.plans.borrow_mut() = plans;
         self.rows
             .set_vec(list.iter().map(|e| self.build_row(e)).collect::<Vec<_>>());
@@ -2050,7 +2094,8 @@ impl Installed {
             return;
         }
         let mut list = self.entries.borrow().clone();
-        let plans = note_drift(&mut list);
+        let pack = self.deps.pack.current();
+        let plans = note_drift(&mut list, &pack);
         *self.plans.borrow_mut() = plans;
         self.rows
             .set_vec(list.iter().map(|e| self.build_row(e)).collect::<Vec<_>>());
@@ -3682,17 +3727,21 @@ mod tests {
             ],
         )];
 
+        let pack = complock::baked_pack();
         let current = Published::Current(std::iter::once("sha256-1".to_owned()).collect());
-        assert_eq!(published(&row("live"), &catalogs), current);
-        assert_eq!(published(&row("bare"), &catalogs), Published::Gone);
-        assert_eq!(published(&row("dropped"), &catalogs), Published::Gone);
+        assert_eq!(published(&row("live"), &catalogs, &pack), current);
+        assert_eq!(published(&row("bare"), &catalogs, &pack), Published::Gone);
         assert_eq!(
-            published(&row("live"), &[]),
+            published(&row("dropped"), &catalogs, &pack),
+            Published::Gone
+        );
+        assert_eq!(
+            published(&row("live"), &[], &pack),
             Published::Unknown,
             "source not loaded"
         );
 
-        let Some(ResetPlan::Registry(plan)) = reset_plan(&row("live"), &catalogs) else {
+        let Some(ResetPlan::Registry(plan)) = reset_plan(&row("live"), &catalogs, &pack) else {
             panic!("a direct release resets");
         };
         assert_eq!(
@@ -3701,10 +3750,10 @@ mod tests {
         );
         assert_eq!(plan.source, source);
         assert!(
-            reset_plan(&row("rotating"), &catalogs).is_none(),
+            reset_plan(&row("rotating"), &catalogs, &pack).is_none(),
             "resolver urls rotate"
         );
-        assert!(reset_plan(&row("bare"), &catalogs).is_none());
+        assert!(reset_plan(&row("bare"), &catalogs, &pack).is_none());
     }
 
     #[test]
@@ -3962,8 +4011,12 @@ mod tests {
                 vpks: vec![vpk("pak04_dir.vpk", Some(4), true)],
             },
         ]);
+        let pack = complock::baked_pack();
         items[0].drift = Drift::Pristine;
-        assert_eq!(display_version(&items[0], &[]), "Updated 2026-11-22");
+        assert_eq!(
+            display_version(&items[0], &[], Some(&pack)),
+            "Updated 2026-11-22"
+        );
         assert!(!items[0].detail.contains("crc32"));
         assert!(!items[0].detail.contains("pak03"));
         let tip = tooltip_detail(&items[0]);
@@ -3972,7 +4025,7 @@ mod tests {
             "{tip}"
         );
 
-        assert_eq!(display_version(&items[1], &[]), "");
+        assert_eq!(display_version(&items[1], &[], Some(&pack)), "");
         assert_eq!(source_tag(&items[0]), (SourceKind::Complock, "CompLock"));
         assert_eq!(source_tag(&items[1]), (SourceKind::Registry, "Registry"));
         let mut local = entries(&[InstalledMod {

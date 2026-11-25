@@ -106,6 +106,22 @@ in `docs/perf-results.md` before a release tag.
   `crates/shiv-api/tests/{client,native}.rs` and `shiv-ui/src/thumbs.rs` pin
   exact request counts and refuse cross-origin redirects and HTTPS->HTTP
   downgrades.
+- **CompLock artifacts are pinned, size-capped, SHA-256 verified, and model-gated.**
+  Proof: `release_asset_text` enforces `ASSET_ORIGINS` on every hop plus
+  `MAX_META_BYTES` (16 KiB) / `MAX_PACK_BYTES` (2 MiB) caps (`release_asset_text_and_pinned_text_enforce_origins_redirects_and_size_caps`
+  in `shiv-api`); `complock::load_pack` checks `meta.json` `schema`/`model`
+  before fetching `pack-data.json` (while `complock-watch` publishes
+  `SHA256SUMS`), verifies verbatim `source_sha256`, typed-parses options, checks
+  `app_min <= PACK_APP_VERSION`, and leaves the disk cache untouched when
+  refused or waiting (`live_pack_data_uses_the_artifact_then_the_cache_then_the_baked_copy`,
+  `app_min_above_the_pack_app_version_asks_for_an_update`,
+  `newer_model_or_schema_refuses_without_clobbering_cache`,
+  `malformed_or_oversized_artifacts_are_refused_without_touching_cache` in
+  `crates/shiv-core/tests/complock.rs`); `shiv-ui` keeps `complock-data` out of
+  self-updates and prompts `UPDATE_NEEDED` only once a supporting release tag
+  exists (`complock_data_prerelease_tag_is_never_offered_as_an_update`,
+  `the_card_stays_silent_until_the_supporting_release_exists`,
+  `complock_artifact_store_flow`).
 
 ### Native & release profile
 

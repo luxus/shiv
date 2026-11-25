@@ -587,37 +587,51 @@ fn the_part_check_proves_the_bytes_and_names_a_bad_crc_or_a_failed_download() {
     );
 }
 
-/// The page at deadlockconfig.com, then the cache file, then the baked copy.
-/// The fetcher is the only source of the page: this test never opens a socket.
+/// Artifact delivery (`meta.json` + `pack-data.json`), cache, and baked fallback.
+/// The fetcher is injected: this test never opens a socket.
 #[test]
-fn live_pack_data_uses_the_page_then_the_cache_then_the_baked_copy() {
+fn live_pack_data_uses_the_artifact_then_the_cache_then_the_baked_copy() {
     let asset = std::fs::read_to_string(manifest("assets/complock-options.json")).expect("asset");
     let gameinfo =
         std::fs::read_to_string(manifest("assets/complock-gameinfo.gi")).expect("gameinfo");
     let mut live: serde_json::Value = serde_json::from_str(&asset).expect("asset json");
     live["gameinfo"] = serde_json::Value::String(gameinfo);
-    let newer = live.clone();
     live["app_min"] = serde_json::json!(complock::PACK_APP_VERSION);
-    let mut ahead = newer;
-    ahead["app_min"] = serde_json::json!(complock::PACK_APP_VERSION + 1);
-    let current_html = page(&live.to_string());
-    let ahead_html = page(&ahead.to_string());
+    let live_pack = live.to_string();
+    let live_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6860",
+        "2026-12-01",
+        &live_pack,
+    );
     let baked_ids: BTreeSet<String> = complock::options().iter().map(|o| o.id.clone()).collect();
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut fetches = 0u32;
-    let html = current_html.clone();
+    let mut requested = Vec::new();
     let loaded = complock::load_pack(
         |url| {
-            fetches += 1;
-            assert_eq!(url, "https://deadlockconfig.com/");
-            Ok(html.clone())
+            requested.push(url.to_owned());
+            if url == complock::ARTIFACT_META_URL {
+                Ok(live_meta.clone())
+            } else if url == complock::ARTIFACT_PACK_URL {
+                Ok(live_pack.clone())
+            } else {
+                Err(format!("unexpected url {url}"))
+            }
         },
         Some(dir.path()),
     );
-    assert_eq!(fetches, 1);
+    assert_eq!(
+        requested,
+        [complock::ARTIFACT_META_URL, complock::ARTIFACT_PACK_URL]
+    );
     assert_eq!(loaded.origin(), complock::PackOrigin::Live);
     assert!(!loaded.too_old());
+    assert!(!loaded.waiting());
+    assert_eq!(loaded.game(), "6860");
+    assert_eq!(loaded.fetched(), "2026-12-01");
     assert_eq!(
         loaded
             .options()
@@ -631,33 +645,41 @@ fn live_pack_data_uses_the_page_then_the_cache_then_the_baked_copy() {
     );
     assert!(
         !loaded.entries().is_empty(),
-        "the page's gameinfo has ConVars"
+        "the artifact's gameinfo has ConVars"
     );
     let cached =
         std::fs::read_to_string(dir.path().join(complock::PACK_CACHE_FILE)).expect("cache");
-    assert_eq!(cached, live.to_string());
+    assert_eq!(cached, live_pack);
+    let cached_meta =
+        std::fs::read_to_string(dir.path().join(complock::PACK_META_CACHE_FILE)).expect("meta");
+    assert_eq!(cached_meta, live_meta);
+
+    // Same source_sha256: only meta.json is fetched; pack-data.json comes from cache.
+    let mut hit_urls = Vec::new();
+    let cached_hit = complock::load_pack(
+        |url| {
+            hit_urls.push(url.to_owned());
+            assert_eq!(url, complock::ARTIFACT_META_URL);
+            Ok(live_meta.clone())
+        },
+        Some(dir.path()),
+    );
+    assert_eq!(hit_urls, [complock::ARTIFACT_META_URL]);
+    assert_eq!(cached_hit.origin(), complock::PackOrigin::Live);
+    assert_eq!(cached_hit.fetched(), "2026-12-01");
 
     let from_cache = complock::load_pack(|_| Err("offline".into()), Some(dir.path()));
     assert_eq!(from_cache.origin(), complock::PackOrigin::Cache);
     assert!(!from_cache.too_old());
-
-    let ahead_load = complock::load_pack(|_| Ok(ahead_html.clone()), Some(dir.path()));
-    assert!(ahead_load.too_old());
-    assert!(complock::app_requires_newer_shiv(&ahead.to_string()));
-    assert!(!complock::app_requires_newer_shiv(&live.to_string()));
-    assert!(!complock::app_requires_newer_shiv(
-        &serde_json::json!({"files": {}, "base": [], "option": [], "gameinfo": "x", "app_min": 0})
-            .to_string()
-    ));
-    assert!(!complock::app_requires_newer_shiv(
-        &serde_json::json!({"files": {}, "base": [], "option": [], "gameinfo": "x", "app_min": "0.3.5"})
-            .to_string()
-    ));
+    assert!(!from_cache.waiting());
+    assert_eq!(from_cache.game(), "6860");
+    assert_eq!(from_cache.fetched(), "2026-12-01");
 
     std::fs::write(dir.path().join(complock::PACK_CACHE_FILE), "{").expect("corrupt");
     let baked = complock::load_pack(|_| Err("offline".into()), Some(dir.path()));
     assert_eq!(baked.origin(), complock::PackOrigin::Baked);
     assert!(!baked.too_old());
+    assert!(!baked.waiting());
     assert_eq!(
         baked
             .options()
@@ -669,9 +691,6 @@ fn live_pack_data_uses_the_page_then_the_cache_then_the_baked_copy() {
             .map(String::as_str)
             .collect::<BTreeSet<_>>()
     );
-
-    let ignored = complock::load_pack(|_| Ok("<html>no pack</html>".into()), Some(dir.path()));
-    assert_eq!(ignored.origin(), complock::PackOrigin::Baked);
 
     let now = std::time::Instant::now();
     assert!(complock::pack_refresh_due(None, now));
@@ -686,11 +705,11 @@ fn live_pack_data_uses_the_page_then_the_cache_then_the_baked_copy() {
     ));
 }
 
-/// `app_min` of 1 is this build. `app_min` of 2 asks for an update. A version
-/// string is not a number, so it does not.
+/// `app_min` of 1 is this build. `app_min` of 2 refuses to adopt, does not
+/// clobber the cache, and asks for an update.
 #[test]
 fn app_min_above_the_pack_app_version_asks_for_an_update() {
-    let pack = |app_min| {
+    let pack = |app_min: serde_json::Value| {
         serde_json::json!({
             "files": {},
             "base": [],
@@ -700,15 +719,317 @@ fn app_min_above_the_pack_app_version_asks_for_an_update() {
         })
         .to_string()
     };
-    let current = page(&pack(1));
-    let newer = page(&pack(2));
-    let loaded = complock::load_pack(|_| Ok(current), None);
+    let current_pack = pack(serde_json::json!(1));
+    let current_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6860",
+        "2026-12-01",
+        &current_pack,
+    );
+    let newer_pack = pack(serde_json::json!(2));
+    let newer_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6861",
+        "2026-12-02",
+        &newer_pack,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let loaded = complock::load_pack(
+        serve_artifact(&current_meta, &current_pack),
+        Some(dir.path()),
+    );
     assert!(!loaded.too_old());
     assert_eq!(loaded.origin(), complock::PackOrigin::Live);
-    let ahead = complock::load_pack(|_| Ok(newer), None);
+
+    let ahead = complock::load_pack(serve_artifact(&newer_meta, &newer_pack), Some(dir.path()));
     assert!(ahead.too_old());
-    assert!(complock::app_requires_newer_shiv(&pack(2)));
-    assert!(!complock::app_requires_newer_shiv(&pack(1)));
+    assert!(ahead.needs_update(|_| false));
+    assert_eq!(ahead.origin(), complock::PackOrigin::Cache);
+    assert_eq!(ahead.game(), "6860");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(complock::PACK_CACHE_FILE)).expect("cache"),
+        current_pack
+    );
+    assert!(complock::app_requires_newer_shiv(&newer_pack));
+    assert!(!complock::app_requires_newer_shiv(&current_pack));
+    assert!(!complock::app_requires_newer_shiv(&pack(
+        serde_json::json!(0)
+    )));
+    assert!(!complock::app_requires_newer_shiv(&pack(
+        serde_json::json!("0.3.5")
+    )));
+}
+
+/// Newer `model` or `schema` never fetches `pack-data.json`, never overwrites
+/// the cache, stays on cached/baked data, and exposes `waiting`/`requires_shiv`
+/// and `needs_update` accurately.
+#[test]
+fn newer_model_or_schema_refuses_without_clobbering_cache() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut base_doc = asset_value();
+    let gameinfo =
+        std::fs::read_to_string(manifest("assets/complock-gameinfo.gi")).expect("gameinfo");
+    base_doc["gameinfo"] = serde_json::Value::String(gameinfo);
+    let base_pack = base_doc.to_string();
+    let base_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6860",
+        "2026-12-01",
+        &base_pack,
+    );
+    let primed = complock::load_pack(serve_artifact(&base_meta, &base_pack), Some(dir.path()));
+    assert_eq!(primed.origin(), complock::PackOrigin::Live);
+
+    let cached_pack_bytes =
+        std::fs::read(dir.path().join(complock::PACK_CACHE_FILE)).expect("pack cache");
+    let cached_meta_bytes =
+        std::fs::read(dir.path().join(complock::PACK_META_CACHE_FILE)).expect("meta cache");
+
+    // 1. model > MODEL_LEVEL with requires_shiv: null -> silent waiting.
+    let unreleased_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL + 1,
+        None,
+        "6865",
+        "2026-12-05",
+        "{}",
+    );
+    let unreleased = complock::load_pack(
+        |url| {
+            assert_eq!(
+                url,
+                complock::ARTIFACT_META_URL,
+                "pack-data.json must not be fetched when model is unsupported"
+            );
+            Ok(unreleased_meta.clone())
+        },
+        Some(dir.path()),
+    );
+    assert_eq!(unreleased.origin(), complock::PackOrigin::Cache);
+    assert_eq!(unreleased.game(), "6860");
+    assert!(unreleased.waiting());
+    assert!(!unreleased.too_old());
+    assert_eq!(unreleased.requires_shiv(), None);
+    assert!(!unreleased.needs_update(|_| true));
+    assert_eq!(
+        std::fs::read(dir.path().join(complock::PACK_CACHE_FILE)).expect("pack cache"),
+        cached_pack_bytes
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join(complock::PACK_META_CACHE_FILE)).expect("meta cache"),
+        cached_meta_bytes
+    );
+
+    // 2. model > MODEL_LEVEL with requires_shiv: "0.8.0" -> prompt only once >= 0.8.0 exists.
+    let released_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL + 1,
+        Some("0.8.0"),
+        "6865",
+        "2026-12-05",
+        "{}",
+    );
+    let waiting = complock::load_pack(
+        |url| {
+            assert_eq!(url, complock::ARTIFACT_META_URL);
+            Ok(released_meta.clone())
+        },
+        Some(dir.path()),
+    );
+    assert_eq!(waiting.origin(), complock::PackOrigin::Cache);
+    assert!(waiting.waiting());
+    assert_eq!(waiting.requires_shiv(), Some("0.8.0"));
+    assert!(!waiting.needs_update(|min| min <= "0.7.0"));
+    assert!(waiting.needs_update(|min| min == "0.8.0"));
+    assert_eq!(
+        std::fs::read(dir.path().join(complock::PACK_CACHE_FILE)).expect("pack cache"),
+        cached_pack_bytes
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join(complock::PACK_META_CACHE_FILE)).expect("meta cache"),
+        cached_meta_bytes
+    );
+
+    // 3. schema > ARTIFACT_SCHEMA -> always waiting, never fetches pack-data.json.
+    let newer_schema_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA + 1,
+        complock::MODEL_LEVEL,
+        Some("1.0.0"),
+        "6900",
+        "2026-12-10",
+        "{}",
+    );
+    let schema_wait = complock::load_pack(
+        |url| {
+            assert_eq!(url, complock::ARTIFACT_META_URL);
+            Ok(newer_schema_meta.clone())
+        },
+        Some(dir.path()),
+    );
+    assert_eq!(schema_wait.origin(), complock::PackOrigin::Cache);
+    assert!(schema_wait.waiting());
+    assert_eq!(schema_wait.requires_shiv(), Some("1.0.0"));
+    assert_eq!(
+        std::fs::read(dir.path().join(complock::PACK_META_CACHE_FILE)).expect("meta cache"),
+        cached_meta_bytes
+    );
+}
+
+#[test]
+fn malformed_or_oversized_artifacts_are_refused_without_touching_cache() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut base_doc = asset_value();
+    let gameinfo =
+        std::fs::read_to_string(manifest("assets/complock-gameinfo.gi")).expect("gameinfo");
+    base_doc["gameinfo"] = serde_json::Value::String(gameinfo);
+    let base_pack = base_doc.to_string();
+    let base_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6860",
+        "2026-12-01",
+        &base_pack,
+    );
+    assert_eq!(
+        complock::load_pack(serve_artifact(&base_meta, &base_pack), Some(dir.path())).origin(),
+        complock::PackOrigin::Live
+    );
+    let cached_pack_bytes =
+        std::fs::read(dir.path().join(complock::PACK_CACHE_FILE)).expect("pack cache");
+    let cached_meta_bytes =
+        std::fs::read(dir.path().join(complock::PACK_META_CACHE_FILE)).expect("meta cache");
+
+    let huge_meta = format!(
+        "{},\"pad\":\"{}\"}}",
+        base_meta.trim_end_matches('}'),
+        "a".repeat(complock::MAX_META_BYTES)
+    );
+    assert!(huge_meta.len() > complock::MAX_META_BYTES);
+
+    let bad_shape_pack = r#"{"wrong":true}"#;
+    let bad_shape_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6861",
+        "2026-12-02",
+        bad_shape_pack,
+    );
+    let huge_pack = format!(
+        r#"{{"files":{{}},"base":[],"option":[],"gameinfo":"{}"}}"#,
+        "x".repeat(complock::MAX_PACK_BYTES)
+    );
+    let huge_pack_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6861",
+        "2026-12-02",
+        &huge_pack,
+    );
+    let wrong_hash_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6861",
+        "2026-12-02",
+        "{\"different\":true}",
+    );
+    let empty_req_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        Some(""),
+        "6861",
+        "2026-12-02",
+        &base_pack,
+    );
+
+    let bad_cases: [(&str, &str); 8] = [
+        ("{not json", &base_pack),
+        (&huge_meta, &base_pack),
+        (
+            r#"{"schema":1,"model":1,"game":"abc","fetched":"2026-12-01","source_sha256":"0000"}"#,
+            &base_pack,
+        ),
+        (
+            r#"{"schema":1,"model":1,"game":"6861","fetched":"not-a-date","source_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}"#,
+            &base_pack,
+        ),
+        (&empty_req_meta, &base_pack),
+        (&huge_pack_meta, &huge_pack),
+        (&wrong_hash_meta, &base_pack),
+        (&bad_shape_meta, bad_shape_pack),
+    ];
+
+    for (meta, pack) in bad_cases {
+        let with_cache = complock::load_pack(serve_artifact(meta, pack), Some(dir.path()));
+        assert_eq!(with_cache.origin(), complock::PackOrigin::Cache);
+        assert!(!with_cache.waiting());
+        assert!(!with_cache.too_old());
+        assert_eq!(
+            std::fs::read(dir.path().join(complock::PACK_CACHE_FILE)).expect("pack cache"),
+            cached_pack_bytes
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(complock::PACK_META_CACHE_FILE)).expect("meta cache"),
+            cached_meta_bytes
+        );
+
+        let no_cache = complock::load_pack(serve_artifact(meta, pack), None);
+        assert_eq!(no_cache.origin(), complock::PackOrigin::Baked);
+    }
+}
+
+#[test]
+fn pack_problem_classifies_model_changes_separately_from_hard_failures() {
+    assert!(
+        complock::PackProblem::NewKey {
+            section: "option",
+            key: "k".into(),
+        }
+        .is_model_change()
+    );
+    assert!(
+        complock::PackProblem::GoneKey {
+            section: "choice",
+            key: "k".into(),
+        }
+        .is_model_change()
+    );
+    assert!(complock::PackProblem::NewOption("opt".into()).is_model_change());
+    assert!(complock::PackProblem::GoneOption("opt".into()).is_model_change());
+
+    assert!(!complock::PackProblem::Unparsed("bad".into()).is_model_change());
+    assert!(!complock::PackProblem::GameinfoUnmapped.is_model_change());
+    assert!(
+        !complock::PackProblem::MissingPak {
+            card: "c".into(),
+            pak: "p".into(),
+        }
+        .is_model_change()
+    );
+    assert!(
+        !complock::PackProblem::IncompletePart {
+            pak: "p".into(),
+            part: "x".into(),
+        }
+        .is_model_change()
+    );
+    assert!(
+        !complock::PackProblem::PartFailed {
+            pak: "p".into(),
+            part: "x".into(),
+            reason: "crc".into(),
+        }
+        .is_model_change()
+    );
 }
 
 /// A browser install left the part's bytes under another pak number, with no
@@ -829,8 +1150,43 @@ fn manifest(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
-fn page(json: &str) -> String {
-    format!("<html><script id=\"pack-data\" type=\"application/json\">{json}</script></html>")
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn artifact_meta(
+    schema: u64,
+    model: u64,
+    requires_shiv: Option<&str>,
+    game: &str,
+    fetched: &str,
+    pack_json: &str,
+) -> String {
+    serde_json::json!({
+        "schema": schema,
+        "model": model,
+        "requires_shiv": requires_shiv,
+        "game": game,
+        "fetched": fetched,
+        "source": "https://deadlockconfig.com/",
+        "source_sha256": sha256_hex(pack_json.as_bytes()),
+    })
+    .to_string()
+}
+
+fn serve_artifact<'a>(
+    meta: &'a str,
+    pack: &'a str,
+) -> impl FnMut(&str) -> Result<String, String> + 'a {
+    move |url| match url {
+        u if u == complock::ARTIFACT_META_URL => Ok(meta.to_owned()),
+        u if u == complock::ARTIFACT_PACK_URL => Ok(pack.to_owned()),
+        other => Err(format!("unexpected url {other}")),
+    }
 }
 
 /// The site's ragdolls card as build 6860 serves it (22 Nov 2026): an
@@ -868,7 +1224,16 @@ fn an_off_state_key_coming_or_going_is_not_a_schema_change() {
 fn an_option_without_gameinfo_else_turns_off_by_leaving_its_line_out() {
     let mut live = with_ragdolls(serde_json::from_str(RAGDOLLS_6860).expect("fixture"));
     live["gameinfo"] = serde_json::Value::String(GAMEINFO_ASSET.to_owned());
-    let loaded = complock::load_pack(|_| Ok(page(&live.to_string())), None);
+    let live_pack = live.to_string();
+    let live_meta = artifact_meta(
+        complock::ARTIFACT_SCHEMA,
+        complock::MODEL_LEVEL,
+        None,
+        "6860",
+        "2026-12-01",
+        &live_pack,
+    );
+    let loaded = complock::load_pack(serve_artifact(&live_meta, &live_pack), None);
     assert_eq!(loaded.origin(), complock::PackOrigin::Live);
     let ragdolls = loaded
         .options()
@@ -891,13 +1256,27 @@ fn an_option_without_gameinfo_else_turns_off_by_leaving_its_line_out() {
 
 #[test]
 fn pack_load_exposes_card_updated_dates_and_releases() {
-    assert_eq!(complock::updated_date("complock-hud"), Some("2026-11-22"));
+    let expected_hud_date = complock::hud()
+        .and_then(|h| h.updated.as_deref())
+        .filter(|d| !d.is_empty())
+        .or_else(|| (!complock::fetched().is_empty()).then_some(complock::fetched()));
+    assert!(expected_hud_date.is_some());
+    assert_eq!(complock::updated_date("complock-hud"), expected_hud_date);
     assert!(complock::updated_date("other").is_none());
     let loaded = complock::baked_pack();
-    assert_eq!(loaded.updated_date("complock-hud"), Some("2026-11-22"));
+    assert_eq!(loaded.updated_date("complock-hud"), expected_hud_date);
     assert!(loaded.release_for("complock-soundcap", None).is_some());
     assert!(matches!(
         loaded.published("complock-soundcap"),
         shiv_core::drift::Published::Current(_)
     ));
+    assert_eq!(
+        loaded.published_for_title("Sound stack update cap"),
+        shiv_core::drift::Published::Unknown
+    );
+    assert_eq!(
+        loaded.published_for_title("Retired Nonexistent Pack"),
+        shiv_core::drift::Published::Gone
+    );
+    assert_eq!(loaded.last_slot(), complock::last_slot());
 }

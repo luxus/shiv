@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Decide and apply one patch release for an embedded data change.
+"""App release version helpers for `release-prep` and `release-tag`.
 
-The CompLock watch commits new pack data on main and must cut one Shiv
-patch for that commit. A second run of the same pack must not bump, tag,
-or dispatch again. The plan is a pure function of the facts the workflow
-can read (the version in Cargo.toml, whether that version is already
-tagged and released, whether this run's pack bytes differ). Applying the
-plan rewrites the version the release workflow already ships: the shiv-ui
-package version, its lockfile entry, and one Flatpak metainfo release.
+Reads, compares, picks the next semantic version from Conventional Commit
+subjects, and applies a version bump to the Cargo manifest, lockfile, and
+Flatpak metainfo. CompLock pack updates publish as an artifact release
+and never bump the app version.
 """
 
 from __future__ import annotations
@@ -16,7 +13,6 @@ import argparse
 import sys
 from pathlib import Path
 
-MARKER = "Data-Release-Version"
 PACKAGE = "shiv-ui"
 
 
@@ -98,40 +94,6 @@ def cmp_version(*, current: str, tag: str) -> str:
     if cur == tagged:
         return "same"
     return "ahead" if cur > tagged else "behind"
-
-
-def marker(version: str) -> str:
-    return f"{MARKER}: {parse_version(version)}"
-
-
-def plan(
-    *,
-    assets_changed: bool,
-    version: str,
-    tag_exists: bool,
-    release_exists: bool,
-    dispatch_settled: bool,
-    head_pending: bool,
-    tag_is_data_release: bool,
-) -> str:
-    """One line: skip, commit VERSION, tag VERSION, or dispatch VERSION.
-
-    commit means write the version files, commit, tag, and dispatch.
-    tag means the commit already landed: tag it and dispatch.
-    dispatch means the tag exists and the GitHub release does not.
-    """
-    current = parse_version(version)
-    if assets_changed:
-        if tag_exists or release_exists:
-            return f"commit {bump_patch(current)}"
-        return f"commit {current}"
-    if tag_exists and release_exists:
-        return "skip"
-    if head_pending and not tag_exists and not release_exists:
-        return f"tag {current}"
-    if tag_exists and tag_is_data_release and not release_exists and not dispatch_settled:
-        return f"dispatch {current}"
-    return "skip"
 
 
 def package_version(text: str) -> str:
@@ -304,14 +266,6 @@ def _xml(text: str) -> str:
     )
 
 
-def _flag(value: str) -> bool:
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    raise ReleaseError(f"expected true or false, got {value}")
-
-
 def _write_if_changed(path: Path, text: str) -> None:
     if path.is_file() and path.read_text() == text:
         return
@@ -326,18 +280,6 @@ def main(argv: list[str] | None = None) -> int:
 
     read = commands.add_parser("read-version")
     read.add_argument("cargo")
-
-    mark = commands.add_parser("marker")
-    mark.add_argument("version")
-
-    decided = commands.add_parser("plan")
-    decided.add_argument("--assets-changed", required=True)
-    decided.add_argument("--version", required=True)
-    decided.add_argument("--tag-exists", required=True)
-    decided.add_argument("--release-exists", required=True)
-    decided.add_argument("--dispatch-settled", required=True)
-    decided.add_argument("--head-pending", required=True)
-    decided.add_argument("--tag-is-data-release", required=True)
 
     applied = commands.add_parser("apply")
     applied.add_argument("--from", dest="src", required=True)
@@ -360,20 +302,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "read-version":
             print(package_version(Path(args.cargo).read_text()))
-        elif args.cmd == "marker":
-            print(marker(args.version))
-        elif args.cmd == "plan":
-            print(
-                plan(
-                    assets_changed=_flag(args.assets_changed),
-                    version=args.version,
-                    tag_exists=_flag(args.tag_exists),
-                    release_exists=_flag(args.release_exists),
-                    dispatch_settled=_flag(args.dispatch_settled),
-                    head_pending=_flag(args.head_pending),
-                    tag_is_data_release=_flag(args.tag_is_data_release),
-                )
-            )
         elif args.cmd == "apply":
             cargo_path = Path(args.cargo)
             lock_path = Path(args.lock)
