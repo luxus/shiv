@@ -24,6 +24,11 @@
     <binary>shiv</binary>
   </provides>
   <releases>
+    <release version="0.7.0" date="2026-11-25">
+      <description>
+        <p>the release PR automation - merging it is the release (#82)</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-25">
       <description>
         <p>Persistent Activity history, a GameBanana toggle, mod versions with source tags, update all, and a restore dialog.</p>
