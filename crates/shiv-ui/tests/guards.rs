@@ -75,6 +75,7 @@ const MODULES_UNDER_GUARD: &[&str] = &[
     "source_filter",
     "sources",
     "thumbs",
+    "updater",
 ];
 
 /// main.rs modules the guards do not read, each with the reason that is

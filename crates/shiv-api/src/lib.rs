@@ -11,6 +11,7 @@ mod deadlocker;
 mod dto;
 mod error;
 mod gamebanana;
+mod github;
 mod http;
 mod native;
 mod query;
@@ -20,6 +21,10 @@ pub use deadlocker::DeadlockerClient;
 pub use dto::{DonationLink, DownloadFile, ModDto, ModMetadata, is_donation_url};
 pub use error::ApiError;
 pub use gamebanana::{ChangelogEntry, Comment, Comments, GameBananaClient, ModFile, Page};
+pub use github::{
+    API_ORIGIN, ASSET_ORIGINS, Release, ReleaseAsset, UPDATES_REPO, asset_digest, digest_hex,
+    latest_release, release_json, tag_is_newer,
+};
 pub use native::{
     CatalogConfig, NativeArtifact, NativeListing, NativeRelease, NativeSourceClient,
     ResolvedDownload, SourceDescriptor, from_json_bytes, is_https_or_loopback, is_safe_basename,

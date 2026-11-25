@@ -151,10 +151,16 @@ fn fetch_cancellable_stops_and_removes_partial_file() {
     let dest = dir.path().join("m.zip");
     let cancel = AtomicBool::new(false);
     let mut calls = 0;
-    let r = Client::new(&url).fetch_cancellable(&format!("{url}/f"), &dest, &cancel, |_, _| {
-        calls += 1;
-        cancel.store(true, Ordering::Relaxed);
-    });
+    let r = Client::new(&url).fetch_cancellable(
+        &format!("{url}/f"),
+        &dest,
+        &cancel,
+        |_, _| {
+            calls += 1;
+            cancel.store(true, Ordering::Relaxed);
+        },
+        None,
+    );
     assert!(matches!(r, Err(ApiError::Cancelled)), "{r:?}");
     assert_eq!(calls, 1);
     assert!(!dest.exists());
@@ -171,6 +177,7 @@ fn fetch_cancellable_set_before_start_does_not_request() {
         &dest,
         &AtomicBool::new(true),
         |_, _| {},
+        None,
     );
     assert!(matches!(r, Err(ApiError::Cancelled)), "{r:?}");
     assert!(!dir.path().join("m.zip.part").exists());
@@ -209,6 +216,7 @@ fn cancelled_fetch_returns_within_one_chunk() {
             &dest,
             &worker_cancel,
             |_, _| worker_first_chunk.store(true, Ordering::Relaxed),
+            None,
         );
         returned.send(r).unwrap();
     });

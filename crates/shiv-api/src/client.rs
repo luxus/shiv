@@ -121,7 +121,7 @@ impl Client {
         dest: &Path,
         progress: impl FnMut(u64, Option<u64>),
     ) -> Result<(), ApiError> {
-        self.fetch_cancellable(url, dest, &AtomicBool::new(false), progress)
+        self.fetch_cancellable(url, dest, &AtomicBool::new(false), progress, None)
     }
 
     /// A small JSON GET, bounded like the API calls; a download resolver's
@@ -143,6 +143,9 @@ impl Client {
     /// [`Client::fetch`] that stops with [`ApiError::Cancelled`] once `cancel`
     /// is set. The flag is checked before each chunk; stalled reads time out
     /// after the per-read timeout so a dead socket cannot hang indefinitely.
+    /// With `allowed_origins`, every hop of `url` — the first one included —
+    /// must stay inside the list; `None` is for mod downloads, which a
+    /// registry may host anywhere.
     ///
     /// # Errors
     ///
@@ -158,10 +161,11 @@ impl Client {
         dest: &Path,
         cancel: &AtomicBool,
         progress: impl FnMut(u64, Option<u64>),
+        allowed_origins: Option<&[String]>,
     ) -> Result<(), ApiError> {
         let part = part_path(dest);
         let result = self
-            .fetch_to_part(url, &part, cancel, progress)
+            .fetch_to_part(url, &part, cancel, progress, allowed_origins)
             .and_then(|()| fs::rename(&part, dest).map_err(ApiError::from));
         if result.is_err() {
             let _ = fs::remove_file(&part);
@@ -175,12 +179,13 @@ impl Client {
         part: &Path,
         cancel: &AtomicBool,
         mut progress: impl FnMut(u64, Option<u64>),
+        allowed_origins: Option<&[String]>,
     ) -> Result<(), ApiError> {
         let cancelled = || cancel.load(Ordering::Relaxed);
         if cancelled() {
             return Err(ApiError::Cancelled);
         }
-        let mut resp = get_with_redirects(&self.download, url, &[], None)?;
+        let mut resp = get_with_redirects(&self.download, url, &[], allowed_origins)?;
         let total = resp
             .headers()
             .get("content-length")

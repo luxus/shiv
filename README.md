@@ -26,6 +26,10 @@ Windows.
   retry, and lands in your **Activity** history.
 - **Update everything** from Installed: one button checks every mod
   against its source and updates what changed, in place.
+- **Shiv updates itself** where it can: the AppImage and the portable
+  `.exe` download a new release, verify its published SHA-256 and swap
+  it in, all from the sidebar. Flatpak, Nix and AUR installs are pointed
+  at their package manager instead.
 - **Mod pages** with an image gallery, description, files, changelog,
   comments, and the author's support links.
 - **CompLock built in** ([deadlockconfig.com](https://deadlockconfig.com/)):

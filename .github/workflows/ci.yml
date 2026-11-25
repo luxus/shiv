@@ -34,3 +34,20 @@ jobs:
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Test
         run: cargo test --workspace
+
+  windows:
+    # The updater's Windows shapes (portable swap, Inno install) must
+    # compile and test where they run; the release workflow already
+    # builds on this image.
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
