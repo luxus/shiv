@@ -27,7 +27,7 @@ available one. (See `docs/engineering-core.md` for the reusable core rules.)
 | Memory (idle) | RSS after catalog load, 10 min idle | `/proc/<pid>/status` VmRSS, repeated runs | DMM idles in the gigabytes; Shiv holds **< 150 MB** loaded, **< 90 MB** on a cold Browse |
 | Memory (work) | RSS after a 60 s full-list scroll, and after Repair | peak VmHWM and post-`malloc_trim` RSS | scrolling may not leak: post-scroll RSS within **10 %** of loaded; Repair releases back |
 | Start-up | cold start -> first paint with catalog | probe in `docs/perf-results.md` | **< 1.5 s** cold, **< 600 ms** warm, DMM-class apps measured beside |
-| Scroll | frame budget while flinging the list | frame-tap probe (tracked in issue #9) | **no frame > 16 ms** on a mid-range laptop at 144 Hz |
+| Scroll | frame budget while flinging the list | `SHIV_FRAME_PROBE` + `SHIV_SCROLL_SECS` (recorded in `docs/perf-results.md`) | **no frame > 16 ms** on a mid-range laptop at 144 Hz |
 | Install | wall clock for a 100 MB archive | `shiv-core/tests/install_probe.rs` | extraction at **> 60 %** of cold disk-read speed (warm copy ceiling is ~50 %); download cancel **< 50 ms** (cancellable extraction is tracked separately) |
 | Search | keystroke -> list updated | `SHIV_SEARCH_PROBE` | **< 16 ms** per keystroke on 10k mods, no main-thread stall |
 | Binary | release size, link time | `ls`, CI log | the AppImage stays **< 25 MB**; every heavy dependency added needs a justification below |
@@ -58,7 +58,9 @@ in `docs/perf-results.md` before a release tag.
   scans the controller sources and fails on `fs::`, `rfd::`, `ureq::`, and
   `sleep(` outside `spawn_worker` and `/// Worker body` functions.
 - **Rows are O(1) to render.** Proof: models mutate via `set_row_data` rather
-  than per-frame `Vec` rebuilds. (Frame-budget tap is tracked in issue #9.)
+  than per-frame `Vec` rebuilds. (`SHIV_FRAME_PROBE` + `SHIV_SCROLL_SECS` records
+  per-frame draw, UI-thread CPU, and event-loop turn times on `lea` in
+  `docs/perf-results.md`.)
 - **Models change, they do not rebuild.** Proof:
   `downloads::storm::progress_storm_flow` replays 100 progress ticks against a
   30-row model and asserts exactly 100 `row_changed` notifications and 0 model

@@ -26,6 +26,8 @@ slint = { version = "1.18.1", default-features = false, features = [
     "backend-winit-wayland",
     # Window event hook for file drag and drop (src/dnd.rs).
     "unstable-winit-030",
+    # Pre-warm fontconfig fallback families off the UI thread (src/main.rs).
+    "unstable-fontique-011",
     "renderer-software",
 ] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }

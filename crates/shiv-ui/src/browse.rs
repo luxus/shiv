@@ -2919,13 +2919,19 @@ mod dev_probe {
         let scroll = std::rc::Rc::new(timer);
         let handle = scroll.clone();
         scroll.start(TimerMode::Repeated, Duration::from_millis(8), move || {
-            if ticks.replace(ticks.get() + 1) >= secs_as_ticks {
+            let tick = ticks.replace(ticks.get() + 1);
+            if tick >= secs_as_ticks {
+                crate::frame_probe::stop_window();
                 handle.stop();
                 let _ = slint::quit_event_loop();
                 return;
             }
+            if tick == 0 {
+                crate::frame_probe::start_window();
+            }
             with_browse(|b| {
                 let Some(app) = b.weak.upgrade() else {
+                    crate::frame_probe::stop_window();
                     handle.stop();
                     let _ = slint::quit_event_loop();
                     return;

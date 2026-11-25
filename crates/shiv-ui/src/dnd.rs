@@ -29,20 +29,35 @@ pub(crate) fn force_x11(shiv_x11: Option<&OsStr>) -> bool {
     shiv_x11.is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Select the winit backend, on X11 when [`force_x11`] says so. Must run
-/// before the first window is created.
+/// Select the winit backend when [`force_x11`] or the frame-budget probe
+/// requires customising it. Must run before the first window is created.
 pub fn select_backend() -> Result<(), slint::PlatformError> {
     #[cfg(all(unix, not(target_vendor = "apple")))]
-    if force_x11(std::env::var_os("SHIV_X11").as_deref()) {
+    let selector = if force_x11(std::env::var_os("SHIV_X11").as_deref()) {
         use winit::platform::x11::EventLoopBuilderExtX11;
         let mut builder = winit::event_loop::EventLoop::with_user_event();
         builder.with_x11();
-        return slint::BackendSelector::new()
-            .backend_name("winit".into())
-            .with_winit_event_loop_builder(builder)
-            .select();
-    }
-    Ok(())
+        Some(
+            slint::BackendSelector::new()
+                .backend_name("winit".into())
+                .with_winit_event_loop_builder(builder),
+        )
+    } else {
+        None
+    };
+    #[cfg(not(all(unix, not(target_vendor = "apple"))))]
+    let selector: Option<slint::BackendSelector> = None;
+
+    #[cfg(any(debug_assertions, feature = "dev-probe"))]
+    let selector = if let Some(handler) = crate::frame_probe::make_handler() {
+        let base =
+            selector.unwrap_or_else(|| slint::BackendSelector::new().backend_name("winit".into()));
+        Some(base.with_winit_custom_application_handler(handler))
+    } else {
+        selector
+    };
+
+    selector.map_or(Ok(()), slint::BackendSelector::select)
 }
 
 /// Route file drag and drop of the main window to the Installed screen:
