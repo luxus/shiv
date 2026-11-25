@@ -797,13 +797,19 @@ mod tests {
 
     impl TestArchive {
         fn new(extension: &str, payload: &[u8], declared_length: usize) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT_PARTICLE_DIR_ID: AtomicU64 = AtomicU64::new(0);
+
+            let seq = NEXT_PARTICLE_DIR_ID.fetch_add(1, Ordering::Relaxed);
             let unique = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let dir =
-                std::env::temp_dir().join(format!("s2m-particle-{}-{unique}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let dir = std::env::temp_dir().join(format!(
+                "s2m-particle-{}-{seq}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&dir).unwrap();
             let path = dir.join("pak01_dir.vpk");
             let mut tree = format!("{extension}\0particles\0sample\0").into_bytes();
             tree.extend_from_slice(&0u32.to_le_bytes());

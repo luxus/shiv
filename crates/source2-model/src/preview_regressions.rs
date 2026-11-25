@@ -3,22 +3,26 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::preview_report::PreviewIssueKind;
 use crate::vpk_extract::VpkArchive;
 
+static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        let seq = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "dmm-preview-regression-{}-{nonce}",
+            "dmm-preview-regression-{}-{seq}-{nonce}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&root).unwrap();
         Self(root)
     }
 
@@ -370,15 +374,54 @@ fn truncated_texture_payload_is_corrupt_while_unknown_encoding_is_unsupported() 
             .issues
             .iter()
             .any(|issue| issue.path.ends_with("truncated_color.vtex_c")
-                && issue.kind == PreviewIssueKind::CorruptOverride)
+                && issue.kind == PreviewIssueKind::CorruptOverride),
+        "expected CorruptOverride for truncated_color.vtex_c; got {:?}",
+        report.issues
     );
     assert!(
         report
             .issues
             .iter()
             .any(|issue| issue.path.ends_with("unsupported_color.vtex_c")
-                && issue.kind == PreviewIssueKind::Unsupported)
+                && issue.kind == PreviewIssueKind::Unsupported),
+        "expected Unsupported for unsupported_color.vtex_c; got {:?}",
+        report.issues
     );
+}
+
+#[test]
+fn fixtures_created_concurrently_never_collide() {
+    use std::collections::HashSet;
+    use std::sync::Barrier;
+
+    const THREADS: usize = 16;
+    const PER_THREAD: usize = 16;
+
+    let barrier = Arc::new(Barrier::new(THREADS));
+    let mut handles = Vec::with_capacity(THREADS);
+    for _ in 0..THREADS {
+        let barrier = Arc::clone(&barrier);
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            let fixtures: Vec<Fixture> = (0..PER_THREAD).map(|_| Fixture::new()).collect();
+            let paths: Vec<PathBuf> = fixtures.iter().map(|fixture| fixture.0.clone()).collect();
+            barrier.wait();
+            drop(fixtures);
+            paths
+        }));
+    }
+
+    let mut seen = HashSet::with_capacity(THREADS * PER_THREAD);
+    for handle in handles {
+        for path in handle.join().unwrap() {
+            assert!(
+                seen.insert(path.clone()),
+                "duplicate fixture dir created: {}",
+                path.display()
+            );
+        }
+    }
+    assert_eq!(seen.len(), THREADS * PER_THREAD);
 }
 
 #[test]
