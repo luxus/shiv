@@ -298,6 +298,7 @@ export component BrowsePage inherits Rectangle {
                 spacing: Theme.s1;
                 SearchField {
                     horizontal-stretch: 1;
+                    clearable: true;
                     placeholder: "Search by name, author or description";
                     edited(text) => { BrowseState.search-edited(text); }
                 }

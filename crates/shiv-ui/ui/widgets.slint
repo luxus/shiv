@@ -155,8 +155,12 @@ export component TextButton inherits Rectangle {
 
 export component SearchField inherits Rectangle {
     in property <string> placeholder;
+    in property <bool> clearable: false;
     in-out property <string> text <=> input.text;
     callback edited(string);
+    callback cleared;
+    property <bool> show-clear: root.clearable && input.text != "";
+    property <length> trailing: root.show-clear ? 28px : 0px;
 
     height: Theme.control-h;
     border-radius: Theme.radius;
@@ -166,7 +170,7 @@ export component SearchField inherits Rectangle {
 
     hint := Text {
         x: Theme.s2;
-        width: parent.width - 2 * Theme.s2;
+        width: parent.width - 2 * Theme.s2 - root.trailing;
         height: parent.height;
         text: root.placeholder;
         visible: input.text == "";
@@ -175,18 +179,71 @@ export component SearchField inherits Rectangle {
         vertical-alignment: center;
     }
 
-    input := TextInput {
+    FocusScope {
         x: Theme.s2;
-        width: parent.width - 2 * Theme.s2;
+        width: parent.width - 2 * Theme.s2 - root.trailing;
         height: parent.height;
-        single-line: true;
-        color: Theme.text;
-        font-size: Theme.text-md;
-        vertical-alignment: center;
-        selection-background-color: Theme.accent.with-alpha(0.35);
-        selection-foreground-color: Theme.text;
-        accessible-label: root.placeholder;
-        edited => { root.edited(self.text); }
+        key-pressed(event) => {
+            if (root.show-clear && event.text == Key.Escape) {
+                input.text = "";
+                root.edited("");
+                root.cleared();
+                return accept;
+            }
+            reject
+        }
+
+        input := TextInput {
+            width: parent.width;
+            height: parent.height;
+            single-line: true;
+            color: Theme.text;
+            font-size: Theme.text-md;
+            vertical-alignment: center;
+            selection-background-color: Theme.accent.with-alpha(0.35);
+            selection-foreground-color: Theme.text;
+            accessible-label: root.placeholder;
+            accessible-action-set-value(value) => {
+                self.text = value;
+                root.edited(value);
+            }
+            edited => { root.edited(self.text); }
+        }
+    }
+
+    if root.show-clear: Rectangle {
+        x: parent.width - self.width - 4px;
+        y: (parent.height - self.height) / 2;
+        width: 24px;
+        height: 24px;
+        border-radius: Theme.radius;
+        background: clear-ta.has-hover ? Theme.hover : transparent;
+        accessible-role: button;
+        accessible-label: "Clear search";
+        accessible-action-default => {
+            input.text = "";
+            root.edited("");
+            root.cleared();
+        }
+        Path {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 8px;
+            height: 8px;
+            viewbox-width: 8;
+            viewbox-height: 8;
+            commands: "M 0 0 L 8 8 M 8 0 L 0 8";
+            stroke: clear-ta.has-hover ? Theme.text : Theme.text-muted;
+            stroke-width: 1.5px;
+        }
+        clear-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                input.text = "";
+                root.edited("");
+                root.cleared();
+            }
+        }
     }
 }
 

@@ -82,10 +82,10 @@ struct State {
 }
 
 impl State {
-    fn has_files(&self, offer: &WlDataOffer) -> bool {
+    fn uri_list_mime(&self, offer: &WlDataOffer) -> Option<&str> {
         self.offers
             .get(&offer.id())
-            .is_some_and(|m| m.iter().any(|t| t == URI_LIST))
+            .and_then(|mimes| pick_uri_list_mime(mimes))
     }
 
     fn forget(&mut self, offer: &WlDataOffer) {
@@ -97,8 +97,9 @@ impl State {
     /// own process, so reading here after a flush does not deadlock.
     fn read_uris(&self, offer: &WlDataOffer) -> Option<String> {
         const MAX_URI_LIST_BYTES: u64 = 1024 * 1024;
+        let mime = self.uri_list_mime(offer)?.to_owned();
         let (reader, writer) = std::io::pipe().ok()?;
-        offer.receive(URI_LIST.into(), writer.as_fd());
+        offer.receive(mime, writer.as_fd());
         drop(writer);
         self.conn.flush().ok()?;
         let mut text = String::new();
@@ -108,6 +109,18 @@ impl State {
             .ok()?;
         Some(text)
     }
+}
+
+fn is_uri_list_mime(mime: &str) -> bool {
+    mime == URI_LIST || mime.starts_with("text/uri-list;")
+}
+
+fn pick_uri_list_mime(mimes: &[String]) -> Option<&str> {
+    mimes
+        .iter()
+        .find(|m| m.as_str() == URI_LIST)
+        .or_else(|| mimes.iter().find(|m| is_uri_list_mime(m)))
+        .map(String::as_str)
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
@@ -179,14 +192,14 @@ impl Dispatch<WlDataDevice, ()> for State {
                     state.forget(&old);
                 }
                 let Some(offer) = id else { return };
-                if !state.has_files(&offer) {
+                let Some(mime) = state.uri_list_mime(&offer).map(str::to_owned) else {
                     offer.accept(serial, None);
                     state.forget(&offer);
                     return;
-                }
-                offer.accept(serial, Some(URI_LIST.into()));
+                };
+                offer.accept(serial, Some(mime));
                 if offer.version() >= 3 {
-                    offer.set_actions(DndAction::Copy, DndAction::Copy);
+                    offer.set_actions(DndAction::Copy | DndAction::Move, DndAction::Copy);
                 }
                 state.current = Some(offer);
                 (state.emit)(DropEvent::Hover(true));
@@ -281,5 +294,23 @@ mod tests {
             file_paths("file:///tmp/%C3%A4.vpk"),
             [PathBuf::from("/tmp/ä.vpk")]
         );
+    }
+
+    #[test]
+    fn uri_list_mime_matches_exact_and_parameterized() {
+        let exact = vec!["text/plain".into(), "text/uri-list".into()];
+        assert_eq!(pick_uri_list_mime(&exact), Some("text/uri-list"));
+
+        let charset = vec!["text/uri-list;charset=utf-8".into()];
+        assert_eq!(
+            pick_uri_list_mime(&charset),
+            Some("text/uri-list;charset=utf-8")
+        );
+
+        let prefer_exact = vec!["text/uri-list;charset=utf-8".into(), "text/uri-list".into()];
+        assert_eq!(pick_uri_list_mime(&prefer_exact), Some("text/uri-list"));
+
+        let other = vec!["text/plain".into(), "application/octet-stream".into()];
+        assert_eq!(pick_uri_list_mime(&other), None);
     }
 }

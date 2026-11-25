@@ -959,7 +959,7 @@ export component LocalInstallDialog inherits DialogCard {
         Button {
             text: LocalInstallState.busy ? "Installing" : "Install";
             primary: true;
-            disabled: LocalInstallState.busy || LocalInstallState.path == "";
+            disabled: LocalInstallState.busy || InstalledState.busy || LocalInstallState.path == "";
             clicked => { LocalInstallState.install(); }
         }
     }
@@ -1067,7 +1067,7 @@ export component UpdateFileDialog inherits DialogCard {
         Button {
             text: UpdateFileState.busy ? "Replacing" : "Replace";
             primary: true;
-            disabled: UpdateFileState.busy || UpdateFileState.path == "";
+            disabled: UpdateFileState.busy || InstalledState.busy || UpdateFileState.path == "";
             clicked => { UpdateFileState.replace(); }
         }
     }
