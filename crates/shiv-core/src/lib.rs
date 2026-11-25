@@ -6,6 +6,7 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)
 )]
 
+pub mod activity;
 pub mod addons;
 pub mod alloc_count;
 pub mod complock;

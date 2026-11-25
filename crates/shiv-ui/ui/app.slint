@@ -78,7 +78,7 @@ export component App inherits Window {
     default-font-size: Theme.text-md;
 
     in-out property <int> screen: 0;
-    property <[string]> screens: ["Browse", "Installed", "Sources", "Crosshair", "Performance", "Repair", "Profiles", "Downloads"];
+    property <[string]> screens: ["Browse", "Installed", "Sources", "Crosshair", "Performance", "Repair", "Profiles", "Activity"];
 
     // Re-read the addons folder whenever the Installed screen is shown.
     changed screen => {

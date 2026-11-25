@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use shiv_api::{ApiError, Client, DeadlockerClient, NativeListing};
+use shiv_core::activity::ActivityKind;
 use shiv_core::addons::{self, AddonsError};
 use shiv_core::complock;
 use shiv_core::drift::{self, Drift, Published};
@@ -552,6 +553,26 @@ fn tooltip_detail(e: &Entry) -> String {
         parts.push(paks);
     }
     parts.join(" \u{b7} ")
+}
+
+fn current_version_text(e: &Entry) -> Option<String> {
+    e.version_label
+        .as_deref()
+        .map(format_version_label)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            e.version
+                .as_deref()
+                .map(format_version_label)
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            e.facts
+                .complock_build_date
+                .as_deref()
+                .map(format_version_label)
+                .filter(|s| !s.is_empty())
+        })
 }
 
 fn source_tag(e: &Entry) -> (SourceKind, &'static str) {
@@ -1202,10 +1223,40 @@ struct Installed {
     stepping: Cell<bool>,
     /// An OS file/folder dialog is currently open.
     picking: Cell<bool>,
-    /// Mod pending confirmation in `RestoreDialog`: `(id, name, backup_label)`.
-    restore_target: RefCell<Option<(String, String, String)>>,
+    /// Mod pending confirmation in `RestoreDialog`.
+    restore_target: RefCell<Option<RestoreTarget>>,
     /// Active "Update all" queue and progress counters.
     batch_updates: RefCell<Option<BatchUpdate>>,
+}
+
+#[derive(Clone)]
+struct ActivityRecord {
+    kind: ActivityKind,
+    title: String,
+    detail: String,
+    from_version: Option<String>,
+    to_version: Option<String>,
+    source: Option<String>,
+}
+
+impl ActivityRecord {
+    fn record(&self) {
+        crate::downloads::record(
+            self.kind,
+            &self.title,
+            &self.detail,
+            self.from_version.as_deref(),
+            self.to_version.as_deref(),
+            self.source.as_deref(),
+        );
+    }
+}
+
+struct RestoreTarget {
+    id: String,
+    current_version: Option<String>,
+    backup: String,
+    source: String,
 }
 
 struct BatchUpdate {
@@ -2314,7 +2365,7 @@ impl Installed {
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
             "shiv-install-file",
-            move || -> Result<String, String> {
+            move || -> Result<(String, ActivityRecord), String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
                 let guard = shiv_core::install::InstallGuard::acquire(&paths.addons)
@@ -2327,7 +2378,17 @@ impl Installed {
                     guard.permit(),
                 )
                 .map_err(|e| install_error_text(&e))?;
-                Ok(format!("Installed {} as {}.", sc.name, sc.vpks.join(", ")))
+                let vpks = sc.vpks.join(", ");
+                let banner = format!("Installed {} as {vpks}.", sc.name);
+                let rec = ActivityRecord {
+                    kind: ActivityKind::Installed,
+                    title: sc.name,
+                    detail: format!("Installed ({vpks})"),
+                    from_version: None,
+                    to_version: sc.version_label.or(sc.version),
+                    source: Some("Manual".to_owned()),
+                };
+                Ok((banner, rec))
             },
             move |result| {
                 let result = result.and_then(|r| r);
@@ -2341,7 +2402,7 @@ impl Installed {
         }
     }
 
-    fn installed_file(&self, result: Result<String, String>) {
+    fn installed_file(&self, result: Result<(String, ActivityRecord), String>) {
         self.with_app(|app| {
             let s = app.global::<LocalInstallState>();
             s.set_busy(false);
@@ -2351,7 +2412,8 @@ impl Installed {
             }
         });
         match result {
-            Ok(text) => {
+            Ok((text, rec)) => {
+                rec.record();
                 self.with_state(|s| s.set_banner_text(text.into()));
                 self.acted(Ok(()));
             }
@@ -2599,15 +2661,36 @@ impl Installed {
         }
         match result {
             Ok(banner) => {
-                crate::downloads::finished(id, crate::downloads::Outcome::Done);
+                crate::downloads::finished_with(
+                    id,
+                    crate::downloads::Outcome::Done,
+                    Some(ActivityKind::Installed),
+                    None,
+                    None,
+                    Some("Manual"),
+                );
                 self.with_state(|s| s.set_banner_text(banner.into()));
                 self.acted(Ok(()));
             }
             Err(LinkFailure::Cancelled) => {
-                crate::downloads::finished(id, crate::downloads::Outcome::Cancelled);
+                crate::downloads::finished_with(
+                    id,
+                    crate::downloads::Outcome::Cancelled,
+                    None,
+                    None,
+                    None,
+                    Some("Manual"),
+                );
             }
             Err(LinkFailure::Failed(text)) => {
-                crate::downloads::finished(id, crate::downloads::Outcome::Failed(text.clone()));
+                crate::downloads::finished_with(
+                    id,
+                    crate::downloads::Outcome::Failed(text.clone()),
+                    None,
+                    None,
+                    None,
+                    Some("Manual"),
+                );
                 self.with_state(|s| {
                     s.set_banner_text(format!("Could not install {name}. {text}").into());
                 });
@@ -2728,6 +2811,15 @@ impl Installed {
             return;
         };
         let name = s.get_target_name().to_string();
+        let (source, from_version) = self
+            .entries
+            .borrow()
+            .iter()
+            .find(|e| e.id == id)
+            .map_or_else(
+                || ("Manual".to_owned(), None),
+                |e| (source_tag(e).1.to_owned(), current_version_text(e)),
+            );
         s.set_busy(true);
         s.set_error_text("".into());
         self.set_flags(None, Some(true));
@@ -2735,7 +2827,7 @@ impl Installed {
         let weak = self.weak.clone();
         let started = crate::spawn_worker(
             "shiv-replace-file",
-            move || -> Result<String, String> {
+            move || -> Result<(String, ActivityRecord), String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let running = deps.running.clone();
                 let guard =
@@ -2754,10 +2846,24 @@ impl Installed {
                     .unwrap_or(&r.backup)
                     .display()
                     .to_string();
-                Ok(format!(
+                let to_version = r
+                    .sidecar
+                    .version_label
+                    .clone()
+                    .or_else(|| r.sidecar.version.clone());
+                let banner = format!(
                     "Updated {name} in {}. The old file is in addons/{backup}.",
                     r.sidecar.vpks.join(", ")
-                ))
+                );
+                let rec = ActivityRecord {
+                    kind: ActivityKind::Replaced,
+                    title: name,
+                    detail: format!("Replaced (backup in addons/{backup})"),
+                    from_version,
+                    to_version,
+                    source: Some(source),
+                };
+                Ok((banner, rec))
             },
             move |result| {
                 let result = result.and_then(|r| r);
@@ -2771,7 +2877,7 @@ impl Installed {
         }
     }
 
-    fn replaced(&self, result: Result<String, String>) {
+    fn replaced(&self, result: Result<(String, ActivityRecord), String>) {
         self.with_app(|app| {
             let s = app.global::<UpdateFileState>();
             s.set_busy(false);
@@ -2781,7 +2887,8 @@ impl Installed {
             }
         });
         match result {
-            Ok(text) => {
+            Ok((text, rec)) => {
+                rec.record();
                 *self.updating.borrow_mut() = None;
                 self.with_state(|s| s.set_banner_text(text.into()));
                 self.acted(Ok(()));
@@ -2960,12 +3067,20 @@ impl Installed {
         }
         let found = {
             let entries = self.entries.borrow();
-            entries
-                .iter()
-                .position(|e| e.id == id)
-                .map(|i| (i, entries[i].name.clone()))
+            entries.iter().position(|e| e.id == id).map(|i| {
+                let e = &entries[i];
+                let rec = matches!(action, Action::Uninstall).then(|| ActivityRecord {
+                    kind: ActivityKind::Removed,
+                    title: e.name.clone(),
+                    detail: "Removed".to_owned(),
+                    from_version: current_version_text(e),
+                    to_version: None,
+                    source: Some(source_tag(e).1.to_owned()),
+                });
+                (i, e.name.clone(), rec)
+            })
         };
-        let Some((index, name)) = found else {
+        let Some((index, name, uninstall_rec)) = found else {
             return;
         };
         let mods = self.mods.borrow().clone();
@@ -2979,8 +3094,9 @@ impl Installed {
             move || run_action(&deps, &mods, index, &name, action),
             move |result| {
                 let result = result.and_then(|r| r);
+                let rec = if result.is_ok() { uninstall_rec } else { None };
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.acted(result));
+                    with_installed(|i| i.acted_with(result, rec.as_ref()));
                 });
             },
         );
@@ -3009,12 +3125,18 @@ impl Installed {
         let Some(plan) = self.plans.borrow().get(id).cloned() else {
             return;
         };
-        let target = self
+        let (target, from_version, source) = self
             .entries
             .borrow()
             .iter()
             .find(|e| e.id == id)
-            .and_then(|e| e.target_version.clone());
+            .map_or((None, None, None), |e| {
+                (
+                    e.target_version.clone(),
+                    current_version_text(e),
+                    Some(source_tag(e).1.to_owned()),
+                )
+            });
         let deps = self.deps.clone();
         let id = id.to_owned();
         let weak = self.weak.clone();
@@ -3022,12 +3144,24 @@ impl Installed {
             let note = run_reset(&deps, &id, name, &plan, |occupants| {
                 crate::conflict::ask_slots(&weak, occupants)
             })?;
-            Ok(plan_result_banner(
-                name,
-                as_update,
-                target.as_deref(),
-                &note,
-            ))
+            let banner = plan_result_banner(name, as_update, target.as_deref(), &note);
+            let rec = ActivityRecord {
+                kind: if as_update {
+                    ActivityKind::Updated
+                } else {
+                    ActivityKind::Reset
+                },
+                title: name.to_owned(),
+                detail: if as_update {
+                    "Updated".to_owned()
+                } else {
+                    "Reset to release".to_owned()
+                },
+                from_version,
+                to_version: target,
+                source,
+            };
+            Ok((banner, Some(rec)))
         });
     }
 
@@ -3036,20 +3170,26 @@ impl Installed {
         if self.weak.upgrade().is_none() || self.refreshing.get() || self.acting.get() {
             return;
         }
-        let Some((name, current)) = self
+        let Some((name, current_display, current_version, source)) = self
             .entries
             .borrow()
             .iter()
             .find(|e| e.id == id && e.facts.has_backup)
             .map(|e| {
-                let cur = if !e.detail.is_empty() {
+                let cur_ver = current_version_text(e);
+                let cur_display = if !e.detail.is_empty() {
                     e.detail.clone()
-                } else if let Some(v) = e.version.as_deref().filter(|v| !v.is_empty()) {
-                    v.to_owned()
+                } else if let Some(v) = cur_ver.clone() {
+                    v
                 } else {
                     "current version".to_owned()
                 };
-                (e.name.clone(), cur)
+                (
+                    e.name.clone(),
+                    cur_display,
+                    cur_ver,
+                    source_tag(e).1.to_owned(),
+                )
             })
         else {
             return;
@@ -3064,7 +3204,16 @@ impl Installed {
             move |result| {
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.show_restore_dialog(reply_id, &name, &current, &result));
+                    with_installed(|i| {
+                        i.show_restore_dialog(
+                            reply_id,
+                            &name,
+                            &current_display,
+                            current_version,
+                            source,
+                            &result,
+                        );
+                    });
                 });
             },
         );
@@ -3074,17 +3223,23 @@ impl Installed {
         &self,
         id: String,
         name: &str,
-        current: &str,
+        current_display: &str,
+        current_version: Option<String>,
+        source: String,
         result: &Result<String, String>,
     ) {
         match result {
             Ok(backup_label) => {
-                *self.restore_target.borrow_mut() =
-                    Some((id, name.to_owned(), backup_label.clone()));
+                *self.restore_target.borrow_mut() = Some(RestoreTarget {
+                    id,
+                    current_version,
+                    backup: backup_label.clone(),
+                    source,
+                });
                 self.with_app(|app| {
                     let r = app.global::<RestoreState>();
                     r.set_mod_name(name.into());
-                    r.set_current_version(current.into());
+                    r.set_current_version(current_display.into());
                     r.set_backup_version(backup_label.as_str().into());
                     r.set_error_text(SharedString::new());
                     r.set_busy(false);
@@ -3101,7 +3256,7 @@ impl Installed {
         if self.refreshing.get() || self.acting.get() {
             return;
         }
-        let Some((id, _name, backup_label)) = self.restore_target.borrow_mut().take() else {
+        let Some(target) = self.restore_target.borrow_mut().take() else {
             self.close_restore();
             return;
         };
@@ -3111,9 +3266,18 @@ impl Installed {
             r.set_open(false);
         });
         let deps = self.deps.clone();
-        let mod_id = id.clone();
-        self.run_job(&id, move |mod_name| {
-            run_restore(&deps, &mod_id, mod_name, &backup_label)
+        let mod_id = target.id.clone();
+        self.run_job(&target.id, move |mod_name| {
+            let banner = run_restore(&deps, &mod_id, mod_name, &target.backup)?;
+            let rec = ActivityRecord {
+                kind: ActivityKind::Restored,
+                title: mod_name.to_owned(),
+                detail: "Restored".to_owned(),
+                from_version: target.current_version,
+                to_version: Some(target.backup),
+                source: Some(target.source),
+            };
+            Ok((banner, Some(rec)))
         });
     }
 
@@ -3277,7 +3441,11 @@ impl Installed {
 
     /// An action on one row that is not an [`Action`]: same busy guard,
     /// worker and follow-up refresh.
-    fn run_job(&self, id: &str, job: impl FnOnce(&str) -> Result<String, String> + Send + 'static) {
+    fn run_job(
+        &self,
+        id: &str,
+        job: impl FnOnce(&str) -> Result<(String, Option<ActivityRecord>), String> + Send + 'static,
+    ) {
         if self.weak.upgrade().is_none() || self.refreshing.get() || self.acting.get() {
             return;
         }
@@ -3298,7 +3466,7 @@ impl Installed {
             move |result| {
                 let result = result.and_then(|r| r);
                 let _ = weak.upgrade_in_event_loop(move |_| {
-                    with_installed(|i| i.finish(&result));
+                    with_installed(|i| i.finish_job(&result));
                 });
             },
         );
@@ -3310,7 +3478,27 @@ impl Installed {
     /// Success or failure, re-read the folder: that also refreshes the
     /// game-running state (a game-running refusal means it just started).
     fn acted(&self, result: Result<(), String>) {
+        self.acted_with(result, None);
+    }
+
+    fn acted_with(&self, result: Result<(), String>, rec: Option<&ActivityRecord>) {
+        if result.is_ok()
+            && let Some(rec) = rec
+        {
+            rec.record();
+        }
         self.finish(&result.map(|()| String::new()));
+    }
+
+    fn finish_job(&self, result: &Result<(String, Option<ActivityRecord>), String>) {
+        if let Ok((_, Some(rec))) = result {
+            rec.record();
+        }
+        let banner_result = result
+            .as_ref()
+            .map(|(text, _)| text.clone())
+            .map_err(Clone::clone);
+        self.finish(&banner_result);
     }
 
     fn finish(&self, result: &Result<String, String>) {
