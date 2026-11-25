@@ -147,11 +147,11 @@
     }
    ],
    "updated": {
-    "date": "2026-11-22",
-    "text": "22 Nov",
-    "long": "22 Nov 2026",
-    "new": false,
-    "href": "/docs/changelog/#cl-2026-11-22-hud"
+    "date": "2026-11-24",
+    "text": "24 Nov",
+    "long": "24 Nov 2026",
+    "new": true,
+    "href": "/docs/changelog/#cl-2026-11-24-hud"
    }
   },
   {
@@ -265,7 +265,7 @@
     "date": "2026-11-23",
     "text": "23 Nov",
     "long": "23 Nov 2026",
-    "new": true,
+    "new": false,
     "href": "/docs/changelog/#cl-2026-11-23-particles"
    }
   },
@@ -384,7 +384,7 @@
     "date": "2026-11-23",
     "text": "23 Nov",
     "long": "23 Nov 2026",
-    "new": true,
+    "new": false,
     "href": "/docs/changelog/#cl-2026-11-23-hpbars"
    }
   },
@@ -417,10 +417,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5900594,
-     "crc": 1732980753,
-     "csize": 852803,
-     "url": "/dl/pack/hud.f4fe85eee1.z"
+     "size": 5900605,
+     "crc": 368975695,
+     "csize": 852812,
+     "url": "/dl/pack/hud.ec3321046b.z"
     }
    ]
   },
@@ -430,10 +430,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5901990,
-     "crc": 4042324237,
+     "size": 5902001,
+     "crc": 3907443212,
      "csize": 853109,
-     "url": "/dl/pack/hud_nodamage.9f680f4d35.z"
+     "url": "/dl/pack/hud_nodamage.cd7aee8f59.z"
     }
    ]
   },
@@ -443,10 +443,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5900908,
-     "crc": 2617298382,
-     "csize": 852932,
-     "url": "/dl/pack/hud_vanilla.889c64f5ab.z"
+     "size": 5900919,
+     "crc": 3670752095,
+     "csize": 852945,
+     "url": "/dl/pack/hud_vanilla.c3387d5842.z"
     }
    ]
   },

@@ -24,6 +24,11 @@
     <binary>shiv</binary>
   </provides>
   <releases>
+    <release version="0.6.1" date="2026-11-25">
+      <description>
+        <p>CompLock pack data from deadlockconfig.com, gameinfo build 6860.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-25">
       <description>
         <p>Persistent Activity history, a GameBanana toggle, mod versions with source tags, update all, and a restore dialog.</p>
