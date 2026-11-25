@@ -1,0 +1,79 @@
+name: release-tag
+
+# A push to main whose version files name a release no tag claims — the
+# merged release PR, or a release commit landed by hand — gets its tag
+# once that commit's CI is green: fail closed, no tag on red. The tag
+# push itself does not start release.yml (a GITHUB_TOKEN push starts no
+# workflows), so release.yml is dispatched on the tag, the CompLock
+# watch's workaround.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  # Re-run by hand when the wait failed for a passing reason.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    # Bounds the CI wait: a stuck CI fails closed instead of tagging.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Is a release waiting for its tag?
+        id: pending
+        run: |
+          set -euo pipefail
+          current=$(python3 scripts/data_release.py read-version crates/shiv-ui/Cargo.toml)
+          latest=$(git tag --list 'v*' --sort=-v:refname | sed -n 1p)
+          state=$(python3 scripts/data_release.py cmp-version \
+            --current "$current" --tag "${latest:-v0.0.0}")
+          echo "version=$current" >> "$GITHUB_OUTPUT"
+          if [ "$state" != "ahead" ]; then
+            echo "no release is waiting for a tag."
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Wait for this commit's CI to go green
+        if: steps.pending.outputs.pending == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The CI run may not exist the moment this job starts; look
+          # for two minutes, then fail closed.
+          run=""
+          for _ in $(seq 1 24); do
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI \
+              --commit "$GITHUB_SHA" --json databaseId -q '.[0].databaseId // empty')
+            [ -n "$run" ] && break
+            sleep 5
+          done
+          if [ -z "$run" ]; then
+            echo "no CI run found for this commit; refusing to tag."
+            exit 1
+          fi
+          # Non-zero on a red or cancelled CI: no tag on red.
+          gh run watch "$run" --repo "$GITHUB_REPOSITORY" --exit-status
+      - name: Tag and dispatch the release
+        if: steps.pending.outputs.pending == 'true'
+        env:
+          VERSION: ${{ steps.pending.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "shiv-release-tag"
+          git config user.email "actions@users.noreply.github.com"
+          git tag "v$VERSION"
+          git push origin "refs/tags/v$VERSION"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION"
