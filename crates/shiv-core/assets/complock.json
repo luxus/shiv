@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "model": 1,
-  "requires_shiv": null,
+  "requires_shiv": "0.7.0",
   "game": "6860",
-  "fetched": "2026-11-25",
+  "fetched": "2026-11-26",
   "source": "https://deadlockconfig.com/"
 }
