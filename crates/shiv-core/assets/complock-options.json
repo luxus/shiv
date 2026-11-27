@@ -147,11 +147,11 @@
     }
    ],
    "updated": {
-    "date": "2026-11-24",
-    "text": "24 Nov",
-    "long": "24 Nov 2026",
+    "date": "2026-11-26",
+    "text": "26 Nov",
+    "long": "26 Nov 2026",
     "new": true,
-    "href": "/docs/changelog/#cl-2026-11-24-hud"
+    "href": "/docs/changelog/#cl-2026-11-26-hud"
    }
   },
   {
@@ -381,11 +381,11 @@
     }
    ],
    "updated": {
-    "date": "2026-11-23",
-    "text": "23 Nov",
-    "long": "23 Nov 2026",
-    "new": false,
-    "href": "/docs/changelog/#cl-2026-11-23-hpbars"
+    "date": "2026-11-26",
+    "text": "26 Nov",
+    "long": "26 Nov 2026",
+    "new": true,
+    "href": "/docs/changelog/#cl-2026-11-26-hpbars"
    }
   },
   {
@@ -417,10 +417,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5900605,
-     "crc": 368975695,
-     "csize": 852812,
-     "url": "/dl/pack/hud.ec3321046b.z"
+     "size": 5898600,
+     "crc": 1051024715,
+     "csize": 852212,
+     "url": "/dl/pack/hud.ce44e80c3b.z"
     }
    ]
   },
@@ -430,10 +430,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5902001,
-     "crc": 3907443212,
-     "csize": 853109,
-     "url": "/dl/pack/hud_nodamage.cd7aee8f59.z"
+     "size": 5899996,
+     "crc": 2344398369,
+     "csize": 852522,
+     "url": "/dl/pack/hud_nodamage.053c47d600.z"
     }
    ]
   },
@@ -443,10 +443,10 @@
    "parts": [
     {
      "name": "pak01_dir.vpk",
-     "size": 5900919,
-     "crc": 3670752095,
-     "csize": 852945,
-     "url": "/dl/pack/hud_vanilla.c3387d5842.z"
+     "size": 5898914,
+     "crc": 2364015967,
+     "csize": 852342,
+     "url": "/dl/pack/hud_vanilla.890520082b.z"
     }
    ]
   },
@@ -537,10 +537,10 @@
    "parts": [
     {
      "name": "pak05_dir.vpk",
-     "size": 35444,
-     "crc": 3487783121,
-     "csize": 6846,
-     "url": "/dl/pack/hpbars.28101e25fc.z"
+     "size": 35737,
+     "crc": 2359027217,
+     "csize": 6878,
+     "url": "/dl/pack/hpbars.2e75dc886a.z"
     }
    ]
   }
