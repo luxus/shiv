@@ -101,7 +101,7 @@ fn pack_mod_id(option_id: &str) -> String {
 /// Whether a mod id names a CompLock pak (Downloads routing).
 #[must_use]
 pub fn is_pack_id(mod_id: &str) -> bool {
-    mod_id.starts_with(PACK_PREFIX) && !shiv_core::generated::is_id(mod_id)
+    mod_id.starts_with(PACK_PREFIX) && !complock::is_legacy_generated_id(mod_id)
 }
 
 /// One pak install: what to download and how the result is recorded.
@@ -999,9 +999,21 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
     let state = app.global::<PerfState>();
     state.set_hpbar_builder_url(complock::HPBAR_BUILDER_URL.into());
     state.set_hitsound_builder_url(complock::HITSOUND_BUILDER_URL.into());
+    state.set_complock_site_url(complock::SITE_URL.into());
+    state.set_hoppcx_url(complock::HOPPCX_URL.into());
+    state.set_jcstani_url(complock::JCSTANI_URL.into());
+    state.set_kofi_url(complock::KOFI_URL.into());
+    state.set_discord_url(complock::DISCORD_URL.into());
     state.set_rows(ModelRc::from(controller.rows.clone()));
     state.set_changes(ModelRc::from(controller.changes.clone()));
     state.set_pack_rows(ModelRc::from(controller.pack_rows.clone()));
+    wire_callbacks(&state);
+    controller.publish_tiers();
+    controller.publish_complock();
+    controller.publish_changes();
+}
+
+fn wire_callbacks(state: &PerfState<'_>) {
     state.on_shown(|| with_perf(|p| p.shown()));
     state.on_hidden(|| with_perf(|p| p.hidden()));
     state.on_retry(|| with_perf(|p| p.load()));
@@ -1052,16 +1064,17 @@ pub(crate) fn attach_with(app: &App, deps: Deps) {
             p.with_state(|s| {
                 s.set_active_tier(-1);
                 s.set_complock_staged(false);
+                s.set_switch_notice("".into());
             });
             p.refresh_after_edit();
         });
     });
     state.on_apply(|| with_perf(|p| p.apply()));
     state.on_dismiss_result(|| with_perf(|p| p.show_result("", "", false)));
+    state.on_dismiss_switch_notice(|| {
+        with_perf(|p| p.with_state(|s| s.set_switch_notice("".into())));
+    });
     state.on_open_link(|url| with_perf(|p| p.open_link(url.as_str())));
-    controller.publish_tiers();
-    controller.publish_complock();
-    controller.publish_changes();
 }
 
 impl Perf {
@@ -1459,11 +1472,20 @@ impl Perf {
         } else {
             ""
         };
-        let link_url = info.link.and_then(complock::site_url).unwrap_or_default();
+        let raw_link = info
+            .link
+            .or((info.id == "hpbars").then_some(complock::HPBAR_BUILDER_URL));
+        let link_url = raw_link.and_then(complock::site_url).unwrap_or_default();
         let link_text = if link_url.is_empty() {
             ""
         } else {
-            info.link_text.unwrap_or(link_url.as_str())
+            info.link_text.unwrap_or_else(|| {
+                if info.id == "hpbars" {
+                    "Make your own in the HP Bar Builder"
+                } else {
+                    link_url.as_str()
+                }
+            })
         };
         PerfPackRow {
             kind: info.kind,
@@ -2121,6 +2143,7 @@ impl Perf {
         self.with_state(|s| {
             s.set_active_tier(index);
             s.set_complock_staged(false);
+            s.set_switch_notice("".into());
             s.set_result_title(format!("{} preset staged", tier.label()).into());
             s.set_result_detail(format!("{blurb} Review the pending changes, then apply.").into());
             s.set_result_error(false);
@@ -2169,6 +2192,7 @@ impl Perf {
         self.with_state(|s| {
             s.set_active_tier(-1);
             s.set_complock_staged(true);
+            s.set_switch_notice("".into());
             s.set_result_title("CompLock set staged".into());
             s.set_result_detail(detail.into());
             s.set_result_error(false);
@@ -2358,8 +2382,78 @@ impl Perf {
         let Some(task) = task else {
             return;
         };
+        self.ensure_complock_profile_for_option();
         self.spawn_pack_install(task);
         self.refresh_pack_row(id);
+    }
+
+    fn complock_profile_active(&self) -> bool {
+        let Some(app) = self.weak.upgrade() else {
+            return false;
+        };
+        let state = app.global::<PerfState>();
+        if state.get_complock_staged() {
+            return true;
+        }
+        if state.get_active_tier() >= 0 {
+            return false;
+        }
+        let Some(catalog) = self.catalog() else {
+            return false;
+        };
+        let pack = self.pack();
+        let admission = catalog.admitted(&pack.entries());
+        !admission.entries.is_empty()
+            && admission.entries.iter().all(|e| {
+                convar_name(e)
+                    .and_then(|name| self.staged_or_current(&name.to_ascii_lowercase()))
+                    .is_some_and(|v| perf::values_equal(&v, e.value.as_deref().unwrap_or_default()))
+            })
+    }
+
+    fn ensure_complock_profile_for_option(&self) {
+        if self.complock_profile_active() {
+            return;
+        }
+        let Some(catalog) = self.catalog() else {
+            return;
+        };
+        let pack = self.pack();
+        if self.deps.pack.needs_update(&pack) {
+            return;
+        }
+        let admission = catalog.admitted(&pack.entries());
+        if admission.entries.is_empty() {
+            return;
+        }
+        let had_tier = self
+            .weak
+            .upgrade()
+            .is_some_and(|a| a.global::<PerfState>().get_active_tier() >= 0);
+        if had_tier {
+            self.pending.borrow_mut().clear();
+        }
+        for e in admission.entries {
+            if let Some(name) = e.path.get(1) {
+                let key = name.to_ascii_lowercase();
+                if had_tier || !self.pending.borrow().contains_key(&key) {
+                    self.stage(&key, name, e.value);
+                }
+            }
+        }
+        self.note.borrow_mut().clear();
+        self.with_state(|s| {
+            s.set_active_tier(-1);
+            s.set_complock_staged(true);
+            s.set_switch_notice(
+                "Switched config profile to CompLock for compatibility with CompLock options. Click Apply to write these settings to gameinfo.gi."
+                    .into(),
+            );
+        });
+        self.refresh_list();
+        self.publish_changes();
+        self.publish_editor();
+        self.publish_pack_rows();
     }
 
     /// What a pack-install worker reported, on the event loop. A late answer
@@ -2421,6 +2515,9 @@ impl Perf {
                         self.pack_installed
                             .borrow_mut()
                             .insert(id.to_owned(), revision);
+                        if Self::row_id_of_mod(id) == "hpbars" {
+                            self.reload_file();
+                        }
                         crate::installed::reload();
                         crate::launch::refresh();
                         if !done.note.is_empty() {
@@ -2610,6 +2707,7 @@ impl Perf {
                 self.with_state(|s| {
                     s.set_active_tier(-1);
                     s.set_complock_staged(false);
+                    s.set_switch_notice("".into());
                     s.set_game_running(false);
                 });
                 let packs = self.pack_installed.borrow().clone();

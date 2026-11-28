@@ -20,7 +20,6 @@ fn sidecar_claiming(id: &str, vpk: &str) -> Sidecar {
         source: None,
         stamps: None,
         unverified: None,
-        generated: None,
     }
 }
 

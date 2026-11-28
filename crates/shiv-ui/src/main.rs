@@ -186,6 +186,7 @@ fn run() -> Result<(), slint::PlatformError> {
         log::line(format_args!("custom winit backend unavailable: {e}"));
     }
     let app = App::new()?;
+    app.set_app_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
     // Override for testing (e.g. an unreachable URL to see the Retry state).
     let api_url = std::env::var("SHIV_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_owned());
     let cache = browse::attach(&app, &api_url);
@@ -336,6 +337,39 @@ mod tests {
         );
     }
 
+    fn test_vpk_v1(entries: &[(&str, &str, &str, &[u8])]) -> Vec<u8> {
+        let mut tree = Vec::new();
+        let mut blobs = Vec::new();
+        for (ext, dir, name, data) in entries {
+            tree.extend_from_slice(ext.as_bytes());
+            tree.push(0);
+            tree.extend_from_slice(dir.as_bytes());
+            tree.push(0);
+            tree.extend_from_slice(name.as_bytes());
+            tree.push(0);
+            tree.extend_from_slice(&shiv_core::complock::crc32(data).to_le_bytes());
+            tree.extend_from_slice(&0u16.to_le_bytes());
+            tree.extend_from_slice(&0x7fffu16.to_le_bytes());
+            let off = u32::try_from(blobs.len()).expect("test blob offset");
+            let len = u32::try_from(data.len()).expect("test blob length");
+            tree.extend_from_slice(&off.to_le_bytes());
+            tree.extend_from_slice(&len.to_le_bytes());
+            tree.extend_from_slice(&0xffffu16.to_le_bytes());
+            blobs.extend_from_slice(data);
+            tree.push(0);
+            tree.push(0);
+        }
+        tree.push(0);
+        let mut out = Vec::new();
+        out.extend_from_slice(&0x55aa_1234u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        let tree_len = u32::try_from(tree.len()).expect("test tree len");
+        out.extend_from_slice(&tree_len.to_le_bytes());
+        out.extend_from_slice(&tree);
+        out.extend_from_slice(&blobs);
+        out
+    }
+
     fn click(app: &App, label: &str) {
         let el = ElementHandle::find_by_accessible_label(app, label)
             .next()
@@ -375,8 +409,16 @@ mod tests {
             .and_then(|l| l.local_addr())
             .expect("bind");
         let app = App::new().expect("app");
+        let expected_ver = format!("v{}", env!("CARGO_PKG_VERSION"));
+        app.set_app_version(expected_ver.as_str().into());
         browse::attach(&app, &format!("http://{addr}"));
         app.show().expect("show");
+        assert!(
+            ElementHandle::find_by_accessible_label(&app, &format!("Shiv version {expected_ver}"))
+                .next()
+                .is_some(),
+            "version label in bottom-left sidebar"
+        );
 
         let failed = |a: &App| a.global::<BrowseState>().get_load_state() == LoadState::Failed;
         assert!(run_until(&app, Duration::from_secs(20), failed));
@@ -395,7 +437,7 @@ mod tests {
             "Installed",
             "Sources",
             "Crosshair",
-            "Performance",
+            "CompLock / Performance",
             "Repair",
             "Profiles",
             "Activity",
@@ -1562,7 +1604,6 @@ mod tests {
                 source: None,
                 stamps: None,
                 unverified: None,
-                generated: None,
             },
         )
         .unwrap();
@@ -2176,7 +2217,23 @@ mod tests {
 
         // Staging CompLock works like staging a preset: it replaces the
         // staged set, and nothing is written until Apply.
-        click(&app, "CompLock preset");
+        assert!(
+            ElementHandle::find_by_accessible_label(&app, "CompLock (recommended) preset")
+                .next()
+                .is_some()
+        );
+        let complock_chip =
+            ElementHandle::find_by_accessible_label(&app, "CompLock (recommended) preset")
+                .next()
+                .expect("CompLock chip");
+        let balanced_chip = ElementHandle::find_by_accessible_label(&app, "Balanced preset")
+            .next()
+            .expect("Balanced chip");
+        assert!(
+            complock_chip.absolute_position().x < balanced_chip.absolute_position().x,
+            "CompLock (recommended) appears first in config profile selection"
+        );
+        click(&app, "CompLock (recommended) preset");
         assert!(state.get_complock_staged());
         assert_eq!(
             state.get_active_tier(),
@@ -2367,6 +2424,12 @@ mod tests {
         scroll_to_button(
             &app,
             "PerformancePage::complock-options",
+            "deadlockconfig.com/docs/hitsound/",
+        )
+        .invoke_accessible_default_action();
+        scroll_to_button(
+            &app,
+            "PerformancePage::complock-options",
             "Open Hitsound Builder",
         )
         .invoke_accessible_default_action();
@@ -2376,13 +2439,31 @@ mod tests {
             sv.scroll(0.0, 20_000.0);
             run_until(&app, Duration::from_millis(20), |_| false);
         }
+        for label in [
+            "HoppCX",
+            "jcStani",
+            "ko-fi.com/deadlockconfig",
+            "deadlockconfig.com",
+            "Discord",
+        ] {
+            click(&app, label);
+        }
         let check_links = opened_links.clone();
         assert!(run_until(&app, Duration::from_secs(5), move |_| {
-            check_links.lock().expect("lock").len() == 2
+            check_links.lock().expect("lock").len() == 8
         }));
         assert_eq!(
             opened_links.lock().expect("lock").as_slice(),
-            [complock::HPBAR_BUILDER_URL, complock::HITSOUND_BUILDER_URL]
+            [
+                complock::HPBAR_BUILDER_URL,
+                complock::HITSOUND_BUILDER_URL,
+                complock::HITSOUND_BUILDER_URL,
+                complock::HOPPCX_URL,
+                complock::JCSTANI_URL,
+                complock::KOFI_URL,
+                complock::SITE_URL,
+                complock::DISCORD_URL,
+            ]
         );
         let ragdolls = pack_row(&app, "ragdolls");
         assert!(ragdolls.has_toggle && !ragdolls.has_pak);
@@ -2458,7 +2539,7 @@ mod tests {
         pointer_click(&app, &nav("Installed"));
         assert_eq!(app.get_screen(), 1);
         run_until(&app, Duration::from_millis(100), |_| false);
-        pointer_click(&app, &nav("Performance"));
+        pointer_click(&app, &nav("CompLock / Performance"));
         assert_eq!(app.get_screen(), 4);
         assert!(
             run_until(&app, Duration::from_secs(20), ready),
@@ -2474,13 +2555,23 @@ mod tests {
             "the soundcap row is on screen"
         );
 
-        // Kai on 0.3.1: clicking Install did nothing. A real pointer click on
-        // the row's Install button, not the callback.
+        // Installing a CompLock option while CompLock is not selected auto-switches
+        // the config profile to CompLock and shows the compatibility notice.
+        click(&app, "Balanced preset");
+        assert_eq!(state.get_active_tier(), 1);
+        assert!(!state.get_complock_staged());
         let label = pack_row(&app, "soundcap").install_label.to_string();
         let install = ElementHandle::find_by_accessible_label(&app, &label)
             .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button))
             .unwrap_or_else(|| panic!("the {label:?} button"));
         pointer_click(&app, &install);
+        assert!(state.get_complock_staged());
+        assert_eq!(state.get_active_tier(), -1);
+        assert!(
+            state.get_switch_notice().contains("CompLock"),
+            "{}",
+            state.get_switch_notice()
+        );
         let clicked_sidecar = paths.addons.join(".shiv/complock-soundcap.json");
         assert!(
             run_until(&app, Duration::from_millis(500), move |a| {
@@ -2547,12 +2638,33 @@ mod tests {
             .and_then(|m| m.modified())
             .ok();
         run_until(&app, Duration::from_millis(1100), |_| false);
-        // Reinstall shows while the pointer is on the card.
-        let card = ElementHandle::find_by_accessible_label(&app, "Sound stack update cap")
-            .find(|e| {
-                e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::ListItem)
-            })
-            .expect("the soundcap card");
+        let scroll_soundcap_into_view = || {
+            if let Some(sv) =
+                ElementHandle::find_by_element_id(&app, "PerformancePage::complock-options").next()
+            {
+                for _ in 0..10 {
+                    let c = ElementHandle::find_by_accessible_label(&app, "Sound stack update cap")
+                        .find(|e| {
+                            e.accessible_role()
+                                == Some(i_slint_backend_testing::AccessibleRole::ListItem)
+                        })
+                        .expect("the soundcap card");
+                    if c.absolute_position().y + c.size().height <= 640.0 {
+                        break;
+                    }
+                    sv.scroll(0.0, -180.0);
+                    run_until(&app, Duration::from_millis(20), |_| false);
+                }
+            }
+            ElementHandle::find_by_accessible_label(&app, "Sound stack update cap")
+                .find(|e| {
+                    e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::ListItem)
+                })
+                .expect("the soundcap card")
+        };
+        // Reinstall shows while the pointer is on the card; scroll it into the
+        // viewport first in case the intro/notice banner pushed it near the footer.
+        let card = scroll_soundcap_into_view();
         let (at, size) = (card.absolute_position(), card.size());
         app.window()
             .dispatch_event(slint::platform::WindowEvent::PointerMoved {
@@ -2616,13 +2728,35 @@ mod tests {
             "an older revision reads Update"
         );
         run_until(&app, Duration::from_millis(100), |_| false);
+        let _ = scroll_soundcap_into_view();
+        assert!(
+            run_until(&app, Duration::from_secs(5), |a| {
+                ElementHandle::find_by_accessible_label(a, "Update").any(|e| {
+                    e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
+                })
+            }),
+            "the Update button appeared"
+        );
         let update = ElementHandle::find_by_accessible_label(&app, "Update")
             .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button))
             .expect("the Update button");
         pointer_click(&app, &update);
+        let after_update = settled.clone();
+        assert!(
+            run_until(&app, Duration::from_secs(20), move |a| after_update(a)),
+            "the update brought it current"
+        );
+        // Reinstalling while CompLock profile is already applied does not show a switch notice.
+        state.invoke_apply();
+        assert!(run_until(&app, Duration::from_secs(20), |a| !a
+            .global::<PerfState>()
+            .get_busy()));
+        assert_eq!(state.get_switch_notice().as_str(), "");
+        state.invoke_install_pack("soundcap".into());
+        assert_eq!(state.get_switch_notice().as_str(), "");
         assert!(
             run_until(&app, Duration::from_secs(20), move |a| settled(a)),
-            "the update brought it current"
+            "reinstalling under active CompLock profile brought it current"
         );
         let sidecars: Vec<_> = std::fs::read_dir(paths.addons.join(".shiv"))
             .expect("the sidecar dir")
@@ -2677,27 +2811,22 @@ mod tests {
 
         // Web-builder paks on disk (custom HP bar stylesheet + hitsound pack)
         // are detected on load and surfaced on Performance without a Builders tab.
-        let custom_hp = shiv_core::generated::build_hpbar_preset("classic").expect("classic hpbar");
+        let custom_hp = test_vpk_v1(&[(
+            "vcss_c",
+            "panorama/styles",
+            "unit_status_v2",
+            b"DATA/* ---- HP Bar Builder style ---- */rule{}",
+        )]);
         std::fs::write(paths.addons.join("pak81_dir.vpk"), custom_hp).expect("write hpbar");
-        let hitsound_pak = shiv_core::generated::build_hitsound(
-            &shiv_core::generated::ClipIn {
-                samples: vec![0.0_f32; 4410],
-                source_name: "body.wav".into(),
-                start: 0,
-                end: 4410,
-                db: 0.0,
-                pitch: 1.0,
-            },
-            &shiv_core::generated::ClipIn {
-                samples: vec![0.0_f32; 4410],
-                source_name: "head.wav".into(),
-                start: 0,
-                end: 4410,
-                db: 0.0,
-                pitch: 1.0,
-            },
-        )
-        .expect("build hitsound");
+        let hitsound_pak = test_vpk_v1(&[
+            ("vsndevts_c", "soundevents", "damage", b"ev"),
+            (
+                "vsnd_c",
+                "sounds/hit_indicators",
+                "damage_send_default_01",
+                b"snd",
+            ),
+        ]);
         std::fs::write(paths.addons.join("pak82_dir.vpk"), hitsound_pak).expect("write hitsound");
         state.invoke_shown();
         assert!(run_until(&app, Duration::from_secs(20), |a| {
@@ -3834,7 +3963,6 @@ mod tests {
                 source: None,
                 stamps: None,
                 unverified: None,
-                generated: None,
             },
         )
         .expect("sidecar");
@@ -5150,7 +5278,6 @@ mod tests {
                     source: None,
                     stamps: None,
                     unverified: None,
-                    generated: None,
                 },
             )
             .expect("sidecar");

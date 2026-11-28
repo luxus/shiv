@@ -29,11 +29,38 @@ const OPTIONS: &str = include_str!("../assets/complock-options.json");
 /// Where the pack data's part urls download from: they are site-relative.
 pub const SITE: &str = "https://deadlockconfig.com";
 
+/// CompLock's home page.
+pub const SITE_URL: &str = "https://deadlockconfig.com/";
+
 /// CompLock's web HP Bar Builder page.
 pub const HPBAR_BUILDER_URL: &str = "https://deadlockconfig.com/docs/hpbars/";
 
 /// CompLock's web Hitsound Builder page.
 pub const HITSOUND_BUILDER_URL: &str = "https://deadlockconfig.com/docs/hitsound/";
+
+/// `HoppCX`'s GitHub profile.
+pub const HOPPCX_URL: &str = "https://github.com/HoppCX";
+
+/// `jcStani`'s X profile.
+pub const JCSTANI_URL: &str = "https://x.com/jcStani";
+
+/// CompLock Ko-fi sponsoring link.
+pub const KOFI_URL: &str = "https://ko-fi.com/deadlockconfig";
+
+/// CompLock Discord invite link.
+pub const DISCORD_URL: &str = "https://discord.gg/3XtAKEGwvm";
+
+/// Legacy sidecar mod id from removed in-app hitsound builder.
+pub const LEGACY_HITSOUND_ID: &str = "complock-gen-hitsound";
+
+/// Legacy sidecar mod id from removed in-app HP bar builder.
+pub const LEGACY_HPBAR_ID: &str = "complock-gen-hpbar";
+
+/// Whether `mod_id` is a legacy sidecar id from the removed in-app builders.
+#[must_use]
+pub fn is_legacy_generated_id(mod_id: &str) -> bool {
+    matches!(mod_id, LEGACY_HITSOUND_ID | LEGACY_HPBAR_ID)
+}
 
 /// Resolve a CompLock link (site-relative path or `https://` URL) into a
 /// vetted `https://` URL for [`crate::link::open_web_link`].
@@ -1396,7 +1423,6 @@ pub fn adopt_reused(
             source: None,
             stamps: None,
             unverified: None,
-            generated: None,
         },
     )
 }
@@ -1682,7 +1708,7 @@ fn published_in(
     mod_id: &str,
 ) -> crate::drift::Published {
     use crate::drift::Published;
-    if crate::generated::is_id(mod_id) || !mod_id.starts_with(MOD_PREFIX) {
+    if is_legacy_generated_id(mod_id) || !mod_id.starts_with(MOD_PREFIX) {
         return Published::Unknown;
     }
     let paks = releases_in(hud, options, mod_id);
@@ -1846,6 +1872,27 @@ pub enum BuilderPak {
     Hitsound,
 }
 
+impl BuilderPak {
+    /// Whether `self` and `other` replace the same game feature (HP bars or hitsounds).
+    #[must_use]
+    pub const fn same_kind(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::HpBars { .. }, Self::HpBars { .. }) | (Self::Hitsound, Self::Hitsound)
+        )
+    }
+
+    /// Default display name when installing a detected builder pak from a local file.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::HpBars { custom: true } => "CompLock Custom HP Bars",
+            Self::HpBars { custom: false } => "CompLock HP Bars",
+            Self::Hitsound => "CompLock Hitsound",
+        }
+    }
+}
+
 /// Detect whether `vpk` (and optional Shiv `sidecar`) is an HP Bars or
 /// Hitsound pak created by CompLock or its web builders.
 #[must_use]
@@ -1854,18 +1901,10 @@ pub fn detect_builder_pak(
     sidecar: Option<&crate::sidecar::Sidecar>,
 ) -> Option<BuilderPak> {
     if let Some(sc) = sidecar {
-        let gen_spec = sc
-            .generated
-            .as_ref()
-            .and_then(|v| serde_json::from_value::<crate::generated::Spec>(v.clone()).ok());
-        if matches!(gen_spec, Some(crate::generated::Spec::Hitsound { .. }))
-            || sc.mod_id == crate::generated::HITSOUND_ID
-        {
+        if sc.mod_id == LEGACY_HITSOUND_ID {
             return Some(BuilderPak::Hitsound);
         }
-        if matches!(gen_spec, Some(crate::generated::Spec::HpBar { .. }))
-            || sc.mod_id == crate::generated::HPBAR_ID
-        {
+        if sc.mod_id == LEGACY_HPBAR_ID {
             return Some(BuilderPak::HpBars { custom: true });
         }
     }
@@ -2390,9 +2429,24 @@ mod tests {
             Some(HITSOUND_BUILDER_URL)
         );
         assert_eq!(site_url(SITE).as_deref(), Some(SITE));
+        for url in [
+            SITE_URL,
+            HPBAR_BUILDER_URL,
+            HITSOUND_BUILDER_URL,
+            HOPPCX_URL,
+            JCSTANI_URL,
+            KOFI_URL,
+            DISCORD_URL,
+        ] {
+            assert_eq!(site_url(url).as_deref(), Some(url));
+        }
         assert_eq!(site_url("http://deadlockconfig.com/"), None);
         assert_eq!(site_url("javascript:alert(1)"), None);
         assert_eq!(site_url(""), None);
+        assert!(
+            BuilderPak::HpBars { custom: true }.same_kind(BuilderPak::HpBars { custom: false })
+        );
+        assert!(!BuilderPak::HpBars { custom: true }.same_kind(BuilderPak::Hitsound));
     }
 
     fn test_vpk_v1(entries: &[(&str, &str, &str, &[u8])]) -> Vec<u8> {

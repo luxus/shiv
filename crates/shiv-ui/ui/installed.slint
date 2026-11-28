@@ -959,6 +959,7 @@ export global LocalInstallState {
     in-out property <bool> open;
     in-out property <string> path;
     in-out property <string> name;
+    in property <string> note;
     in property <string> error-text;
     in property <bool> busy;
 
@@ -974,6 +975,12 @@ export component LocalInstallDialog inherits DialogCard {
         text: "A .vpk file, a zip, rar or 7z archive with VPKs inside, or a download link. A pasted mod page from gamebanana.com or deadlocker.net, or a Deadlock Mod Manager or Grimoire install link, opens the mod's page instead. Shiv copies files into a free pak slot; a local file stays where it is.";
         color: Theme.text-muted;
         font-size: Theme.text-md;
+        wrap: word-wrap;
+    }
+    if LocalInstallState.note != "": Text {
+        text: LocalInstallState.note;
+        color: Theme.accent;
+        font-size: Theme.text-sm;
         wrap: word-wrap;
     }
     HorizontalLayout {

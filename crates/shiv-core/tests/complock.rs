@@ -1131,7 +1131,6 @@ fn a_pak_with_the_parts_bytes_is_reused_under_any_number() {
             source: None,
             stamps: None,
             unverified: None,
-            generated: None,
         },
     )
     .expect("write owner sidecar");

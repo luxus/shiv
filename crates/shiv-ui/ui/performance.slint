@@ -175,11 +175,43 @@ export global PerfState {
     callback discard();
     callback apply();
     callback dismiss-result();
+    callback dismiss-switch-notice();
     callback open-link(string);
 
+    in property <string> switch-notice;
     in property <string> hpbar-builder-url;
     in property <string> hitsound-builder-url;
+    in property <string> complock-site-url;
+    in property <string> hoppcx-url;
+    in property <string> jcstani-url;
+    in property <string> kofi-url;
+    in property <string> discord-url;
     in property <bool> hitsound-detected: false;
+}
+
+component InlineLink inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+
+    height: 22px;
+    width: label.preferred-width;
+
+    label := Text {
+        text: root.text;
+        color: ta.has-hover ? Theme.accent-hover : Theme.accent;
+        font-size: Theme.text-sm;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
 }
 
 
@@ -470,9 +502,17 @@ component PackCard inherits Rectangle {
                     }
                     if root.item.link-text != "" && root.item.link-url != "": HorizontalLayout {
                         alignment: start;
-                        TextButton {
+                        spacing: Theme.s1;
+                        InlineLink {
                             text: root.item.link-text;
                             clicked => { root.link-clicked(root.item.link-url); }
+                        }
+                        if root.item.id == "hpbars": Text {
+                            text: "\u{b7} Drag and drop a downloaded .vpk onto Shiv to replace the default.";
+                            color: Theme.text-faint;
+                            font-size: Theme.text-sm;
+                            vertical-alignment: center;
+                            overflow: elide;
                         }
                     }
                 }
@@ -843,7 +883,7 @@ export component PerformancePage inherits Rectangle {
             VerticalLayout {
                 spacing: 2px;
                 Text {
-                    text: "Performance";
+                    text: "CompLock / Performance";
                     color: Theme.text;
                     font-size: Theme.text-xl;
                     font-weight: 600;
@@ -856,14 +896,14 @@ export component PerformancePage inherits Rectangle {
                 }
             }
 
-            // Presets on one line; the picked one's source below it.
+            // Config profiles on one line; the picked one's source below it.
             if PerfState.load-state == LoadState.ready: VerticalLayout {
                 spacing: 6px;
                 HorizontalLayout {
                     spacing: Theme.s1;
                     alignment: start;
                     Text {
-                        text: "PRESET";
+                        text: "PROFILE";
                         color: Theme.text-muted;
                         font-size: 11px;
                         font-weight: 700;
@@ -871,18 +911,18 @@ export component PerformancePage inherits Rectangle {
                         vertical-alignment: center;
                         width: 64px;
                     }
+                    PresetChip {
+                        label: "CompLock (recommended)";
+                        tip: PerfState.complock.note;
+                        available: PerfState.complock.available;
+                        active: PerfState.complock-staged;
+                        clicked => { PerfState.stage-complock(); }
+                    }
                     for tier[i] in PerfState.tiers: PresetChip {
                         label: tier.label;
                         available: tier.available;
                         active: PerfState.active-tier == i;
                         clicked => { PerfState.pick-tier(i); }
-                    }
-                    PresetChip {
-                        label: "CompLock";
-                        tip: PerfState.complock.note;
-                        available: PerfState.complock.available;
-                        active: PerfState.complock-staged;
-                        clicked => { PerfState.stage-complock(); }
                     }
                 }
                 HorizontalLayout {
@@ -892,7 +932,7 @@ export component PerformancePage inherits Rectangle {
                     Text {
                         text: PerfState.complock-staged ? PerfState.complock.subtitle
                             : (PerfState.active-tier >= 0 ? PerfState.tiers[PerfState.active-tier].name
-                            : "A preset stages a whole config. Nothing is written until you apply.");
+                            : "A profile stages a whole config. Nothing is written until you apply.");
                         color: Theme.text-muted;
                         font-size: Theme.text-sm;
                         overflow: elide;
@@ -904,9 +944,35 @@ export component PerformancePage inherits Rectangle {
                         font-size: Theme.text-sm;
                         vertical-alignment: center;
                     }
-                    if PerfState.complock-staged && PerfState.complock.link-text != "" && PerfState.complock.link-url != "": TextButton {
+                    if PerfState.complock-staged && PerfState.complock.link-text != "" && PerfState.complock.link-url != "": InlineLink {
                         text: PerfState.complock.link-text;
                         clicked => { PerfState.open-link(PerfState.complock.link-url); }
+                    }
+                }
+            }
+
+            if PerfState.load-state == LoadState.ready && PerfState.switch-notice != "": Rectangle {
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.accent;
+                background: Theme.raised;
+                HorizontalLayout {
+                    padding-top: Theme.s1;
+                    padding-bottom: Theme.s1;
+                    padding-left: Theme.s2;
+                    padding-right: Theme.s1;
+                    spacing: Theme.s2;
+                    Text {
+                        text: PerfState.switch-notice;
+                        color: Theme.text;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    TextButton {
+                        text: "Dismiss";
+                        clicked => { PerfState.dismiss-switch-notice(); }
                     }
                 }
             }
@@ -959,7 +1025,7 @@ export component PerformancePage inherits Rectangle {
             }
         }
 
-        // The page's one scroll: group headings and one card per option.
+        // The page's one scroll: intro credits, group headings and one card per option.
         if PerfState.load-state == LoadState.ready && PerfState.section == 0: complock-options := ScrollView {
             vertical-stretch: 1;
             VerticalLayout {
@@ -969,20 +1035,90 @@ export component PerformancePage inherits Rectangle {
                 padding-bottom: Theme.s3;
                 spacing: 10px;
                 alignment: start;
-                if PerfState.complock.available: HorizontalLayout {
-                    spacing: Theme.s1;
-                    alignment: start;
-                    Text {
-                        text: PerfState.complock.by != ""
-                            ? "Settings and packs \u{b7} " + PerfState.complock.by
-                            : "Settings and packs by CompLock";
-                        color: Theme.text-muted;
-                        font-size: Theme.text-sm;
-                        vertical-alignment: center;
-                    }
-                    TextButton {
-                        text: PerfState.complock.link-text;
-                        clicked => { PerfState.open-link(PerfState.complock.link-url); }
+                Rectangle {
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    background: Theme.raised;
+                    VerticalLayout {
+                        padding: Theme.s2;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 0px;
+                            alignment: start;
+                            Text {
+                                text: "CompLock consists of Performance & Optimization by ";
+                                color: Theme.text-muted;
+                                font-size: Theme.text-sm;
+                                vertical-alignment: center;
+                            }
+                            InlineLink {
+                                text: "HoppCX";
+                                clicked => { PerfState.open-link(PerfState.hoppcx-url); }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 0px;
+                            alignment: start;
+                            Text {
+                                text: "and Competitive features by ";
+                                color: Theme.text-muted;
+                                font-size: Theme.text-sm;
+                                vertical-alignment: center;
+                            }
+                            InlineLink {
+                                text: "jcStani";
+                                clicked => { PerfState.open-link(PerfState.jcstani-url); }
+                            }
+                            Text {
+                                text: ".";
+                                color: Theme.text-muted;
+                                font-size: Theme.text-sm;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.s2;
+                            alignment: start;
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: start;
+                                Text {
+                                    text: "Sponsoring:";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.text-sm;
+                                    vertical-alignment: center;
+                                }
+                                InlineLink {
+                                    text: "ko-fi.com/deadlockconfig";
+                                    clicked => { PerfState.open-link(PerfState.kofi-url); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: start;
+                                Text {
+                                    text: "Support:";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.text-sm;
+                                    vertical-alignment: center;
+                                }
+                                InlineLink {
+                                    text: "deadlockconfig.com";
+                                    clicked => { PerfState.open-link(PerfState.complock-site-url); }
+                                }
+                                Text {
+                                    text: "or";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.text-sm;
+                                    vertical-alignment: center;
+                                }
+                                InlineLink {
+                                    text: "Discord";
+                                    clicked => { PerfState.open-link(PerfState.discord-url); }
+                                }
+                            }
+                        }
                     }
                 }
                 for pack[i] in PerfState.pack-rows: VerticalLayout {
@@ -1006,8 +1142,8 @@ export component PerformancePage inherits Rectangle {
                     padding-top: Theme.s2;
                     spacing: 10px;
                     SectionHeader {
-                        title: "WEB BUILDERS";
-                        blurb: "Build custom paks on deadlockconfig.com, then drop the downloaded .vpk into Shiv.";
+                        title: "WEB CONFIGURATORS";
+                        blurb: "Build custom paks on deadlockconfig.com, then drag and drop the .vpk onto Shiv.";
                     }
                     Rectangle {
                         border-radius: Theme.radius-md;
@@ -1025,7 +1161,7 @@ export component PerformancePage inherits Rectangle {
                                     spacing: Theme.s1;
                                     alignment: start;
                                     Text {
-                                        text: "Hitsound Builder";
+                                        text: "Hit sound";
                                         color: Theme.text;
                                         font-size: Theme.text-lg;
                                         font-weight: 600;
@@ -1050,15 +1186,24 @@ export component PerformancePage inherits Rectangle {
                                     }
                                 }
                                 Text {
-                                    text: "Build a custom body/headshot hitsound .vpk from your own audio clips.";
+                                    text: "There is no default hit sound. Create a custom .vpk in the web configurator, then drag and drop it onto Shiv to install it automatically.";
                                     color: Theme.text-muted;
                                     font-size: Theme.text-sm;
                                     wrap: word-wrap;
                                 }
-                                Text {
-                                    text: "By HoppCX";
-                                    color: Theme.text-faint;
-                                    font-size: Theme.text-sm;
+                                HorizontalLayout {
+                                    spacing: Theme.s1;
+                                    alignment: start;
+                                    InlineLink {
+                                        text: "deadlockconfig.com/docs/hitsound/";
+                                        clicked => { PerfState.open-link(PerfState.hitsound-builder-url); }
+                                    }
+                                    Text {
+                                        text: "\u{b7} By HoppCX";
+                                        color: Theme.text-faint;
+                                        font-size: Theme.text-sm;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                             VerticalLayout {

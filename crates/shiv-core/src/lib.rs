@@ -14,7 +14,6 @@ pub mod crosshair;
 pub mod drift;
 mod fs_util;
 pub mod game;
-pub mod generated;
 pub mod health;
 mod hero_settings;
 pub mod install;

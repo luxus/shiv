@@ -955,7 +955,6 @@ fn place_numbered(
         source: None,
         stamps: Some(stamps),
         unverified: None,
-        generated: None,
     };
     if let Err(e) = sidecar::write(addons_dir, &new_sidecar) {
         rollback(&moved);
@@ -1767,6 +1766,8 @@ pub struct Inspected {
     pub vpk_count: usize,
     /// Inner paths of all its VPKs (empty when they cannot be parsed).
     pub paths: BTreeSet<String>,
+    /// Detected CompLock web-builder pak inside the file, if any.
+    pub builder_pak: Option<crate::complock::BuilderPak>,
 }
 
 /// Why a file was taken for a newer version of an installed mod.
@@ -1778,6 +1779,8 @@ pub enum MatchReason {
     SameName,
     /// The VPKs replace mostly the same game files.
     SameFiles,
+    /// Both the incoming file and the installed mod are the same CompLock web-builder pak kind.
+    BuilderPak(crate::complock::BuilderPak),
 }
 
 /// An installed mod a dropped file most likely updates.
@@ -1812,25 +1815,46 @@ pub fn inspect(file: &Path, paths: &GamePaths) -> Result<Inspected, InstallError
         return Err(InstallError::NoVpk);
     }
     let mut inner = BTreeSet::new();
+    let mut builder_pak = None;
     for vpk in &staged {
         inner.extend(vpk_paths(&vpk.file));
+        if builder_pak.is_none() {
+            builder_pak = crate::complock::detect_builder_pak(&vpk.file, None);
+        }
     }
     Ok(Inspected {
         source: source_name(file).unwrap_or_default(),
         name: file_stem(file),
         vpk_count: staged.len(),
         paths: inner,
+        builder_pak,
     })
 }
 
-/// The installed mod `new` most likely is a newer version of, if any. Only
-/// local mods (installed from a file or adopted) and hand-added paks are
-/// candidates; catalog mods update through the catalog. Hand-added paks
-/// match only by content. Checks, in order: same source file name, file name
-/// equal to the mod name, then the largest inner-path overlap of at least
-/// [`OVERLAP_THRESHOLD`]. A mod with a different VPK count never matches.
+/// The installed mod `new` most likely is a newer version of, if any. Local
+/// mods (installed from a file or adopted), hand-added paks, and CompLock
+/// HP Bars / Hitsound paks of the same kind are candidates; other catalog mods
+/// update through the catalog. Hand-added paks match only by content (or
+/// builder-pak kind). Checks, in order: matching CompLock builder-pak kind,
+/// same source file name, file name equal to the mod name, then the largest
+/// inner-path overlap of at least [`OVERLAP_THRESHOLD`]. A mod with a
+/// different VPK count never matches.
 #[must_use]
 pub fn find_update_target(mods: &[InstalledMod], new: &Inspected) -> Option<UpdateMatch> {
+    if let Some(incoming) = new.builder_pak
+        && let Some((index, _)) = mods.iter().enumerate().find(|(_, m)| {
+            m.vpks.len() == new.vpk_count
+                && m.vpks.iter().any(|v| {
+                    crate::complock::detect_builder_pak(&v.file, m.sidecar.as_ref())
+                        .is_some_and(|existing| existing.same_kind(incoming))
+                })
+        })
+    {
+        return Some(UpdateMatch {
+            index,
+            reason: MatchReason::BuilderPak(incoming),
+        });
+    }
     let candidates: Vec<(usize, &InstalledMod)> = mods
         .iter()
         .enumerate()
@@ -1990,14 +2014,14 @@ pub fn replace_local_with(
     if game_running() {
         return Err(InstallError::GameRunning);
     }
-    if target.vpks.is_empty()
-        || target
-            .sidecar
-            .as_ref()
-            .is_some_and(|s| !sidecar::is_local(&s.mod_id))
-    {
+    if target.vpks.is_empty() {
         return Err(InstallError::NotLocal);
     }
+    let non_local_id = target
+        .sidecar
+        .as_ref()
+        .filter(|s| !sidecar::is_local(&s.mod_id))
+        .map(|s| s.mod_id.clone());
     let addons_dir = paths.addons.as_path();
     clean_stale_staging(addons_dir);
     let format = detect_format(file)?;
@@ -2006,6 +2030,21 @@ pub fn replace_local_with(
     let staged = collect_vpks(staging.path())?;
     if staged.is_empty() {
         return Err(InstallError::NoVpk);
+    }
+    let incoming_builder = staged
+        .iter()
+        .find_map(|vpk| crate::complock::detect_builder_pak(&vpk.file, None));
+    if non_local_id.is_some() {
+        let Some(incoming) = incoming_builder else {
+            return Err(InstallError::NotLocal);
+        };
+        let same_kind = target.vpks.iter().any(|v| {
+            crate::complock::detect_builder_pak(&v.file, target.sidecar.as_ref())
+                .is_some_and(|existing| existing.same_kind(incoming))
+        });
+        if !same_kind {
+            return Err(InstallError::NotLocal);
+        }
     }
     let mut old: Vec<&addons::InstalledVpk> = target.vpks.iter().collect();
     old.sort_by(|a, b| {
@@ -2021,7 +2060,14 @@ pub fn replace_local_with(
     let swap = apply_replacement_swap(&plan, &backup)?;
 
     let source = source_name(file);
-    let sc = match build_replacement_sidecar(addons_dir, file, target, &plan, source) {
+    let sc = match build_replacement_sidecar(
+        addons_dir,
+        file,
+        target,
+        &plan,
+        source,
+        incoming_builder,
+    ) {
         Ok(sc) => sc,
         Err(e) => {
             swap.undo(&backup);
@@ -2029,6 +2075,14 @@ pub fn replace_local_with(
         }
     };
     if let Err(e) = sidecar::write(addons_dir, &sc) {
+        swap.undo(&backup);
+        return Err(e.into());
+    }
+    if let Some(old_id) = non_local_id
+        && old_id != sc.mod_id
+        && let Err(e) = sidecar::remove(addons_dir, &old_id)
+    {
+        let _ = sidecar::remove(addons_dir, &sc.mod_id);
         swap.undo(&backup);
         return Err(e.into());
     }
@@ -2090,6 +2144,7 @@ fn build_replacement_sidecar(
     target: &InstalledMod,
     plan: &ReplacementPlan,
     source: Option<String>,
+    incoming_builder: Option<crate::complock::BuilderPak>,
 ) -> Result<Sidecar, InstallError> {
     let stamps_for = |vpks: &[String]| -> Result<Option<Vec<sidecar::Stamp>>, InstallError> {
         let mut out = Vec::with_capacity(vpks.len());
@@ -2104,6 +2159,20 @@ fn build_replacement_sidecar(
         Ok(Some(out))
     };
     if let Some(mut sc) = target.sidecar.clone() {
+        if !sidecar::is_local(&sc.mod_id) {
+            // Promoting a non-local builder pak (e.g. default `complock-hpbars`)
+            // to a local mod prevents Update all from overwriting custom files.
+            sc.mod_id = sidecar::new_local_id(addons_dir);
+            if let Some(bp) = incoming_builder {
+                bp.display_name().clone_into(&mut sc.name);
+            }
+            sc.version = None;
+            sc.version_label = None;
+            sc.thumbnail_url = None;
+            sc.hero = None;
+            sc.category = None;
+            sc.unverified = None;
+        }
         sc.source = source;
         sc.stamps = stamps_for(&sc.vpks)?;
         Ok(sc)
@@ -2111,9 +2180,11 @@ fn build_replacement_sidecar(
         let mut vpks = plan.dir_names.clone();
         vpks.sort();
         let stamps = stamps_for(&vpks)?;
+        let name =
+            incoming_builder.map_or_else(|| file_stem(file), |bp| bp.display_name().to_owned());
         Ok(Sidecar {
             mod_id: sidecar::new_local_id(addons_dir),
-            name: file_stem(file),
+            name,
             version: None,
             version_label: None,
             thumbnail_url: None,
@@ -2125,7 +2196,6 @@ fn build_replacement_sidecar(
             source,
             stamps,
             unverified: None,
-            generated: None,
         })
     }
 }

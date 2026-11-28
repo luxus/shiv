@@ -1,4 +1,4 @@
-# Maintainer: Siebe-Uy (https://github.com/Siebe-Uy)
+# Maintainer: luxus (https://github.com/luxus)
 #
 # Shiv built from the latest source. Prefer shiv-bin unless you want main.
 pkgname=shiv-git
@@ -6,7 +6,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Lean, fast Deadlock mod manager built in Rust (git version)"
 arch=('x86_64')
-url="https://github.com/Siebe-Uy/shiv"
+url="https://github.com/luxus/shiv"
 license=('GPL-3.0-only')
 depends=('fontconfig' 'gcc-libs' 'libx11' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'wayland')
 makedepends=('cargo' 'git' 'librsvg')

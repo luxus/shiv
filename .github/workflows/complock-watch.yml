@@ -167,39 +167,6 @@ jobs:
           else
             exit "$code"
           fi
-      - name: Fetch the builder files
-        run: |
-          python3 - << 'PY'
-          import os, pathlib, urllib.request
-          out = pathlib.Path(os.environ["RUNNER_TEMP"], "complock", "builders")
-          out.mkdir(parents=True, exist_ok=True)
-          agent = {"User-Agent": "shiv-complock-watch"}
-          failed = []
-          def get(url, name):
-              dest = out / name
-              try:
-                  req = urllib.request.Request(url, headers=agent)
-                  dest.write_bytes(urllib.request.urlopen(req, timeout=60).read())
-              except Exception as e:
-                  failed.append(f"- `{url}`: {e}")
-                  dest.unlink(missing_ok=True)
-          get("https://deadlockconfig.com/docs/hitsound/", "hit.html")
-          get("https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js", "lame.min.js")
-          get("https://deadlockconfig.com/docs/hpbars/hpbars.js", "hp_hpbars.js")
-          get("https://deadlockconfig.com/dl/game/citadel/addons/hpbars.vpk", "hpbars_base.vpk")
-          (out / "fetch.md").write_text("\n".join(failed) + ("\n" if failed else ""))
-          print(f"builder files, {len(failed)} failed")
-          PY
-      - name: Classify the builders
-        id: builders
-        run: |
-          t="$RUNNER_TEMP/complock"
-          cargo run --release -p shiv-core --example complock_builders -- \
-            "$t/builders" "$t/builders-decision"
-          cat "$t/builders/fetch.md" >> "$t/builders-decision"
-          {
-            echo "decision=$(head -n 1 "$t/builders-decision")"
-          } >> "$GITHUB_OUTPUT"
       - name: Assemble artifact
         id: assemble
         if: steps.check.outputs.valid == 'true'
@@ -269,7 +236,6 @@ jobs:
         if: steps.check.outputs.valid == 'true' && (inputs.simulate || 'none') == 'none'
         env:
           ASSETS_COMPATIBLE: ${{ steps.assemble.outputs.assets_compatible }}
-          BUILDERS: ${{ steps.builders.outputs.decision }}
         run: |
           set -euo pipefail
           t="$RUNNER_TEMP/complock"
@@ -298,33 +264,11 @@ jobs:
           asset_path.write_text(json.dumps(asset_meta, indent=2) + "\n", encoding="utf-8")
           ' "$t/artifact/meta.json" "$pack_changed"
           fi
-          bdir="$t/builders"
-          case "$BUILDERS" in
-            template)
-              cp "$bdir/out/hit_builder.js" crates/shiv-core/assets/complock-gen/hit_builder.js
-              if [ -f "$bdir/out/hpbars_base.vpk" ]; then
-                cp "$bdir/out/hpbars_base.vpk" crates/shiv-core/assets/complock-gen/hpbars_base.vpk
-              fi
-              printf '{\n  "review": false\n}\n' > crates/shiv-core/assets/complock-gen/builders.json
-              ;;
-            review)
-              printf '{\n  "review": true\n}\n' > crates/shiv-core/assets/complock-gen/builders.json
-              ;;
-            current)
-              printf '{\n  "review": false\n}\n' > crates/shiv-core/assets/complock-gen/builders.json
-              ;;
-          esac
           if git diff --quiet -- crates/shiv-core/assets; then
             echo "The embedded CompLock assets are current."
             exit 0
           fi
-          if [ "$pack_changed" = true ] || ! git diff --quiet -- crates/shiv-core/assets/complock.json; then
-            subject="chore(complock): gameinfo build ${game} (deadlockconfig.com)"
-          elif [ "$BUILDERS" = "review" ]; then
-            subject="chore(complock): flag builder scripts for review (deadlockconfig.com)"
-          else
-            subject="chore(complock): builder templates (deadlockconfig.com)"
-          fi
+          subject="chore(complock): gameinfo build ${game} (deadlockconfig.com)"
           git config user.name "shiv-complock-watch"
           git config user.email "actions@users.noreply.github.com"
           git add crates/shiv-core/assets
@@ -335,7 +279,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VALID: ${{ steps.check.outputs.valid }}
-          BUILDERS: ${{ steps.builders.outputs.decision }}
           MODEL: ${{ steps.assemble.outputs.model }}
           HEAD_MODEL: ${{ steps.assemble.outputs.head_model }}
           REQUIRES_SHIV: ${{ steps.assemble.outputs.requires_shiv }}
@@ -343,9 +286,6 @@ jobs:
           t="$RUNNER_TEMP/complock"
           run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           open=$(gh issue list --label "$ISSUE_LABEL" --state open --json number --jq '.[0].number // empty')
-          if [ -f "$t/builders-decision" ]; then
-            cat "$t/builders-decision" >> "$t/report.md"
-          fi
           if [ "$VALID" = "true" ] && [ -z "$REQUIRES_SHIV" ] && [ "${MODEL:-0}" -gt "${HEAD_MODEL:-0}" ]; then
             digest=$(printf '%s\n%s' "$MODEL" "$(cat "$t/report.md" 2>/dev/null || true)" | sha256sum | cut -c1-16)
             body=$(printf '%s\n\nmodel %s needs Shiv support (build %s). The watch published the artifact without embedding incompatible assets.\n\n%s\n\nRun: %s\n' \
@@ -363,43 +303,9 @@ jobs:
             fi
             exit 0
           fi
-          if [ "$VALID" = "true" ] && { [ "$BUILDERS" = "current" ] || [ "$BUILDERS" = "template" ]; }; then
+          if [ "$VALID" = "true" ]; then
             if [ -n "$open" ]; then
               gh issue close "$open" --comment "The watch is green again: $run"
-            fi
-            exit 0
-          fi
-          if [ "$VALID" = "true" ] && [ "$BUILDERS" = "review" ]; then
-            digest=$(sha256sum "$t/builders-decision" | cut -c1-16)
-            body=$(printf '%s\n\nBuilder changed, review. The watch did not replace the pinned scripts, and Shiv will not run the new ones.\n\n%s\n\nRun: %s\n' \
-              "<!-- complock-watch:$digest -->" "$(cat "$t/builders-decision")" "$run")
-            if [ -z "$open" ]; then
-              gh label create "$ISSUE_LABEL" --color d93f0b --description "The CompLock watch could not apply an upstream update" 2>/dev/null || true
-              gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body "$body"
-            else
-              seen=$(gh issue view "$open" --json body,comments --jq '[.body] + [.comments[].body] | map(select(contains("complock-watch:"))) | last')
-              if printf '%s' "$seen" | grep -q "complock-watch:$digest"; then
-                echo "Issue #$open already reports this review."
-              else
-                gh issue comment "$open" --body "$body"
-              fi
-            fi
-            exit 0
-          fi
-          if [ "$VALID" = "true" ] && [ "$BUILDERS" = "failed" ]; then
-            digest=$(sha256sum "$t/builders-decision" | cut -c1-16)
-            body=$(printf '%s\n\nThe builder files did not check. Pack data was still published when valid. Shiv did not change the pinned scripts.\n\n%s\n\nRun: %s\n' \
-              "<!-- complock-watch:$digest -->" "$(cat "$t/builders-decision")" "$run")
-            if [ -z "$open" ]; then
-              gh label create "$ISSUE_LABEL" --color d93f0b --description "The CompLock watch could not apply an upstream update" 2>/dev/null || true
-              gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body "$body"
-            else
-              seen=$(gh issue view "$open" --json body,comments --jq '[.body] + [.comments[].body] | map(select(contains("complock-watch:"))) | last')
-              if printf '%s' "$seen" | grep -q "complock-watch:$digest"; then
-                echo "Issue #$open already reports this builder failure."
-              else
-                gh issue comment "$open" --body "$body"
-              fi
             fi
             exit 0
           fi

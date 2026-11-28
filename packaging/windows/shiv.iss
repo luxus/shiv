@@ -9,8 +9,10 @@
 AppId={{6F2B1D4A-3C57-4E0B-9A18-5D7C2E91B3F4}
 AppName=Shiv
 AppVersion={#AppVersion}
-AppPublisher=Siebe
-AppPublisherURL=https://github.com/Siebe-Uy/shiv
+AppPublisher=luxus
+AppPublisherURL=https://github.com/luxus/shiv
+AppSupportURL=https://github.com/luxus/shiv/issues
+AppUpdatesURL=https://github.com/luxus/shiv/releases
 DefaultDirName={autopf}\Shiv
 DefaultGroupName=Shiv
 ; Per-user by default (no admin prompt); the dialog offers an all-users install.

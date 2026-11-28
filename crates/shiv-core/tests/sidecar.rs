@@ -17,7 +17,6 @@ fn sc(id: &str, vpks: &[&str]) -> Sidecar {
         source: None,
         stamps: None,
         unverified: None,
-        generated: None,
     }
 }
 
@@ -57,6 +56,17 @@ fn nsfw_flag_roundtrips_and_old_sidecars_read_as_unknown() {
     let old = sidecar::read(d.path(), "old").unwrap().unwrap();
     assert_eq!(old.nsfw, None);
     assert_eq!(old.vpks, ["pak02_dir.vpk"]);
+
+    // Legacy sidecars with a `"generated"` builder payload still deserialize cleanly.
+    fs::write(
+        d.path().join(".shiv/complock-gen-hpbar.json"),
+        r#"{"mod_id":"complock-gen-hpbar","name":"HP Bars","version":"gen:1","vpks":["pak01_dir.vpk"],"generated":{"kind":"hpbar"}}"#,
+    )
+    .unwrap();
+    let legacy = sidecar::read(d.path(), "complock-gen-hpbar")
+        .unwrap()
+        .unwrap();
+    assert_eq!(legacy.mod_id, "complock-gen-hpbar");
 }
 
 #[test]

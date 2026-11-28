@@ -76,7 +76,7 @@ every byte untouched. Pinned by
 ## Guard every trust boundary
 
 - **External paths & symlinks:** Profile IDs, interchange bundle entries,
-  sidecar `clip.pcm` names, CompLock `part.name` values, and repair VPK
+  CompLock `part.name` values, and repair VPK
   localization paths must be validated against traversal (`..`), absolute/drive
   paths, and symlink escapes before any read, write, or `remove_dir_all`.
 - **External URLs & redirects:** HTTP clients disable automatic redirects

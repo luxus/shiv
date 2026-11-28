@@ -42,13 +42,14 @@ component NavItem inherits Rectangle {
 
     Text {
         x: Theme.s2;
-        width: parent.width - 3 * Theme.s2;
+        width: root.badge != "" ? parent.width - 3 * Theme.s2 : parent.width - 2 * Theme.s2;
         height: parent.height;
         text: root.label;
         color: root.active ? Theme.text : Theme.text-muted;
         font-size: Theme.text-md;
         font-weight: root.active ? 600 : 400;
         vertical-alignment: center;
+        overflow: elide;
     }
 
     if root.badge != "": Text {
@@ -106,7 +107,8 @@ export component App inherits Window {
     default-font-size: Theme.text-md;
 
     in-out property <int> screen: 0;
-    property <[string]> screens: ["Browse", "Installed", "Sources", "Crosshair", "Performance", "Repair", "Profiles", "Activity"];
+    in property <string> app-version;
+    property <[string]> screens: ["Browse", "Installed", "Sources", "Crosshair", "CompLock / Performance", "Repair", "Profiles", "Activity"];
 
     // Re-read the addons folder whenever the Installed screen is shown.
     changed screen => {
@@ -138,7 +140,7 @@ export component App inherits Window {
 
     HorizontalLayout {
         Rectangle {
-            width: 200px;
+            width: 228px;
             background: Theme.sidebar;
 
             VerticalLayout {
@@ -213,6 +215,15 @@ export component App inherits Window {
                 }
 
                 LaunchPanel { }
+
+                if root.app-version != "": Text {
+                    text: root.app-version;
+                    color: Theme.text-faint;
+                    font-size: Theme.text-sm;
+                    horizontal-alignment: left;
+                    accessible-role: text;
+                    accessible-label: "Shiv version " + root.app-version;
+                }
             }
 
             Rectangle {

@@ -21,7 +21,6 @@ use shiv_core::addons::{self, AddonsError};
 use shiv_core::complock;
 use shiv_core::drift::{self, Drift, Published};
 use shiv_core::game::{self, GameError, GamePaths};
-use shiv_core::generated;
 use shiv_core::install::{self, InstallError, MatchReason};
 use shiv_core::interchange;
 use shiv_core::registry::{self, AddedSource};
@@ -167,8 +166,6 @@ pub(crate) struct Entry {
     pub can_reset: bool,
     /// The download that placed this mod published no checksum.
     pub unverified: bool,
-    /// JSON of the builder spec, when this row is a CompLock-generated mod.
-    pub generated: Option<String>,
 }
 
 /// The disk side of a row's drift, read on the worker: whether the files
@@ -182,9 +179,6 @@ pub(crate) struct Facts {
     pub complock_build_date: Option<String>,
     pub is_complock_builder: bool,
     pub has_backup: bool,
-    /// The revision the stored inputs would build at with the pinned
-    /// template. `None` when the row is not a generated mod.
-    pub generated_revision: Option<String>,
 }
 
 fn facts(addons: &Path, m: &InstalledMod) -> Facts {
@@ -201,19 +195,12 @@ fn facts(addons: &Path, m: &InstalledMod) -> Facts {
         .vpks
         .iter()
         .any(|v| complock::detect_builder_pak(&v.file, m.sidecar.as_ref()).is_some());
-    let generated_revision = m.sidecar.as_ref().and_then(|s| {
-        s.generated
-            .as_ref()
-            .and_then(generated::spec_of)
-            .and_then(|spec| generated::revision(&spec).ok())
-    });
     Facts {
         untouched: drift::files_untouched(m),
         complock_title,
         complock_build_date,
         is_complock_builder,
         has_backup: m.sidecar.is_some() && reset::latest_backup(addons, &id).is_some(),
-        generated_revision,
     }
 }
 
@@ -227,7 +214,6 @@ enum ResetPlan {
         last_slot: u32,
     },
     Registry(Box<RegistryPlan>),
-    Generated(generated::Spec),
 }
 
 /// A registry release with a direct artifact, and what its sidecar records.
@@ -254,11 +240,8 @@ fn published(
     catalogs: &[(AddedSource, Vec<NativeListing>)],
     pack: &complock::PackLoad,
 ) -> Published {
-    if generated::is_id(&e.id) {
-        return generated::publication(
-            generated::builder_review(),
-            e.facts.generated_revision.as_deref(),
-        );
+    if complock::is_legacy_generated_id(&e.id) {
+        return Published::Unknown;
     }
     if e.id.starts_with(complock::MOD_PREFIX) {
         return pack.published(&e.id);
@@ -288,18 +271,8 @@ fn reset_plan(
     catalogs: &[(AddedSource, Vec<NativeListing>)],
     pack: &complock::PackLoad,
 ) -> Option<ResetPlan> {
-    if !e.managed {
+    if !e.managed || complock::is_legacy_generated_id(&e.id) {
         return None;
-    }
-    if generated::is_id(&e.id) {
-        if generated::builder_review() {
-            return None;
-        }
-        return e
-            .generated
-            .as_deref()
-            .and_then(generated::spec_from_json)
-            .map(ResetPlan::Generated);
     }
     if e.id.starts_with(complock::MOD_PREFIX) {
         return pack
@@ -355,7 +328,6 @@ pub(crate) fn drift_text(d: Drift) -> &'static str {
         Drift::Modified => "Modified: the files differ from the release",
         Drift::UpdateAvailable => "A newer release is published",
         Drift::Retired => "Retired upstream: no longer published",
-        Drift::BuilderReview => "Builder changed, review",
         Drift::Pristine | Drift::Untracked => "",
     }
 }
@@ -390,7 +362,6 @@ pub(crate) fn drift_pill(d: Drift) -> &'static str {
         Drift::Modified => "Modified",
         Drift::UpdateAvailable => "Update available",
         Drift::Retired => "Retired",
-        Drift::BuilderReview => "Builder changed, review",
         Drift::Pristine | Drift::Untracked => "",
     }
 }
@@ -522,12 +493,8 @@ pub(crate) fn display_version(
     if !e.managed {
         return String::new();
     }
-    let raw = if generated::is_id(&e.id) {
-        e.version_label.as_deref().or_else(|| {
-            (e.drift == Drift::Pristine)
-                .then_some(complock::fetched())
-                .filter(|d| !d.is_empty())
-        })
+    let raw = if complock::is_legacy_generated_id(&e.id) {
+        e.version_label.as_deref()
     } else if e.id.starts_with(complock::MOD_PREFIX) {
         e.version_label
             .as_deref()
@@ -604,7 +571,7 @@ fn current_version_text(e: &Entry) -> Option<String> {
 
 fn source_tag(e: &Entry) -> (SourceKind, &'static str) {
     if e.id.starts_with(complock::MOD_PREFIX)
-        || generated::is_id(&e.id)
+        || complock::is_legacy_generated_id(&e.id)
         || e.facts.complock_title.is_some()
         || e.facts.is_complock_builder
     {
@@ -685,7 +652,6 @@ fn entry(m: &InstalledMod) -> Entry {
             drift: Drift::Untracked,
             can_reset: false,
             unverified: false,
-            generated: None,
         };
     };
     let mut paks: Vec<u32> = m.vpks.iter().filter_map(|v| v.pak).collect();
@@ -729,7 +695,6 @@ fn entry(m: &InstalledMod) -> Entry {
         drift: Drift::Untracked,
         can_reset: false,
         unverified: s.unverified == Some(true),
-        generated: s.generated.as_ref().map(ToString::to_string),
     };
     out.detail = detail_line(&display_version(&out, &[], None), out.partly_enabled);
     out
@@ -817,17 +782,6 @@ fn run_reset(
     let (fetched, unverified) = fetch_release(deps, dir.path(), plan)?;
     let running = deps.running.clone();
     let guard = install::InstallGuard::acquire(&paths.addons).map_err(|e| e.to_string())?;
-    if let ResetPlan::Generated(spec) = plan {
-        return reset_generated(
-            &paths,
-            id,
-            name,
-            spec,
-            &fetched,
-            &|| running(),
-            guard.permit(),
-        );
-    }
     let note = RefCell::new(String::new());
     reset::reset_with(
         &paths,
@@ -869,9 +823,6 @@ fn run_reset(
             )
             .map(|_| ())
             .map_err(|e| e.to_string()),
-            ResetPlan::Generated(_) => {
-                Err("a generated update installs through the stash path, before this backup".into())
-            }
         },
         guard.permit(),
     )
@@ -880,41 +831,6 @@ fn run_reset(
         let _ = sidecar::mark_unverified(&paths.addons, id);
     }
     Ok(note.into_inner())
-}
-
-fn reset_generated(
-    paths: &GamePaths,
-    id: &str,
-    name: &str,
-    spec: &generated::Spec,
-    fetched: &[PathBuf],
-    running: &dyn Fn() -> bool,
-    permit: install::InstallPermit<'_>,
-) -> Result<String, String> {
-    let version = generated::revision(spec).map_err(|e| e.to_string())?;
-    let mut side = install::install_files(
-        fetched,
-        install::ModMeta {
-            mod_id: id.to_owned(),
-            name: name.to_owned(),
-            version: Some(version.clone()),
-            version_label: (!complock::fetched().is_empty())
-                .then(|| complock::fetched().to_owned()),
-            thumbnail_url: None,
-            nsfw: false,
-            hero: None,
-            category: None,
-        },
-        paths,
-        running,
-        permit,
-    )
-    .map_err(|e| install_error_text(&e))?;
-    side.generated = generated::spec_value(spec);
-    side.version = Some(version);
-    side.unverified = None;
-    shiv_core::sidecar::write(&paths.addons, &side).map_err(|e| e.to_string())?;
-    Ok(String::new())
 }
 
 #[allow(
@@ -1013,11 +929,6 @@ fn fetch_release(
             let trust = registry::check_download(&dest, r.sha256.as_deref(), None)
                 .map_err(|e| e.to_string())?;
             Ok((vec![dest], trust == registry::DownloadTrust::Unverified))
-        }
-        ResetPlan::Generated(spec) => {
-            let dest = dir.join("complock_dir.vpk");
-            generated::write_rebuild(spec, &dest).map_err(|e| e.to_string())?;
-            Ok((vec![dest], false))
         }
     }
 }
@@ -1573,14 +1484,26 @@ pub(crate) fn transfer_changed(id: &str) {
     });
 }
 
-/// Re-read the list after something outside the screen changed the addons
-/// folder (an update or a swap finished).
+struct InspectedDrop {
+    matched: Option<(String, String, MatchReason)>,
+    builder_pak: Option<complock::BuilderPak>,
+}
+
 /// Why the dialog thinks a dropped file updates the mod.
 pub(crate) fn reason_text(reason: MatchReason) -> &'static str {
     match reason {
         MatchReason::SameSource => "It has the same file name the mod was installed from.",
         MatchReason::SameName => "Its file name matches the mod's name.",
         MatchReason::SameFiles => "It changes mostly the same game files.",
+        MatchReason::BuilderPak(complock::BuilderPak::HpBars { custom: true }) => {
+            "Detected as a CompLock Custom HP Bars pak. Replacing swaps it into the existing HP Bars slot."
+        }
+        MatchReason::BuilderPak(complock::BuilderPak::HpBars { custom: false }) => {
+            "Detected as a CompLock HP Bars pak."
+        }
+        MatchReason::BuilderPak(complock::BuilderPak::Hitsound) => {
+            "Detected as a CompLock Hitsound pak."
+        }
     }
 }
 
@@ -1839,9 +1762,6 @@ fn plan_target_version(plan: &ResetPlan) -> Option<String> {
     match plan {
         ResetPlan::CompLock { updated_date, .. } => updated_date.clone(),
         ResetPlan::Registry(r) => r.version_label.clone(),
-        ResetPlan::Generated(_) => {
-            (!complock::fetched().is_empty()).then(|| complock::fetched().to_owned())
-        }
     }
 }
 
@@ -2328,6 +2248,7 @@ impl Installed {
             let s = app.global::<LocalInstallState>();
             s.set_path("".into());
             s.set_name("".into());
+            s.set_note("".into());
             s.set_error_text("".into());
             s.set_busy(false);
             s.set_open(true);
@@ -2823,14 +2744,24 @@ impl Installed {
         let path = typed_path(&s.get_path(), home.as_deref());
         s.set_open(false);
         *self.updating.borrow_mut() = None;
-        self.show_local_install(&path);
+        self.show_local_install(&path, None);
     }
 
-    fn show_local_install(&self, path: &Path) {
+    fn show_local_install(&self, path: &Path, builder_pak: Option<complock::BuilderPak>) {
+        let name =
+            builder_pak.map_or_else(|| default_name(path), |bp| bp.display_name().to_owned());
+        let note = builder_pak.map_or("", |bp| match bp {
+            complock::BuilderPak::HpBars { custom: true } => {
+                "Detected as a CompLock Custom HP Bars pak."
+            }
+            complock::BuilderPak::HpBars { custom: false } => "Detected as a CompLock HP Bars pak.",
+            complock::BuilderPak::Hitsound => "Detected as a CompLock Hitsound pak.",
+        });
         self.with_app(|app| {
             let s = app.global::<LocalInstallState>();
             s.set_path(path.to_string_lossy().as_ref().into());
-            s.set_name(default_name(path).into());
+            s.set_name(name.into());
+            s.set_note(note.into());
             s.set_error_text("".into());
             s.set_busy(false);
             s.set_open(true);
@@ -2975,15 +2906,19 @@ impl Installed {
         let path_for_result = path.clone();
         let started = crate::spawn_worker(
             "shiv-inspect-drop",
-            move || -> Result<Option<(String, String, MatchReason)>, String> {
+            move || -> Result<InspectedDrop, String> {
                 let paths = (deps.locate)().map_err(|e| game_error_text(&e))?;
                 let ins = install::inspect(&path, &paths).map_err(|e| install_error_text(&e))?;
                 let mods = sidecar::group(&paths.addons);
-                Ok(install::find_update_target(&mods, &ins).map(|m| {
+                let matched = install::find_update_target(&mods, &ins).map(|m| {
                     let target = &mods[m.index];
                     let e = entry(target);
                     (key(target), e.name, m.reason)
-                }))
+                });
+                Ok(InspectedDrop {
+                    matched,
+                    builder_pak: ins.builder_pak,
+                })
             },
             move |result| {
                 let result = result.and_then(|r| r);
@@ -3001,11 +2936,7 @@ impl Installed {
         }
     }
 
-    fn inspected(
-        &self,
-        path: &Path,
-        result: Result<Option<(String, String, MatchReason)>, String>,
-    ) {
+    fn inspected(&self, path: &Path, result: Result<InspectedDrop, String>) {
         self.stepping.set(false);
         self.set_flags(None, Some(false));
         match result {
@@ -3014,14 +2945,14 @@ impl Installed {
                 self.with_state(|s| s.set_banner_text(text.into()));
                 self.step();
             }
-            Ok(found) => {
+            Ok(drop) => {
                 self.with_state(|s| s.set_banner_text("".into()));
                 let shown = path.to_string_lossy().into_owned();
-                match found {
+                match drop.matched {
                     Some((id, name, reason)) => {
                         self.show_update(&id, &name, &shown, reason_text(reason), true);
                     }
-                    None => self.show_local_install(path),
+                    None => self.show_local_install(path, drop.builder_pak),
                 }
                 // The dialog holds the queue: it resumes when the dialog
                 // closes (success refreshes and `loaded` steps again) or is
@@ -3553,10 +3484,11 @@ impl Installed {
     }
 
     fn finish(&self, result: &Result<String, String>) {
-        // The disk changed: keep the Launch sidebar count and Browse's
-        // Installed badges current.
+        // The disk changed: keep the Launch sidebar count, Browse's
+        // Installed badges, and Performance's detected builder paks current.
         crate::launch::refresh();
         crate::browse::refresh_installed();
+        crate::performance::reload();
         if let Some(batch) = self.batch_updates.borrow_mut().as_mut()
             && let Some((_, BatchKind::Plan, outcome)) = batch.in_flight.as_mut()
         {
@@ -3643,7 +3575,6 @@ mod tests {
             source: None,
             stamps: None,
             unverified: None,
-            generated: None,
         }
     }
 

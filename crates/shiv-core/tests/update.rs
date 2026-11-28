@@ -185,7 +185,6 @@ fn catalog_mods_and_different_vpk_counts_never_match() {
             source: Some("Haze Skin.vpk".into()),
             stamps: None,
             unverified: None,
-            generated: None,
         },
     )
     .unwrap();
@@ -367,7 +366,6 @@ fn replace_refuses_without_touching_anything() {
         source: None,
         stamps: None,
         unverified: None,
-        generated: None,
     };
     sidecar::write(&e.paths.addons, &catalog).unwrap();
     let before = files(&e.paths.addons);
@@ -431,4 +429,219 @@ fn replace_refuses_without_touching_anything() {
                 .next()
                 .is_none()
     );
+}
+
+#[test]
+fn dropped_hpbar_and_hitsound_paks_match_and_replace_cleanly() {
+    use shiv_core::complock::BuilderPak;
+
+    fn pack_entries(out: &Path, entries: &[(&str, &[u8])]) {
+        let src = tempdir().unwrap();
+        for (p, body) in entries {
+            let f = src.path().join(p);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(f, body).unwrap();
+        }
+        vpkmanager::pack_directory(src.path(), out).unwrap();
+    }
+
+    let e = env();
+    let default_hp = e.paths.addons.join("pak04_dir.vpk");
+    pack_entries(
+        &default_hp,
+        &[
+            ("panorama/styles/unit_status_v2.vcss_c", b"DATA{}"),
+            (
+                "addoninfo.txt",
+                b"\"AddonInfo\"\n{\n\t\"addontitle\"\t\"jcStani's HP Bars - jcStani\"\n\t\"addonauthor\"\t\"jcStani\"\n}\n",
+            ),
+        ],
+    );
+    sidecar::write(
+        &e.paths.addons,
+        &Sidecar {
+            mod_id: "complock-hpbars".into(),
+            name: "CompLock jcStani's HP Bars".into(),
+            version: Some("crc32:12345678".into()),
+            version_label: Some("2026-11-26".into()),
+            thumbnail_url: None,
+            vpks: vec!["pak04_dir.vpk".into()],
+            nsfw: Some(false),
+            hero: None,
+            category: None,
+            notes: Some("keep note".into()),
+            source: None,
+            stamps: None,
+            unverified: None,
+        },
+    )
+    .unwrap();
+
+    // Dropping a custom HP bar pak detects BuilderPak::HpBars { custom: true } and
+    // matches the installed default `complock-hpbars`.
+    let custom_hp = e.work.join("my_custom_hpbars.vpk");
+    pack_entries(
+        &custom_hp,
+        &[(
+            "panorama/styles/unit_status_v2.vcss_c",
+            b"DATA/* ---- HP Bar Builder style ---- */rule{}",
+        )],
+    );
+    let ins_hp = install::inspect(&custom_hp, &e.paths).unwrap();
+    assert_eq!(
+        ins_hp.builder_pak,
+        Some(BuilderPak::HpBars { custom: true })
+    );
+    let mods = sidecar::group(&e.paths.addons);
+    let m = install::find_update_target(&mods, &ins_hp).expect("matches complock-hpbars");
+    assert_eq!(
+        m.reason,
+        MatchReason::BuilderPak(BuilderPak::HpBars { custom: true })
+    );
+
+    let replaced = install::replace_local_with(
+        &custom_hp,
+        &mods[m.index],
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    assert!(sidecar::is_local(&replaced.sidecar.mod_id));
+    assert_eq!(replaced.sidecar.name, "CompLock Custom HP Bars");
+    assert_eq!(replaced.sidecar.notes.as_deref(), Some("keep note"));
+    assert_eq!(replaced.sidecar.vpks, ["pak04_dir.vpk"]);
+    assert_eq!(
+        sidecar::read(&e.paths.addons, "complock-hpbars").unwrap(),
+        None,
+        "old non-local sidecar removed so Update all will not overwrite custom build"
+    );
+    assert_eq!(
+        shiv_core::complock::detect_builder_pak(
+            &e.paths.addons.join("pak04_dir.vpk"),
+            Some(&replaced.sidecar)
+        ),
+        Some(BuilderPak::HpBars { custom: true })
+    );
+    assert!(files(&replaced.backup).contains_key("pak04_dir.vpk"));
+
+    // Replacing an existing custom HP bar pak in place also matches and preserves its local id.
+    let custom_hp2 = e.work.join("another_custom.vpk");
+    pack_entries(
+        &custom_hp2,
+        &[(
+            "panorama/styles/unit_status_v2.vcss_c",
+            b"DATA/* ---- HP Bar Builder style ---- */rule2{}",
+        )],
+    );
+    let ins_hp2 = install::inspect(&custom_hp2, &e.paths).unwrap();
+    let mods = sidecar::group(&e.paths.addons);
+    let m2 = install::find_update_target(&mods, &ins_hp2).expect("matches custom hp bars");
+    assert_eq!(
+        m2.reason,
+        MatchReason::BuilderPak(BuilderPak::HpBars { custom: true })
+    );
+    let replaced2 = install::replace_local_with(
+        &custom_hp2,
+        &mods[m2.index],
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    assert_eq!(replaced2.sidecar.mod_id, replaced.sidecar.mod_id);
+
+    // Dropping a hitsound pak when none is installed detects BuilderPak::Hitsound with no match;
+    // once installed, dropping another hitsound pak matches and replaces it in place.
+    let hit1 = e.work.join("hitsound1.vpk");
+    pack_entries(
+        &hit1,
+        &[
+            ("soundevents/damage.vsndevts_c", b"ev1"),
+            (
+                "sounds/hit_indicators/damage_send_default_01.vsnd_c",
+                b"snd1",
+            ),
+        ],
+    );
+    let ins_hit1 = install::inspect(&hit1, &e.paths).unwrap();
+    assert_eq!(ins_hit1.builder_pak, Some(BuilderPak::Hitsound));
+    assert_eq!(install::find_update_target(&mods, &ins_hit1), None);
+
+    let hit_sc = install::install_local_with(
+        &hit1,
+        BuilderPak::Hitsound.display_name(),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    let hit2 = e.work.join("hitsound2.vpk");
+    pack_entries(
+        &hit2,
+        &[
+            ("soundevents/damage.vsndevts_c", b"ev2"),
+            (
+                "sounds/hit_indicators/damage_send_default_01.vsnd_c",
+                b"snd2",
+            ),
+        ],
+    );
+    let ins_hit2 = install::inspect(&hit2, &e.paths).unwrap();
+    let mods = sidecar::group(&e.paths.addons);
+    let mh = install::find_update_target(&mods, &ins_hit2).expect("matches hitsound");
+    assert_eq!(mh.reason, MatchReason::BuilderPak(BuilderPak::Hitsound));
+    let replaced_hit = install::replace_local_with(
+        &hit2,
+        &mods[mh.index],
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap();
+    assert_eq!(replaced_hit.sidecar.mod_id, hit_sc.mod_id);
+
+    // An unrelated VPK still refuses to replace a non-local mod.
+    let unrelated = e.work.join("unrelated.vpk");
+    vpk(&unrelated, &HERO, "other");
+    sidecar::write(
+        &e.paths.addons,
+        &Sidecar {
+            mod_id: "complock-hud".into(),
+            name: "CompLock HUD++".into(),
+            version: None,
+            version_label: None,
+            thumbnail_url: None,
+            vpks: vec!["pak01_dir.vpk".into()],
+            nsfw: Some(false),
+            hero: None,
+            category: None,
+            notes: None,
+            source: None,
+            stamps: None,
+            unverified: None,
+        },
+    )
+    .unwrap();
+    vpk(&e.paths.addons.join("pak01_dir.vpk"), &HERO, "hud");
+    let mods = sidecar::group(&e.paths.addons);
+    let err = install::replace_local_with(
+        &unrelated,
+        by_file(&mods, "pak01_dir.vpk"),
+        &e.paths,
+        || false,
+        shiv_core::install::InstallGuard::acquire(&e.paths.addons)
+            .unwrap()
+            .permit(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, InstallError::NotLocal), "{err:?}");
 }

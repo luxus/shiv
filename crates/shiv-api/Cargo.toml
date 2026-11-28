@@ -3,6 +3,8 @@ name = "shiv-api"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0"
+repository = "https://github.com/luxus/shiv"
+homepage = "https://github.com/luxus/shiv"
 
 [lib]
 name = "shiv_api"

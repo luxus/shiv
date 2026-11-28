@@ -40,15 +40,7 @@ in `docs/perf-results.md` before a release tag.
 
 ### Justified dependencies
 
-- **`rquickjs` & `symphonia`:** CompLock's Hitsound and HP Bar builders run as
-  their own pinned scripts in QuickJS (`rquickjs`). Deno and Node are the
-  runtimes that already execute those scripts, and neither fits this gate: a
-  current Node binary is about 50 MB and Deno is larger, against an AppImage
-  measured at 19.7 MB. QuickJS adds about 1.5 MB, has no filesystem and no
-  network unless the host binds them, and the host binds neither. `symphonia`
-  decodes a hitsound the user uploads (WAV, MP3, OGG, FLAC) down to the mono
-  44.1 kHz samples the script encodes. The site does that step in the browser,
-  which cannot ship here.
+- In-app CompLock builders (`rquickjs`, `symphonia` in `shiv-core`) were removed in #88 in favour of web-builder VPK detection and direct links to `deadlockconfig.com`, shrinking the release binary.
 
 ## The proof obligations, by area
 

@@ -22,9 +22,6 @@ pub enum Published {
     /// No source answers for the mod: a local mod, an unreachable source,
     /// or data not loaded yet.
     Unknown,
-    /// The builder that produces the mod changed upstream. The new script
-    /// is not a revision Shiv will build; someone has to review it first.
-    BuilderChanged,
 }
 
 /// An installed mod against its source's release.
@@ -44,8 +41,6 @@ pub enum Drift {
     /// Shiv cannot tell: no sidecar stamps (placed before stamps existed,
     /// adopted, or not Shiv's) and nothing retired.
     Untracked,
-    /// The upstream builder script changed. Shiv will not rebuild with it.
-    BuilderReview,
 }
 
 /// The drift of `m` given what its source publishes. A retired source wins
@@ -67,9 +62,6 @@ pub fn drift(m: &InstalledMod, published: &Published) -> Drift {
 /// sidecar records. The order is [`drift`]'s.
 #[must_use]
 pub fn state(untouched: Option<bool>, version: Option<&str>, published: &Published) -> Drift {
-    if *published == Published::BuilderChanged {
-        return Drift::BuilderReview;
-    }
     if *published == Published::Gone {
         return Drift::Retired;
     }
@@ -87,7 +79,7 @@ pub fn state(untouched: Option<bool>, version: Option<&str>, published: &Publish
                 Drift::UpdateAvailable
             }
         }
-        Published::Gone | Published::Unknown | Published::BuilderChanged => Drift::Pristine,
+        Published::Gone | Published::Unknown => Drift::Pristine,
     }
 }
 

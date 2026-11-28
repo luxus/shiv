@@ -187,7 +187,6 @@ fn export_maps_catalog_mods_to_gamebanana_keys() {
             source: None,
             stamps: None,
             unverified: None,
-            generated: None,
         },
     )
     .unwrap();
@@ -287,7 +286,6 @@ fn a_local_id_shared_by_an_unrelated_mod_is_not_a_duplicate() {
             source: None,
             stamps: None,
             unverified: None,
-            generated: None,
         },
     )
     .unwrap();
@@ -335,7 +333,6 @@ fn import_recognises_a_mod_the_catalog_already_knows() {
             source: None,
             stamps: None,
             unverified: None,
-            generated: None,
         },
     )
     .unwrap();

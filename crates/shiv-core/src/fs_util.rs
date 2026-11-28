@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -55,9 +55,4 @@ pub(crate) fn is_plain_filename(name: &str) -> bool {
         (comps.next(), comps.next()),
         (Some(Component::Normal(c)), None) if c == name
     )
-}
-
-/// Resolve `dir.join(name)` only if `name` is a single safe filename.
-pub(crate) fn safe_child(dir: &Path, name: &str) -> Option<PathBuf> {
-    is_plain_filename(name).then(|| dir.join(name))
 }

@@ -1425,7 +1425,6 @@ mod tests {
                 source: None,
                 stamps: None,
                 unverified: None,
-                generated: None,
             },
         )
         .unwrap();
