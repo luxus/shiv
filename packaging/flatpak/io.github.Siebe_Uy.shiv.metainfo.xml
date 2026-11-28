@@ -25,6 +25,11 @@
     <binary>shiv</binary>
   </provides>
   <releases>
+    <release version="0.8.0" date="2026-11-28">
+      <description>
+        <p>Version label in sidebar, CompLock / Performance redesign with credits and web configurator links, drag-and-drop HP bar / hitsound detection, builder removal, and luxus/shiv repository links.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-11-25">
       <description>
         <p>publish model-leveled CompLock artifacts instead of app releases</p>
