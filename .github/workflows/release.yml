@@ -31,7 +31,7 @@ jobs:
     # An old glibc, so the AppImage also runs on older distributions.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -56,7 +56,7 @@ jobs:
           version=""
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
           packaging/build-appimage.sh "$version"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: appimage
           path: dist/*
@@ -64,13 +64,15 @@ jobs:
   flatpak:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install flatpak tooling
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: false
       - name: Fetch the cargo source generator
         run: |
           curl -fsSL -o "$RUNNER_TEMP/flatpak-cargo-generator.py" "$FLATPAK_CARGO_GENERATOR_URL"
@@ -80,7 +82,7 @@ jobs:
           version=""
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
           FLATPAK_CARGO_GENERATOR="$RUNNER_TEMP/flatpak-cargo-generator.py" packaging/build-flatpak.sh "$version"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: flatpak
           path: dist/*
@@ -91,7 +93,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust toolchain
         run: rustup show active-toolchain
       - name: Build
@@ -107,7 +109,7 @@ jobs:
           MSYS2_ARG_CONV_EXCL="*" "$iscc" "/DAppVersion=$version" packaging/windows/shiv.iss
           cd dist
           for f in *.exe; do sha256sum "$f" > "$f.sha256"; done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/*
@@ -120,7 +122,7 @@ jobs:
       contents: write
     steps:
       # Full history: git-cliff reads the commits between the last two tags.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install git-cliff
@@ -141,7 +143,7 @@ jobs:
           # Fail closed: a release whose commits produced no changelog
           # sections (the 0.5.1 bug) is not published.
           grep -q '^## ' "$notes"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
